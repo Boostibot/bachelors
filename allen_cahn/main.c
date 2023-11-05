@@ -16,9 +16,20 @@
 #include "gl_debug_output.h"
 #include "gl_shader_util.h"
 
+#include "glfw/glfw3.h"
+
 void run_func(void* context);
-void run_test_func(void* context);
 void error_func(void* context, Platform_Sandox_Error error_code);
+
+typedef struct App_State {
+    int a;
+} App_State;
+
+void run_func(void* context)
+{
+    App_State* app = (App_State*) context;
+    LOG_INFO("APP", "Hello world %lli", (lli) app->a);
+}
 
 void* glfw_malloc_func(size_t size, void* user)
 {
@@ -94,15 +105,10 @@ int main()
 
     gl_debug_output_enable();
 
-    #ifndef RUN_TESTS
     platform_exception_sandbox(
         run_func, window, 
         error_func, window);
-    #else
-    platform_exception_sandbox(
-        run_test_func, window, 
-        error_func, window);
-    #endif
+
     glfwDestroyWindow(window);
     glfwTerminate();
 
@@ -120,14 +126,153 @@ int main()
 }
 
 
+
+EXPORT void assertion_report(const char* expression, Source_Info info, const char* message, ...)
+{
+    LOG_FATAL("TEST", "TEST(%s) TEST/ASSERTION failed! " SOURCE_INFO_FMT, expression, SOURCE_INFO_PRINT(info));
+    if(message != NULL && strlen(message) != 0)
+    {
+        LOG_FATAL("TEST", "with message:\n", message);
+        va_list args;
+        va_start(args, message);
+        vlog_message("TEST", LOG_TYPE_FATAL, SOURCE_INFO(), message, args);
+        va_end(args);
+    }
+        
+    log_group_push();
+    log_callstack("TEST", LOG_TYPE_FATAL, -1, 1);
+    log_group_pop();
+    log_flush_all();
+
+    platform_abort();
+}
+
 void error_func(void* context, Platform_Sandox_Error error_code)
 {
     (void) context;
-    const char* msg = platform_sandbox_error_to_cstring(error_code);
+    const char* msg = platform_sandbox_error_to_string(error_code);
     
     LOG_ERROR("APP", "%s exception occured", msg);
     LOG_TRACE("APP", "printing trace:");
     log_group_push();
     log_callstack("APP", LOG_TYPE_ERROR, -1, 1);
     log_group_pop();
+}
+
+const char* get_memory_unit(isize bytes, isize *unit_or_null)
+{
+    isize GB = (isize) 1000*1000*1000;
+    isize MB = (isize) 1000*1000;
+    isize KB = (isize) 1000;
+    isize B = (isize) 1;
+
+    const char* out = "";
+    isize unit = 1;
+
+    if(bytes > GB)
+    {
+        out = "GB";
+        unit = GB;
+    }
+    else if(bytes > MB)
+    {
+        out = "MB";
+        unit = MB;
+    }
+    else if(bytes > KB)
+    {
+        out = "KB";
+        unit = KB;
+    }
+    else
+    {
+        out = "B";
+        unit = B;
+    }
+
+    if(unit_or_null)
+        *unit_or_null = unit;
+
+    return out;
+}
+
+
+const char* format_memory_unit_ephemeral(isize bytes)
+{
+    isize unit = 1;
+    static String_Builder formatted = {0};
+    if(formatted.allocator == NULL)
+        array_init(&formatted, allocator_get_static());
+
+    const char* unit_text = get_memory_unit(bytes, &unit);
+    f64 ratio = (f64) bytes / (f64) unit;
+    format_into(&formatted, "%.1lf %s", ratio, unit_text);
+
+    return formatted.data;
+}
+
+void log_allocator_stats(const char* log_module, Log_Type log_type, Allocator_Stats stats)
+{
+    String_Builder formatted = {0};
+    array_init_backed(&formatted, NULL, 512);
+
+    LOG(log_module, log_type, "bytes_allocated: %s", format_memory_unit_ephemeral(stats.bytes_allocated));
+    LOG(log_module, log_type, "max_bytes_allocated: %s", format_memory_unit_ephemeral(stats.max_bytes_allocated));
+    LOG(log_module, log_type, "allocation_count: %lli", (lli) stats.allocation_count);
+    LOG(log_module, log_type, "deallocation_count: %lli", (lli) stats.deallocation_count);
+    LOG(log_module, log_type, "reallocation_count: %lli", (lli) stats.reallocation_count);
+
+    array_deinit(&formatted);
+}
+EXPORT void allocator_out_of_memory(
+    Allocator* allocator, isize new_size, void* old_ptr, isize old_size, isize align, 
+    Source_Info called_from, const char* format_string, ...)
+{
+    Allocator_Stats stats = {0};
+    if(allocator != NULL && allocator->get_stats != NULL)
+        stats = allocator_get_stats(allocator);
+        
+    if(stats.type_name == NULL)
+        stats.type_name = "<no type name>";
+
+    if(stats.name == NULL)
+        stats.name = "<no name>";
+    
+    String_Builder user_message = {0};
+    array_init_backed(&user_message, allocator_get_scratch(), 1024);
+    
+    va_list args;
+    va_start(args, format_string);
+    vformat_into(&user_message, format_string, args);
+    va_end(args);
+
+    LOG_FATAL("MEMORY", 
+        "Allocator %s %s ran out of memory\n"
+        "new_size:    %lli B\n"
+        "old_ptr:     %p\n"
+        "old_size:    %lli B\n"
+        "align:       %lli B\n"
+        "called from: " SOURCE_INFO_FMT "\n"
+        "user message:\n%s",
+        stats.type_name, stats.name, 
+        (lli) new_size, 
+        old_ptr,
+        (lli) old_size,
+        (lli) align,
+        SOURCE_INFO_PRINT(called_from),
+        cstring_from_builder(user_message)
+    );
+    
+    LOG_FATAL("MEMORY", "Allocator_Stats:");
+    log_group_push();
+        log_allocator_stats("MEMORY", LOG_TYPE_FATAL, stats);
+    log_group_pop();
+    
+    log_group_push();
+        log_callstack("MEMORY", LOG_TYPE_FATAL, -1, 1);
+    log_group_pop();
+
+    log_flush_all();
+    platform_trap(); 
+    platform_abort();
 }
