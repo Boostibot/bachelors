@@ -1,0 +1,3 @@
+[submodule "allen_cahn/lib"]
+	path = allen_cahn/lib
+	url = https://github.com/Boostibot/c_lib.git
