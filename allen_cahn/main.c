@@ -1,16 +1,15 @@
 
 #define LIB_ALL_IMPL
-//#define LIB_MEM_DEBUG
-#define DEBUG
 #define GLAD_GL_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-
+//#define DEBUG
+//#define LIB_MEM_DEBUG
 
 #include "lib/log.h"
 #include "lib/logger_file.h"
 #include "lib/allocator_debug.h"
 #include "lib/allocator_malloc.h"
 #include "lib/error.h"
+#include "lib/time.h"
 
 #include "gl.h"
 #include "gl_debug_output.h"
@@ -18,38 +17,200 @@
 
 #include "glfw/glfw3.h"
 
-void run_func(void* context);
-void error_func(void* context, Platform_Sandox_Error error_code);
+const i32 SCR_WIDTH = 800;
+const i32 SCR_HEIGHT = 600;
+
+const f64 FPS_DISPLAY_FREQ = 5;
+const f64 RENDER_FREQ = 30;
+
+const u32 WORK_GROUP_SIZE_X = 32;
+const u32 WORK_GROUP_SIZE_Y = 32;
+const u32 WORK_GROUP_SIZE_Z = 1;
 
 typedef struct App_State {
-    int a;
+    GLFWwindow* window;
+
+    bool is_in_step_mode;
+    bool render_phi;
+    f64 remaining_steps;
+    f64 step_by;
 } App_State;
 
-void run_func(void* context)
+void app_state_init(App_State* state, GLFWwindow* window)
 {
-    App_State* app = (App_State*) context;
-    LOG_INFO("APP", "Hello world %lli", (lli) app->a);
+    state->window = window;
+    state->is_in_step_mode = true;
+    state->remaining_steps = 1;
+    state->step_by = 1;
+    state->render_phi = true;
 }
 
-void* glfw_malloc_func(size_t size, void* user)
+typedef struct Compute_Texture {
+    GLuint id;
+    GLuint format;
+    GLuint channels;
+    GLuint pixel_type;
+} Compute_Texture;
+
+void render_sci_texture(App_State* app, Compute_Texture texture, f32 min, f32 max);
+Compute_Texture compute_texture_make(isize width, isize heigth, GLuint type, GLuint channels);
+void compute_texture_bind(Compute_Texture texture, GLenum access, isize slot);
+void compute_texture_deinit(Compute_Texture* texture);
+
+void run_func_allen_cahn(void* context)
 {
-    return malloc_allocator_malloc((Malloc_Allocator*) user, size);
+    const i32 _SIZE_X = 1024;
+    const i32 _SIZE_Y = 1024;
+    
+    const f32 _INITIAL_PHI = 1;
+    const f32 _INITIAL_T = 0;
+    const f32 _AROUND_PHI = 0;
+    const f32 _AROUND_T = 0;
+
+    const i32 _INITIAL_SIZE_X = 128;
+    const i32 _INITIAL_SIZE_Y = 128;
+    
+    const f32 _dt = 1.0f/200;
+    const f32 _alpha = 0.5;
+    const f32 _L = 0.5;
+    const f32 _xi = 0.411f;
+    const f32 _a = 2;
+    const f32 _b = 0.5;
+    const f32 _beta = 0.5;
+    const f32 _Tm = 1;
+
+    const f64 FREE_RUN_SYM_FPS = 100;
+
+    Compute_Texture phi_map         = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
+    Compute_Texture T_map           = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
+    Compute_Texture next_phi_map    = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
+    Compute_Texture next_T_map      = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
+
+    GLFWwindow* window = context;
+    App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
+
+    Render_Shader compute_shader = {0};
+
+    Error error = compute_shader_init_from_disk(&compute_shader, STRING("shaders/allen_cahn.comp"), WORK_GROUP_SIZE_X, WORK_GROUP_SIZE_Y, WORK_GROUP_SIZE_Z);
+    TEST_MSG(error_is_ok(error), "Error while loading shaders!");
+
+    i64 frame_counter = 0;
+    f64 frame_time_sum = 0;
+    
+    f64 fps_display_last_time_sum = 0;
+    f64 fps_display_last_time = 0;
+    i64 fps_display_last_frames = 0;
+    
+    f64 render_last_time = 0;
+    f64 simulated_last_time = 0;
+
+    f64 simulation_time_sum = 0;
+
+	while (!glfwWindowShouldClose(window))
+    {
+        f64 now = clock_s();
+        if(now - render_last_time > 1.0/RENDER_FREQ)
+        {
+            render_last_time = now;
+            if(app->render_phi)
+                render_sci_texture(app, phi_map, 0, 1);
+            else
+                render_sci_texture(app, T_map, 0, 1);
+        }
+
+        if(now - fps_display_last_time > 1.0/FPS_DISPLAY_FREQ)
+        {
+            f64 time_sum_delta = frame_time_sum - fps_display_last_time_sum;
+            f64 counter_delta = (f64) (frame_counter - fps_display_last_frames);
+            f64 avg_fps = 0;
+            if(time_sum_delta != 0)
+            {
+                avg_fps = counter_delta / time_sum_delta;
+                glfwSetWindowTitle(window, format_ephemeral("iter %lli", (lli) frame_counter).data);
+            }
+
+            fps_display_last_time = now;
+            fps_display_last_frames = frame_counter;
+            fps_display_last_time_sum = frame_time_sum;
+        }
+
+
+        bool step_sym = false;
+        if(app->is_in_step_mode)
+            step_sym = app->remaining_steps > 0.5;
+        else
+            step_sym = now - simulated_last_time > 1.0/app->step_by/FREE_RUN_SYM_FPS;
+
+        if(step_sym)
+        {
+            simulated_last_time = now;
+            app->remaining_steps -= 1;
+
+            compute_texture_bind(phi_map, GL_WRITE_ONLY, 0);
+            compute_texture_bind(T_map, GL_WRITE_ONLY, 1);
+            compute_texture_bind(next_phi_map, GL_READ_ONLY, 2);
+            compute_texture_bind(next_T_map, GL_READ_ONLY, 3);
+
+            f64 frame_start_time = clock_s();
+            
+            PERF_COUNTER_START(uniform_lookup_c);
+            render_shader_set_i32(&compute_shader, "_SIZE_X", _SIZE_X);
+            render_shader_set_i32(&compute_shader, "_SIZE_Y", _SIZE_Y);
+            
+            render_shader_set_i32(&compute_shader, "_frame_i", frame_counter == 0 ? 0 : 1);
+            render_shader_set_i32(&compute_shader, "_INITIAL_SIZE_X", _INITIAL_SIZE_X);
+            render_shader_set_i32(&compute_shader, "_INITIAL_SIZE_Y", _INITIAL_SIZE_Y);
+            render_shader_set_f32(&compute_shader, "_INITIAL_PHI", _INITIAL_PHI);
+            render_shader_set_f32(&compute_shader, "_INITIAL_T", _INITIAL_T);
+            render_shader_set_f32(&compute_shader, "_AROUND_PHI", _AROUND_PHI);
+            render_shader_set_f32(&compute_shader, "_AROUND_T", _AROUND_T);
+
+            render_shader_set_f32(&compute_shader, "_dt", _dt);
+            render_shader_set_f32(&compute_shader, "_alpha", _alpha);
+            render_shader_set_f32(&compute_shader, "_L", _L);
+            render_shader_set_f32(&compute_shader, "_xi", _xi);
+            render_shader_set_f32(&compute_shader, "_a", _a);
+            render_shader_set_f32(&compute_shader, "_b", _b);
+            render_shader_set_f32(&compute_shader, "_beta", _beta);
+            render_shader_set_f32(&compute_shader, "_Tm", _Tm);
+            PERF_COUNTER_END(uniform_lookup_c);
+            
+            PERF_COUNTER_START(compute_shader_run_c);
+            compute_shader_dispatch(&compute_shader, _SIZE_X, _SIZE_Y, 1);
+
+		    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+            PERF_COUNTER_END(compute_shader_run_c);
+
+            f64 end_start_time = clock_s();
+
+            f64 delta = end_start_time - frame_start_time;
+            frame_time_sum += delta;
+            frame_counter += 1;
+            simulation_time_sum += _dt;
+
+            SWAP(&phi_map, &next_phi_map, Compute_Texture);
+            SWAP(&T_map, &next_T_map, Compute_Texture);
+        }
+        
+		glfwPollEvents();
+    }
+
+    compute_texture_deinit(&phi_map);
+    compute_texture_deinit(&T_map);
+    compute_texture_deinit(&next_phi_map);
+    compute_texture_deinit(&next_T_map);
+    render_shader_deinit(&compute_shader);
 }
 
-void* glfw_realloc_func(void* block, size_t size, void* user)
-{
-    return malloc_allocator_realloc((Malloc_Allocator*) user, block, size);
-}
+void* glfw_malloc_func(size_t size, void* user);
+void* glfw_realloc_func(void* block, size_t size, void* user);
+void glfw_free_func(void* block, void* user);
+void glfw_error_func(int code, const char* description);
+void glfw_resize_func(GLFWwindow* window, int width, int height);
+void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
 
-void glfw_free_func(void* block, void* user)
-{
-    malloc_allocator_free((Malloc_Allocator*) user, block);
-}
-
-void glfw_error_func(int code, const char* description)
-{
-    LOG_ERROR("APP", "GLWF error %d with message: %s", code, description);
-}
+void run_func(void* context);
+void error_func(void* context, Platform_Sandox_Error error_code);
 
 int main()
 {
@@ -77,8 +238,8 @@ int main()
     glfwSetErrorCallback(glfw_error_func);
     TEST_MSG(glfwInit(), "Failed to init glfw");
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, true);  
  
@@ -93,12 +254,16 @@ int main()
         glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
     }
  
-    GLFWwindow* window = glfwCreateWindow(1600, 900, "Render", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Render", NULL, NULL);
     TEST_MSG(window != NULL, "Failed to make glfw window");
 
     App_State app = {0};
+    app_state_init(&app, window);
     glfwSetWindowUserPointer(window, &app);
     glfwMakeContextCurrent(window);
+	glfwSetFramebufferSizeCallback(window, glfw_resize_func);
+    glfwSetKeyCallback(window, glfw_key_func);
+    glfwSwapInterval(0);
 
     int version = gladLoadGL((GLADloadfunc) glfwGetProcAddress);
     TEST_MSG(version != 0, "Failed to load opengl with glad");
@@ -106,7 +271,7 @@ int main()
     gl_debug_output_enable();
 
     platform_exception_sandbox(
-        run_func, window, 
+        run_func_allen_cahn, window, 
         error_func, window);
 
     glfwDestroyWindow(window);
@@ -117,7 +282,6 @@ int main()
     file_logger_deinit(&global_logger);
     error_system_deinit();
 
-    //@TODO: fix
     ASSERT(malloc_allocator.bytes_allocated == 0);
     malloc_allocator_deinit(&malloc_allocator);
     platform_deinit();
@@ -125,7 +289,80 @@ int main()
     return 0;    
 }
 
+void* glfw_malloc_func(size_t size, void* user)
+{
+    return malloc_allocator_malloc((Malloc_Allocator*) user, size);
+}
 
+void* glfw_realloc_func(void* block, size_t size, void* user)
+{
+    return malloc_allocator_realloc((Malloc_Allocator*) user, block, size);
+}
+
+void glfw_free_func(void* block, void* user)
+{
+    malloc_allocator_free((Malloc_Allocator*) user, block);
+}
+
+void glfw_error_func(int code, const char* description)
+{
+    LOG_ERROR("APP", "GLWF error %d with message: %s", code, description);
+}
+void glfw_resize_func(GLFWwindow* window, int width, int height)
+{
+    (void) window;
+	// make sure the viewport matches the new window dimensions; note that width and 
+	// height will be significantly larger than specified on retina displays.
+	glViewport(0, 0, width, height);
+}
+
+void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    (void) mods;
+    (void) scancode;
+    (void) window;
+    App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
+    if(action == GLFW_RELEASE)
+    {
+        if(key == GLFW_KEY_ENTER)
+            app->remaining_steps = app->step_by;
+        if(key == GLFW_KEY_SPACE)
+            app->is_in_step_mode = !app->is_in_step_mode;
+        if(key == GLFW_KEY_F1)
+        {
+            app->render_phi = !app->render_phi;
+            LOG_INFO("APP", "Rendering %s", app->render_phi ? "phi" : "T");
+        }
+
+        if(key == GLFW_KEY_C)
+        {
+            for(Global_Perf_Counter* counter = profile_get_counters(); counter != NULL; counter = counter->next)
+            {
+                Perf_Counter_Stats stats = perf_counter_get_stats(counter->counter, 1);
+		        LOG_INFO("APP", "total: %15.8lf avg: %12.8lf runs: %-8lli σ/μ %13.6lf [%13.6lf %13.6lf] (ms) from %-4lli %s \"%s\"", 
+			        stats.total_s*1000,
+			        stats.average_s*1000,
+                    (lli) stats.runs,
+                    stats.normalized_standard_deviation_s,
+			        stats.min_s*1000,
+			        stats.max_s*1000,
+			        (lli) counter->line,
+			        counter->function,
+			        counter->name
+		        );
+            }
+        }
+        
+        f64 iters_before = app->step_by;
+        if(key == GLFW_KEY_O)
+            app->step_by = app->step_by*1.3 + 1;
+        if(key == GLFW_KEY_P)
+            app->step_by = MAX((app->step_by - 1)/1.3, 1.0);
+
+        if(iters_before != app->step_by)
+            LOG_INFO("APP", "Steps per iter %lf", app->step_by);
+    }
+}
 
 EXPORT void assertion_report(const char* expression, Source_Info info, const char* message, ...)
 {
@@ -195,7 +432,6 @@ const char* get_memory_unit(isize bytes, isize *unit_or_null)
 
     return out;
 }
-
 
 const char* format_memory_unit_ephemeral(isize bytes)
 {
@@ -275,4 +511,117 @@ EXPORT void allocator_out_of_memory(
     log_flush_all();
     platform_trap(); 
     platform_abort();
+}
+
+
+void render_screen_quad()
+{
+    static GLuint quadVAO = 0;
+    static GLuint quadVBO = 0;
+	if (quadVAO == 0)
+	{
+		f32 quadVertices[] = {
+			-1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+			-1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+			 1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
+			 1.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+		};
+		glGenVertexArrays(1, &quadVAO);
+		glGenBuffers(1, &quadVBO);
+		glBindVertexArray(quadVAO);
+		glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(f32), (void*)0);
+		glEnableVertexAttribArray(1);
+		glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(f32), (void*)(3 * sizeof(f32)));
+	}
+
+	glBindVertexArray(quadVAO);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glBindVertexArray(0);
+}
+
+void render_sci_texture(App_State* app, Compute_Texture texture, f32 min, f32 max)
+{
+    static Render_Shader sci_shader = {0};
+    if(sci_shader.shader == 0)
+    {
+        Error error = render_shader_init_from_disk(&sci_shader, STRING("shaders/sci_color.frag_vert"));
+        TEST_MSG(error_is_ok(error), "Error while loading shaders!");
+    }
+    
+    //platform_thread_sleep(1);
+    compute_texture_bind(texture, GL_READ_ONLY, 0);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    render_shader_set_f32(&sci_shader, "_min", min);
+    render_shader_set_f32(&sci_shader, "_max", max);
+    render_shader_use(&sci_shader);
+	render_screen_quad();
+            
+    if(0)
+        render_shader_deinit(&sci_shader);
+
+    glfwSwapBuffers(app->window);
+}
+
+Compute_Texture compute_texture_make(isize width, isize heigth, GLuint type, GLuint channels)
+{
+    GLuint format = GL_RGBA;
+    GLuint internal_format = 0;
+
+    ASSERT(type == GL_FLOAT);
+    switch(channels)
+    {
+        default:
+        case 1: 
+            format = GL_RED;
+            internal_format = GL_R32F; 
+        break;
+
+        case 2: 
+            format =  GL_RG;
+            internal_format = GL_RG32F; 
+        break;
+
+        case 3: 
+            format =  GL_RGB;
+            internal_format = GL_RGB32F; 
+        break;
+
+        case 4: 
+            format =  GL_RGBA;
+            internal_format = GL_RGBA32F; 
+        break;
+    }
+
+    Compute_Texture tex = {0};
+	glGenTextures(1, &tex.id);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, tex.id);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexImage2D(GL_TEXTURE_2D, 0, internal_format, (GLuint) width, (GLuint) heigth, 0, format, type, NULL);
+    
+    tex.format = internal_format;
+    tex.channels = channels;
+    tex.pixel_type = type;
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
+void compute_texture_bind(Compute_Texture texture, GLenum access, isize slot)
+{
+	glBindImageTexture((GLuint) slot, texture.id, 0, GL_FALSE, 0, access, texture.format);
+    glBindTextureUnit((i32) slot, texture.id);
+}
+
+void compute_texture_deinit(Compute_Texture* texture)
+{
+    glDeleteTextures(1, &texture->id);
+    memset(texture, 0, sizeof *texture);
 }
