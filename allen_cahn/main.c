@@ -617,8 +617,10 @@ void render_sci_texture(App_State* app, Compute_Texture texture, f32 min, f32 ma
     static Render_Shader sci_shader = {0};
     if(sci_shader.shader == 0)
     {
+        Allocator_Set prev = allocator_set_default(allocator_get_static());
         Error error = render_shader_init_from_disk(&sci_shader, STRING("shaders/sci_color.frag_vert"));
         TEST_MSG(error_is_ok(error), "Error while loading shaders!");
+        allocator_set(prev);
     }
     
     //platform_thread_sleep(1);
