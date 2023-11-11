@@ -17,10 +17,10 @@
 
 #include "glfw/glfw3.h"
 
-const i32 SCR_WIDTH = 800;
-const i32 SCR_HEIGHT = 600;
+const i32 SCR_WIDTH = 1000;
+const i32 SCR_HEIGHT = 1000;
 
-const f64 FPS_DISPLAY_FREQ = 5;
+const f64 FPS_DISPLAY_FREQ = 50000;
 const f64 RENDER_FREQ = 30;
 
 const u32 WORK_GROUP_SIZE_X = 32;
@@ -57,34 +57,98 @@ Compute_Texture compute_texture_make(isize width, isize heigth, GLuint type, GLu
 void compute_texture_bind(Compute_Texture texture, GLenum access, isize slot);
 void compute_texture_deinit(Compute_Texture* texture);
 
+typedef struct Allen_Cahn_Scale {
+    f32 L0;
+    f32 Tm;
+    f32 Tini;
+    f32 c;
+    f32 rho;
+    f32 lambda;
+} Allen_Cahn_Scale;
+
+f32 allen_cahn_scale_heat(f32 T, Allen_Cahn_Scale scale)
+{
+    return 1 + (T - scale.Tm)/(scale.Tm - scale.Tini);
+}
+
+f32 allen_cahn_scale_latent_heat(f32 L, Allen_Cahn_Scale scale)
+{
+    return L * scale.rho * scale.c/(scale.Tm - scale.Tini);
+}
+
+f32 allen_cahn_scale_pos(f32 x, Allen_Cahn_Scale scale)
+{
+    return x / scale.L0;
+}
+
+f32 allen_cahn_scale_xi(f32 xi, Allen_Cahn_Scale scale)
+{
+    (void) scale;
+    //return xi;
+    return xi / scale.L0;
+}
+
+f32 allen_cahn_scale_time(f32 t, Allen_Cahn_Scale scale)
+{
+    const f32 _t0 = (scale.rho*scale.c/scale.lambda)*scale.L0*scale.L0;
+    return t / _t0;
+}
+
+f32 allen_cahn_scale_beta(f32 beta, Allen_Cahn_Scale scale)
+{
+    return beta * scale.L0 * (scale.Tm - scale.Tini);
+}
+
+f32 allen_cahn_scale_alpha(f32 alpha, Allen_Cahn_Scale scale)
+{
+    return alpha * scale.lambda / (scale.rho * scale.c);
+}
+
+
+// Keep in mind:
+// We wouldnt be making simulation if we knew what was gonna happen 
+
 void run_func_allen_cahn(void* context)
 {
     const i32 _SIZE_X = 1024;
-    const i32 _SIZE_Y = 1024;
+    const i32 _SIZE_Y = _SIZE_X;
     
     const f32 _INITIAL_PHI = 1;
     const f32 _INITIAL_T = 0;
     const f32 _AROUND_PHI = 0;
     const f32 _AROUND_T = 0;
 
-    const i32 _INITIAL_SIZE_X = 128;
-    const i32 _INITIAL_SIZE_Y = 128;
+    const i32 _INITIAL_SIZE_X = _SIZE_X/8;
+    const i32 _INITIAL_SIZE_Y = _INITIAL_SIZE_X;
+    const i32 _INITIAL_RADIUS = _INITIAL_SIZE_X;
     
     const f32 _dt = 1.0f/200;
     const f32 _alpha = 0.5;
-    const f32 _L = 0.5;
-    const f32 _xi = 0.411f;
+    const f32 _L = 2;
+    const f32 _xi = 0.00411f;
     const f32 _a = 2;
-    const f32 _b = 0.5;
-    const f32 _beta = 0.5;
+    const f32 _b = 1;
+    const f32 _beta = 8;
     const f32 _Tm = 1;
+    const f32 _Tini = 0;
+    const f32 _L0 = 4;
 
     const f64 FREE_RUN_SYM_FPS = 100;
+
+    Allen_Cahn_Scale scale = {0};
+    scale.L0 = _L0 / (f32) _SIZE_X;
+    scale.Tini = _Tini;
+    scale.Tm = _Tm;
+    scale.c = 1;
+    scale.rho = 1;
+    scale.lambda = 1;
 
     Compute_Texture phi_map         = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
     Compute_Texture T_map           = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
     Compute_Texture next_phi_map    = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
     Compute_Texture next_T_map      = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
+    Compute_Texture output_phi_map  = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
+    Compute_Texture output_T_map    = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
 
     GLFWwindow* window = context;
     App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
@@ -113,9 +177,9 @@ void run_func_allen_cahn(void* context)
         {
             render_last_time = now;
             if(app->render_phi)
-                render_sci_texture(app, phi_map, 0, 1);
+                render_sci_texture(app, output_phi_map, 0, 1);
             else
-                render_sci_texture(app, T_map, 0, 1);
+                render_sci_texture(app, output_T_map, 0, 2);
         }
 
         if(now - fps_display_last_time > 1.0/FPS_DISPLAY_FREQ)
@@ -148,8 +212,13 @@ void run_func_allen_cahn(void* context)
 
             compute_texture_bind(phi_map, GL_WRITE_ONLY, 0);
             compute_texture_bind(T_map, GL_WRITE_ONLY, 1);
+
             compute_texture_bind(next_phi_map, GL_READ_ONLY, 2);
             compute_texture_bind(next_T_map, GL_READ_ONLY, 3);
+            
+            //for debug
+            compute_texture_bind(output_phi_map, GL_WRITE_ONLY, 4);
+            compute_texture_bind(output_T_map, GL_WRITE_ONLY, 5);
 
             f64 frame_start_time = clock_s();
             
@@ -160,19 +229,20 @@ void run_func_allen_cahn(void* context)
             render_shader_set_i32(&compute_shader, "_frame_i", frame_counter == 0 ? 0 : 1);
             render_shader_set_i32(&compute_shader, "_INITIAL_SIZE_X", _INITIAL_SIZE_X);
             render_shader_set_i32(&compute_shader, "_INITIAL_SIZE_Y", _INITIAL_SIZE_Y);
+            render_shader_set_i32(&compute_shader, "_INITIAL_RADIUS", _INITIAL_RADIUS);
             render_shader_set_f32(&compute_shader, "_INITIAL_PHI", _INITIAL_PHI);
             render_shader_set_f32(&compute_shader, "_INITIAL_T", _INITIAL_T);
             render_shader_set_f32(&compute_shader, "_AROUND_PHI", _AROUND_PHI);
             render_shader_set_f32(&compute_shader, "_AROUND_T", _AROUND_T);
 
             render_shader_set_f32(&compute_shader, "_dt", _dt);
-            render_shader_set_f32(&compute_shader, "_alpha", _alpha);
-            render_shader_set_f32(&compute_shader, "_L", _L);
-            render_shader_set_f32(&compute_shader, "_xi", _xi);
+            render_shader_set_f32(&compute_shader, "_L", allen_cahn_scale_latent_heat(_L, scale));
+            render_shader_set_f32(&compute_shader, "_xi", allen_cahn_scale_xi(_xi, scale));
             render_shader_set_f32(&compute_shader, "_a", _a);
             render_shader_set_f32(&compute_shader, "_b", _b);
-            render_shader_set_f32(&compute_shader, "_beta", _beta);
-            render_shader_set_f32(&compute_shader, "_Tm", _Tm);
+            render_shader_set_f32(&compute_shader, "_alpha", allen_cahn_scale_alpha(_alpha, scale));
+            render_shader_set_f32(&compute_shader, "_beta", allen_cahn_scale_latent_heat(_beta, scale));
+            //render_shader_set_f32(&compute_shader, "_Tm", _Tm);
             PERF_COUNTER_END(uniform_lookup_c);
             
             PERF_COUNTER_START(compute_shader_run_c);
