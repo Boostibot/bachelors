@@ -10,6 +10,8 @@
 #include "lib/allocator_malloc.h"
 #include "lib/error.h"
 #include "lib/time.h"
+#include "lib/image.h"
+#include "lib/format_netbpm.h"
 
 #include "gl.h"
 #include "gl_debug_output.h"
@@ -45,17 +47,38 @@ void app_state_init(App_State* state, GLFWwindow* window)
     state->render_phi = true;
 }
 
+typedef struct GL_Pixel_Format {
+    GLuint type;
+    GLuint format;
+    GLuint internal_format;
+    GLuint pixel_size;
+    GLuint channels;
+    Image_Pixel_Format equivalent;
+
+    bool unrepresentable;
+} GL_Pixel_Format;
+
 typedef struct Compute_Texture {
     GLuint id;
-    GLuint format;
-    GLuint channels;
-    GLuint pixel_type;
+    GL_Pixel_Format format;
+
+    i32 width;
+    i32 heigth;
 } Compute_Texture;
 
 void render_sci_texture(App_State* app, Compute_Texture texture, f32 min, f32 max);
-Compute_Texture compute_texture_make(isize width, isize heigth, GLuint type, GLuint channels);
 void compute_texture_bind(Compute_Texture texture, GLenum access, isize slot);
 void compute_texture_deinit(Compute_Texture* texture);
+GL_Pixel_Format gl_pixel_format_from_pixel_format(Image_Pixel_Format pixel_format, isize channels);
+Image_Pixel_Format pixel_format_from_gl_pixel_format(GL_Pixel_Format gl_format, isize* channels);
+Compute_Texture compute_texture_make_with(isize width, isize heigth, Image_Pixel_Format format, isize channels, const void* data);
+Compute_Texture compute_texture_make(isize width, isize heigth, Image_Pixel_Format type, isize channels);
+
+void compute_texture_set_pixels(Compute_Texture* texture, Image_Builder image);
+void compute_texture_get_pixels(Image_Builder* into, Compute_Texture texture);
+
+void compute_texture_set_pixels_converted(Compute_Texture* texture, Image_Builder image);
+void compute_texture_get_pixels_converted(Image_Builder* into, Compute_Texture texture);
 
 typedef struct Allen_Cahn_Scale {
     f32 L0;
@@ -104,17 +127,113 @@ f32 allen_cahn_scale_alpha(f32 alpha, Allen_Cahn_Scale scale)
     return alpha * scale.lambda / (scale.rho * scale.c);
 }
 
+typedef f32 (*RK4_Func)(f32 t, const f32 x, void* context);
 
-// Keep in mind:
-// We wouldnt be making simulation if we knew what was gonna happen 
+f32 runge_kutta4(f32 t_ini, f32 x_ini, f32 T, f32 tau_ini, f32 delta, RK4_Func f, void* context)
+{
+    f32 t = t_ini;
+    f32 tau = tau_ini;
+    f32 x = x_ini;
+
+    f32 n = 1;
+    for(bool last = true; last; )
+    {
+        if(fabsf(T - t) < fabs(tau))
+        {
+            tau = T - t;
+            last = true;
+        }
+        else
+        {
+            last = false;
+        }
+
+        f32 k1 = f(t, x, context);
+        f32 k2 = f(t + tau/3, x + tau/3*k1, context);
+        f32 k3 = f(t + tau/3, x + tau/6*(k1 + k2), context);
+        f32 k4 = f(t + tau/2, x + tau/8*(k1 + 3*k3), context);
+        f32 k5 = f(t + tau/1, x + tau*(0.5f*k1 - 1.5f*k3 + 2*k4), context);
+        
+        f32 epsilon = 0;
+        for(f32 i = 0; i < n; i++)
+        {
+            f32 curr = fabsf(0.2f*powf(k1, i) - 0.9f*powf(k3, i) + 0.8f*powf(k4, i) - 0.1f*powf(k5, i));
+            epsilon = MAX(epsilon, curr);
+        }
+
+        if(epsilon < delta)
+        {
+            x = x + tau*(1.0f/6*(k1 + k5) + 2.0f/3*k4);
+            t = t + tau;
+
+            if(last)
+                break;
+
+            if(epsilon == 0)
+                continue;
+        }
+
+        tau = powf(delta / epsilon, 0.2f)* 4.0f/5*tau;
+    }
+
+    return x;
+}
+
+f32 euler(f32 t_ini, f32 x_ini, f32 T, f32 tau, RK4_Func f, void* context)
+{
+    f32 t = t_ini;
+    f32 x = x_ini;
+
+    for(; t < T; )
+    {
+        f32 derx = f(t, x, context);
+        f32 x_next = x + tau*derx;
+
+        x = x_next;
+        t += tau;
+    }
+
+    return x;
+}
+
+f32 rk4_func_x(f32 t, const f32 x, void* context)
+{
+    (void) context;
+    (void) t;
+    return x;
+}
+
+
+void compare_rk4()
+{
+    f32 t_ini = 0;
+    f32 x_ini = 1;
+    f32 tau = 0.1f;
+
+    for(f32 T = 0; T < 5; T += 0.25f)
+    {
+        f32 euler_r = euler(t_ini, x_ini, T, tau, rk4_func_x, NULL);
+        f32 rk4_r = runge_kutta4(t_ini, x_ini, T, tau, 1, rk4_func_x, NULL);
+
+        LOG_INFO("compare_rk4", "T = %f euler: %f", T, euler_r);
+        LOG_INFO("compare_rk4", "T = %f runge: %f", T, rk4_r);
+    }
+}
 
 void run_func_allen_cahn(void* context)
 {
+    compare_rk4();
+
+    const i32 PAUSE_AFTER_SAVES = 100;
+    const i32 SAVE_EVERY = 64;
+    const char* const SAVE_FOLDER = "snapshots";
+    const char* const SAVE_PREFIX = "v1";
+
     const i32 _SIZE_X = 1024;
     const i32 _SIZE_Y = _SIZE_X;
     
     const f32 _INITIAL_PHI = 1;
-    const f32 _INITIAL_T = 0;
+    const f32 _INITIAL_T = 0.5;
     const f32 _AROUND_PHI = 0;
     const f32 _AROUND_T = 0;
 
@@ -143,21 +262,27 @@ void run_func_allen_cahn(void* context)
     scale.rho = 1;
     scale.lambda = 1;
 
-    Compute_Texture phi_map         = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
-    Compute_Texture T_map           = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
-    Compute_Texture next_phi_map    = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
-    Compute_Texture next_T_map      = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
-    Compute_Texture output_phi_map  = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
-    Compute_Texture output_T_map    = compute_texture_make(_SIZE_X, _SIZE_Y, GL_FLOAT, 1);
+    Compute_Texture phi_map         = compute_texture_make(_SIZE_X, _SIZE_Y, PIXEL_FORMAT_F32, 1);
+    Compute_Texture T_map           = compute_texture_make(_SIZE_X, _SIZE_Y, PIXEL_FORMAT_F32, 1);
+    Compute_Texture next_phi_map    = compute_texture_make(_SIZE_X, _SIZE_Y, PIXEL_FORMAT_F32, 1);
+    Compute_Texture next_T_map      = compute_texture_make(_SIZE_X, _SIZE_Y, PIXEL_FORMAT_F32, 1);
+    Compute_Texture output_phi_map  = compute_texture_make(_SIZE_X, _SIZE_Y, PIXEL_FORMAT_F32, 1);
+    Compute_Texture output_T_map    = compute_texture_make(_SIZE_X, _SIZE_Y, PIXEL_FORMAT_F32, 1);
 
     GLFWwindow* window = context;
     App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
+
+    platform_directory_create(SAVE_FOLDER);
+
+    Platform_Calendar_Time calendar_time = platform_epoch_time_to_calendar_time(platform_local_epoch_time());
+    String_Builder serialized_image = {0};
 
     Render_Shader compute_shader = {0};
 
     Error error = compute_shader_init_from_disk(&compute_shader, STRING("shaders/allen_cahn.comp"), WORK_GROUP_SIZE_X, WORK_GROUP_SIZE_Y, WORK_GROUP_SIZE_Z);
     TEST_MSG(error_is_ok(error), "Error while loading shaders!");
 
+    i64 save_counter = 0;
     i64 frame_counter = 0;
     f64 frame_time_sum = 0;
     
@@ -210,11 +335,11 @@ void run_func_allen_cahn(void* context)
             simulated_last_time = now;
             app->remaining_steps -= 1;
 
-            compute_texture_bind(phi_map, GL_WRITE_ONLY, 0);
-            compute_texture_bind(T_map, GL_WRITE_ONLY, 1);
+            compute_texture_bind(phi_map, GL_READ_ONLY, 0);
+            compute_texture_bind(T_map, GL_READ_ONLY, 1);
 
-            compute_texture_bind(next_phi_map, GL_READ_ONLY, 2);
-            compute_texture_bind(next_T_map, GL_READ_ONLY, 3);
+            compute_texture_bind(next_phi_map, GL_WRITE_ONLY, 2);
+            compute_texture_bind(next_T_map, GL_WRITE_ONLY, 3);
             
             //for debug
             compute_texture_bind(output_phi_map, GL_WRITE_ONLY, 4);
@@ -254,12 +379,57 @@ void run_func_allen_cahn(void* context)
             f64 end_start_time = clock_s();
 
             f64 delta = end_start_time - frame_start_time;
+            
+            if(SAVE_EVERY > 0 && frame_counter % SAVE_EVERY == 0)
+            {
+                PERF_COUNTER_START(image_saving);
+                Image_Builder pixels = {0};
+                String file_name = {0};
+                image_builder_init(&pixels, NULL, 1, PIXEL_FORMAT_U8);
+
+                {
+                    compute_texture_get_pixels_converted(&pixels, next_phi_map);
+                    netbpm_format_pgm_write_into(&serialized_image, image_from_builder(pixels));
+                
+                    file_name = format_ephemeral("%s/%s_%lld-%lld-%lld_%lld-%lld-%lld_iter_%lld_phi.pgm", SAVE_FOLDER, SAVE_PREFIX, 
+                        (lli) calendar_time.year, (lli) calendar_time.month, (lli) calendar_time.day, 
+                        (lli) calendar_time.hour, (lli) calendar_time.minute, (lli) calendar_time.second, 
+                        (lli) frame_counter);
+
+                    file_write_entire(file_name, string_from_builder(serialized_image));
+                }
+
+                {
+                    compute_texture_get_pixels_converted(&pixels, next_T_map);
+                    netbpm_format_pgm_write_into(&serialized_image, image_from_builder(pixels));
+                
+                    file_name = format_ephemeral("%s/%s_%lld-%lld-%lld_%lld-%lld-%lld_iter_%lld_T.pgm", SAVE_FOLDER, SAVE_PREFIX, 
+                        (lli) calendar_time.year, (lli) calendar_time.month, (lli) calendar_time.day, 
+                        (lli) calendar_time.hour, (lli) calendar_time.minute, (lli) calendar_time.second, 
+                        (lli) frame_counter);
+
+                    file_write_entire(file_name, string_from_builder(serialized_image));
+                }
+
+                image_builder_deinit(&pixels);
+                PERF_COUNTER_END(image_saving);
+                
+                save_counter ++;
+                if(save_counter > PAUSE_AFTER_SAVES)
+                {
+                    save_counter = 0;
+                    app->is_in_step_mode = true;
+                    app->remaining_steps = 0;
+                }
+            }
+
             frame_time_sum += delta;
             frame_counter += 1;
             simulation_time_sum += _dt;
 
             SWAP(&phi_map, &next_phi_map, Compute_Texture);
             SWAP(&T_map, &next_T_map, Compute_Texture);
+
         }
         
 		glfwPollEvents();
@@ -276,7 +446,7 @@ void* glfw_malloc_func(size_t size, void* user);
 void* glfw_realloc_func(void* block, size_t size, void* user);
 void glfw_free_func(void* block, void* user);
 void glfw_error_func(int code, const char* description);
-void glfw_resize_func(GLFWwindow* window, int width, int height);
+void glfw_resize_func(GLFWwindow* window, int width, int heigth);
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
 
 void run_func(void* context);
@@ -378,12 +548,12 @@ void glfw_error_func(int code, const char* description)
 {
     LOG_ERROR("APP", "GLWF error %d with message: %s", code, description);
 }
-void glfw_resize_func(GLFWwindow* window, int width, int height)
+void glfw_resize_func(GLFWwindow* window, int width, int heigth)
 {
     (void) window;
 	// make sure the viewport matches the new window dimensions; note that width and 
-	// height will be significantly larger than specified on retina displays.
-	glViewport(0, 0, width, height);
+	// heigth will be significantly larger than specified on retina displays.
+	glViewport(0, 0, width, heigth);
 }
 
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -638,36 +808,130 @@ void render_sci_texture(App_State* app, Compute_Texture texture, f32 min, f32 ma
     glfwSwapBuffers(app->window);
 }
 
-Compute_Texture compute_texture_make(isize width, isize heigth, GLuint type, GLuint channels)
-{
-    GLuint format = GL_RGBA;
-    GLuint internal_format = 0;
 
-    ASSERT(type == GL_FLOAT);
+
+
+GL_Pixel_Format gl_pixel_format_from_pixel_format(Image_Pixel_Format pixel_format, isize channels)
+{
+    GL_Pixel_Format error_format = {0};
+    error_format.unrepresentable = true;
+    
+    GL_Pixel_Format out = {0};
+    GLuint channel_size = 0;
+    
     switch(channels)
     {
-        default:
-        case 1: 
-            format = GL_RED;
-            internal_format = GL_R32F; 
-        break;
-
-        case 2: 
-            format =  GL_RG;
-            internal_format = GL_RG32F; 
-        break;
-
-        case 3: 
-            format =  GL_RGB;
-            internal_format = GL_RGB32F; 
-        break;
-
-        case 4: 
-            format =  GL_RGBA;
-            internal_format = GL_RGBA32F; 
-        break;
+        case 1: out.format = GL_RED; break;
+        case 2: out.format =  GL_RG; break;
+        case 3: out.format =  GL_RGB; break;
+        case 4: out.format =  GL_RGBA; break;
+        
+        default: return error_format;
     }
 
+    switch(pixel_format)
+    {
+        case PIXEL_FORMAT_U8: {
+            channel_size = 1;
+            out.type = GL_UNSIGNED_BYTE;
+            switch(channels)
+            {
+                case 1: out.internal_format = GL_R8UI; break;
+                case 2: out.internal_format = GL_RG8UI; break;
+                case 3: out.internal_format = GL_RGB8UI; break;
+                case 4: out.internal_format = GL_RGBA8UI; break;
+            }
+        } break;
+        
+        case PIXEL_FORMAT_U16: {
+            channel_size = 2;
+            out.type = GL_UNSIGNED_SHORT;
+            switch(channels)
+            {
+                case 1: out.internal_format = GL_R16UI; break;
+                case 2: out.internal_format = GL_RG16UI; break;
+                case 3: out.internal_format = GL_RGB16UI; break;
+                case 4: out.internal_format = GL_RGBA16UI; break;
+            }
+        } break;
+        
+        case PIXEL_FORMAT_U32: {
+            channel_size = 4;
+            out.type = GL_UNSIGNED_INT;
+            switch(channels)
+            {
+                case 1: out.internal_format = GL_R32UI; break;
+                case 2: out.internal_format = GL_RG32UI; break;
+                case 3: out.internal_format = GL_RGB32UI; break;
+                case 4: out.internal_format = GL_RGBA32UI; break;
+            }
+        } break;
+        
+        case PIXEL_FORMAT_F32: {
+            channel_size = 4;
+            out.type = GL_FLOAT;
+            switch(channels)
+            {
+                case 1: out.internal_format = GL_R32F; break;
+                case 2: out.internal_format = GL_RG32F; break;
+                case 3: out.internal_format = GL_RGB32F; break;
+                case 4: out.internal_format = GL_RGBA32F; break;
+            }
+        } break;
+        
+        case PIXEL_FORMAT_U24: 
+        default: return error_format;
+    }
+
+    out.channels = (i32) channels;
+    out.pixel_size = out.channels * channel_size;
+    out.equivalent = pixel_format;
+    return out;
+}
+
+Image_Pixel_Format pixel_format_from_gl_pixel_format(GL_Pixel_Format gl_format, isize* channels)
+{
+    switch(gl_format.internal_format)
+    {
+        case GL_R8UI: *channels = 1; return PIXEL_FORMAT_U8;
+        case GL_RG8UI: *channels = 2; return PIXEL_FORMAT_U8;
+        case GL_RGB8UI: *channels = 3; return PIXEL_FORMAT_U8;
+        case GL_RGBA8UI: *channels = 4; return PIXEL_FORMAT_U8;
+
+        case GL_R16UI: *channels = 1; return PIXEL_FORMAT_U16;
+        case GL_RG16UI: *channels = 2; return PIXEL_FORMAT_U16;
+        case GL_RGB16UI: *channels = 3; return PIXEL_FORMAT_U16;
+        case GL_RGBA16UI: *channels = 4; return PIXEL_FORMAT_U16;
+
+        case GL_R32UI: *channels = 1; return PIXEL_FORMAT_U32;
+        case GL_RG32UI: *channels = 2; return PIXEL_FORMAT_U32;
+        case GL_RGB32UI: *channels = 3; return PIXEL_FORMAT_U32;
+        case GL_RGBA32UI: *channels = 4; return PIXEL_FORMAT_U32;
+
+        case GL_R32F: *channels = 1; return PIXEL_FORMAT_F32;
+        case GL_RG32F: *channels = 2; return PIXEL_FORMAT_F32;
+        case GL_RGB32F: *channels = 3; return PIXEL_FORMAT_F32;
+        case GL_RGBA32F: *channels = 4; return PIXEL_FORMAT_F32;
+    }
+    
+    *channels = gl_format.channels;
+    switch(gl_format.type)
+    {
+        case GL_UNSIGNED_BYTE: return PIXEL_FORMAT_U8;
+        case GL_UNSIGNED_SHORT: return PIXEL_FORMAT_U16;
+        case GL_UNSIGNED_INT: return PIXEL_FORMAT_U32;
+        case GL_FLOAT: return PIXEL_FORMAT_F32;
+    }
+    
+    *channels = 0;
+    return (Image_Pixel_Format) 0; 
+}
+
+Compute_Texture compute_texture_make_with(isize width, isize heigth, Image_Pixel_Format format, isize channels, const void* data)
+{
+    GL_Pixel_Format pixel_format = gl_pixel_format_from_pixel_format(format, channels);
+    ASSERT(pixel_format.unrepresentable == false);
+    
     Compute_Texture tex = {0};
 	glGenTextures(1, &tex.id);
 	glActiveTexture(GL_TEXTURE0);
@@ -676,19 +940,24 @@ Compute_Texture compute_texture_make(isize width, isize heigth, GLuint type, GLu
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexImage2D(GL_TEXTURE_2D, 0, internal_format, (GLuint) width, (GLuint) heigth, 0, format, type, NULL);
-    
-    tex.format = internal_format;
-    tex.channels = channels;
-    tex.pixel_type = type;
+	glTexImage2D(GL_TEXTURE_2D, 0, pixel_format.internal_format, (GLuint) width, (GLuint) heigth, 0, pixel_format.format, pixel_format.type, data);
+
+    tex.format = pixel_format;
+    tex.width = (i32) width;
+    tex.heigth = (i32) heigth;
 
 	glBindTexture(GL_TEXTURE_2D, 0);
     return tex;
 }
 
+Compute_Texture compute_texture_make(isize width, isize heigth, Image_Pixel_Format type, isize channels)
+{
+    return compute_texture_make_with(width, heigth, type, channels, NULL);
+}
+
 void compute_texture_bind(Compute_Texture texture, GLenum access, isize slot)
 {
-	glBindImageTexture((GLuint) slot, texture.id, 0, GL_FALSE, 0, access, texture.format);
+	glBindImageTexture((GLuint) slot, texture.id, 0, GL_FALSE, 0, access, texture.format.internal_format);
     glBindTextureUnit((i32) slot, texture.id);
 }
 
@@ -696,4 +965,41 @@ void compute_texture_deinit(Compute_Texture* texture)
 {
     glDeleteTextures(1, &texture->id);
     memset(texture, 0, sizeof *texture);
+}
+
+void compute_texture_set_pixels(Compute_Texture* texture, Image_Builder image)
+{
+    compute_texture_deinit(texture);
+    *texture = compute_texture_make_with(image.width, image.height, image.pixel_format, image_builder_channel_count(image), image.pixels);
+}
+
+void compute_texture_get_pixels(Image_Builder* into, Compute_Texture texture)
+{
+    image_builder_init(into, into->allocator, texture.format.channels, texture.format.equivalent);
+    image_builder_resize(into, (i32) texture.width, (i32) texture.heigth);
+
+    glGetTextureImage(texture.id, 0, texture.format.format, texture.format.type, (GLsizei) image_builder_all_pixels_size(*into), into->pixels);
+}
+
+void compute_texture_set_pixels_converted(Compute_Texture* texture, Image_Builder image)
+{
+    if(texture->width != image.width || texture->heigth != image.height)
+    {
+        Image_Pixel_Format prev_pixe_format = texture->format.equivalent;
+        isize prev_channel_count = texture->format.channels;
+
+        compute_texture_deinit(texture);
+        *texture = compute_texture_make(image.width, image.height, prev_pixe_format, prev_channel_count);
+    }
+
+    GL_Pixel_Format gl_format = gl_pixel_format_from_pixel_format(image.pixel_format, image_builder_channel_count(image));
+    glTextureSubImage2D(texture->id, 0, 0, 0, image.width, image.height, gl_format.format, gl_format.type, image.pixels);
+}
+
+void compute_texture_get_pixels_converted(Image_Builder* into, Compute_Texture texture)
+{
+    image_builder_resize(into, (i32) texture.width, (i32) texture.heigth);
+    GL_Pixel_Format gl_format = gl_pixel_format_from_pixel_format(into->pixel_format, image_builder_channel_count(*into));
+    
+    glGetTextureImage(texture.id, 0, gl_format.format, gl_format.type, (GLsizei) image_builder_all_pixels_size(*into), into->pixels);
 }

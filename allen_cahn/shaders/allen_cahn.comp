@@ -82,7 +82,7 @@ void main()
 	int x = center.x;
 	int y = center.y;
 	
-	float phi_next = 0;
+	float phi_next = 1;
 	float T_next = 0;
 
 	float output_phi = 0;

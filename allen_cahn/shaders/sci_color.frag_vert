@@ -13,7 +13,8 @@
         float minVal = _min;
         float maxVal = _max;
 
-        vec3 texCol = texture(tex, uv).rgb;      
+        vec2 reverse_uv = vec2(uv.x, uv.y);
+        vec3 texCol = texture(tex, reverse_uv).rgb;      
         float val = texCol.r;
         val = min(max(val, minVal), maxVal- 0.0001);
         float d = maxVal - minVal;
