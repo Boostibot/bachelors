@@ -139,7 +139,7 @@ void main()
 			+ tau*(T_px - T)
 			+ tau*(T_mx - T);
 
-		vec2 grad_phi = vec2(
+		vec2 grad_phi = 0.5*vec2(
 			(phi_px - phi_mx),
 			(phi_py - phi_my)
 		);

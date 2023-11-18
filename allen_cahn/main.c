@@ -129,14 +129,15 @@ f32 allen_cahn_scale_alpha(f32 alpha, Allen_Cahn_Scale scale)
 
 typedef f32 (*RK4_Func)(f32 t, const f32 x, void* context);
 
-f32 runge_kutta4(f32 t_ini, f32 x_ini, f32 T, f32 tau_ini, f32 delta, RK4_Func f, void* context)
+f32 runge_kutta4_var(f32 t_ini, f32 x_ini, f32 T, f32 tau_ini, f32 delta, RK4_Func f, void* context)
 {
+    (void) delta;
     f32 t = t_ini;
     f32 tau = tau_ini;
     f32 x = x_ini;
 
     f32 n = 1;
-    for(bool last = true; last; )
+    for(bool last = false; !last; )
     {
         if(fabsf(T - t) < fabs(tau))
         {
@@ -161,7 +162,7 @@ f32 runge_kutta4(f32 t_ini, f32 x_ini, f32 T, f32 tau_ini, f32 delta, RK4_Func f
             epsilon = MAX(epsilon, curr);
         }
 
-        if(epsilon < delta)
+        //if(epsilon < delta)
         {
             x = x + tau*(1.0f/6*(k1 + k5) + 2.0f/3*k4);
             t = t + tau;
@@ -173,9 +174,26 @@ f32 runge_kutta4(f32 t_ini, f32 x_ini, f32 T, f32 tau_ini, f32 delta, RK4_Func f
                 continue;
         }
 
-        tau = powf(delta / epsilon, 0.2f)* 4.0f/5*tau;
+        //tau = powf(delta / epsilon, 0.2f)* 4.0f/5*tau;
     }
 
+    return x;
+}
+
+f32 runge_kutta4(f32 t_ini, f32 x_ini, f32 T, f32 tau, RK4_Func f, void* context)
+{
+    f32 x = x_ini;
+    for (f32 t = t_ini; t <= T; t += tau)
+    {
+        f32 k1 = tau*f(t, x, context);
+        f32 k2 = tau*f(t + 0.5f*tau, x + 0.5f*k1, context);
+        f32 k3 = tau*f(t + 0.5f*tau, x + 0.5f*k2, context);
+        f32 k4 = tau*f(t + tau, x + k3, context);
+  
+        f32 x_next = x + (k1 + 2*k2 + 2*k3 + k4)/6;
+        x = x_next;  
+    }
+  
     return x;
 }
 
@@ -184,9 +202,27 @@ f32 euler(f32 t_ini, f32 x_ini, f32 T, f32 tau, RK4_Func f, void* context)
     f32 t = t_ini;
     f32 x = x_ini;
 
-    for(; t < T; )
+    for(; t <= T; )
     {
         f32 derx = f(t, x, context);
+        f32 x_next = x + tau*derx;
+
+        x = x_next;
+        t += tau;
+    }
+
+    return x;
+}
+
+
+f32 semi_euler(f32 t_ini, f32 x_ini, f32 T, f32 tau, RK4_Func f, void* context)
+{
+    f32 t = t_ini;
+    f32 x = x_ini;
+
+    for(; t <= T; )
+    {
+        f32 derx = f(t + tau, x, context);
         f32 x_next = x + tau*derx;
 
         x = x_next;
@@ -199,24 +235,32 @@ f32 euler(f32 t_ini, f32 x_ini, f32 T, f32 tau, RK4_Func f, void* context)
 f32 rk4_func_x(f32 t, const f32 x, void* context)
 {
     (void) context;
-    (void) t;
-    return x;
+    (void) x;
+    return t;
 }
-
 
 void compare_rk4()
 {
     f32 t_ini = 0;
-    f32 x_ini = 1;
-    f32 tau = 0.1f;
+    f32 x_ini = 0;
+    f32 tau = 0.001f;
 
-    for(f32 T = 0; T < 5; T += 0.25f)
+    for(f32 T = 0; T < 5; T += 0.5f)
     {
         f32 euler_r = euler(t_ini, x_ini, T, tau, rk4_func_x, NULL);
-        f32 rk4_r = runge_kutta4(t_ini, x_ini, T, tau, 1, rk4_func_x, NULL);
+        f32 semi_euler_r = semi_euler(t_ini, x_ini, T, tau, rk4_func_x, NULL);
+        f32 rk4_var_r = runge_kutta4_var(t_ini, x_ini, T, tau, 0.01f, rk4_func_x, NULL);
+        f32 rk4_r = runge_kutta4(t_ini, x_ini, T, tau, rk4_func_x, NULL);
+        f32 exact_r = T*T/2;
 
-        LOG_INFO("compare_rk4", "T = %f euler: %f", T, euler_r);
-        LOG_INFO("compare_rk4", "T = %f runge: %f", T, rk4_r);
+        LOG_INFO("RK4", "T = %f", T);
+        log_group_push();
+            LOG_INFO("RK4", "exact:         %f", exact_r);
+            LOG_INFO("RK4", "euler:         %f", euler_r);
+            LOG_INFO("RK4", "semi_euler:    %f", semi_euler_r);
+            LOG_INFO("RK4", "rk4_var_r:     %f", rk4_var_r);
+            LOG_INFO("RK4", "rk4_r:         %f", rk4_r);
+        log_group_pop();
     }
 }
 
@@ -224,8 +268,8 @@ void run_func_allen_cahn(void* context)
 {
     compare_rk4();
 
-    const i32 PAUSE_AFTER_SAVES = 100;
-    const i32 SAVE_EVERY = 64;
+    const i32 PAUSE_AFTER_SAVES = 3;
+    const i32 SAVE_EVERY = -1;
     const char* const SAVE_FOLDER = "snapshots";
     const char* const SAVE_PREFIX = "v1";
 
