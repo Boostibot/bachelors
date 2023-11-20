@@ -137,8 +137,9 @@ f32 runge_kutta4_var(f32 t_ini, f32 x_ini, f32 T, f32 tau_ini, f32 delta, RK4_Fu
     f32 x = x_ini;
 
     f32 n = 1;
-    for(bool last = false; !last; )
+    for(;;)
     {
+        bool last = false;
         if(fabsf(T - t) < fabs(tau))
         {
             tau = T - t;
@@ -158,7 +159,7 @@ f32 runge_kutta4_var(f32 t_ini, f32 x_ini, f32 T, f32 tau_ini, f32 delta, RK4_Fu
         f32 epsilon = 0;
         for(f32 i = 0; i < n; i++)
         {
-            f32 curr = fabsf(0.2f*powf(k1, i) - 0.9f*powf(k3, i) + 0.8f*powf(k4, i) - 0.1f*powf(k5, i));
+            f32 curr = fabsf(0.2f*k1 - 0.9f*k3 + 0.8f*k4 - 0.1f*k5);
             epsilon = MAX(epsilon, curr);
         }
 
