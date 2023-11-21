@@ -745,6 +745,7 @@ void log_allocator_stats(const char* log_module, Log_Type log_type, Allocator_St
 
     array_deinit(&formatted);
 }
+
 EXPORT void allocator_out_of_memory(
     Allocator* allocator, isize new_size, void* old_ptr, isize old_size, isize align, 
     Source_Info called_from, const char* format_string, ...)

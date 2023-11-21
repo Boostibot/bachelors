@@ -1,0 +1,7 @@
+x64/
+.vs/
+resources/ignored/*
+logs/
+resources/HDR_041_Path.hdr
+snapshots/
+main.i
