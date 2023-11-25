@@ -1,8 +1,6 @@
 
-#define LIB_ALL_IMPL
-#define GLAD_GL_IMPLEMENTATION
-//#define DEBUG
-//#define LIB_MEM_DEBUG
+#define JOT_ALL_IMPL
+//#define JOT_MEM_DEBUG
 
 #include "lib/log.h"
 #include "lib/logger_file.h"
@@ -13,9 +11,10 @@
 #include "lib/image.h"
 #include "lib/format_netbpm.h"
 
-#include "gl.h"
-#include "gl_debug_output.h"
-#include "gl_shader_util.h"
+#include "gl_utils/gl.h"
+#include "gl_utils/gl_debug_output.h"
+#include "gl_utils/gl_shader_util.h"
+#include "gl_utils/gl_pixel_format.h"
 
 #include "glfw/glfw3.h"
 
@@ -46,17 +45,6 @@ void app_state_init(App_State* state, GLFWwindow* window)
     state->step_by = 1;
     state->render_phi = true;
 }
-
-typedef struct GL_Pixel_Format {
-    GLuint type;
-    GLuint format;
-    GLuint internal_format;
-    GLuint pixel_size;
-    GLuint channels;
-    Image_Pixel_Format equivalent;
-
-    bool unrepresentable;
-} GL_Pixel_Format;
 
 typedef struct Compute_Texture {
     GLuint id;
@@ -649,26 +637,6 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
     }
 }
 
-EXPORT void assertion_report(const char* expression, Source_Info info, const char* message, ...)
-{
-    LOG_FATAL("TEST", "TEST(%s) TEST/ASSERTION failed! " SOURCE_INFO_FMT, expression, SOURCE_INFO_PRINT(info));
-    if(message != NULL && strlen(message) != 0)
-    {
-        LOG_FATAL("TEST", "with message:\n", message);
-        va_list args;
-        va_start(args, message);
-        vlog_message("TEST", LOG_TYPE_FATAL, SOURCE_INFO(), message, args);
-        va_end(args);
-    }
-        
-    log_group_push();
-    log_callstack("TEST", LOG_TYPE_FATAL, -1, 1);
-    log_group_pop();
-    log_flush_all();
-
-    platform_abort();
-}
-
 void error_func(void* context, Platform_Sandox_Error error_code)
 {
     (void) context;
@@ -680,125 +648,6 @@ void error_func(void* context, Platform_Sandox_Error error_code)
     log_callstack("APP", LOG_TYPE_ERROR, -1, 1);
     log_group_pop();
 }
-
-const char* get_memory_unit(isize bytes, isize *unit_or_null)
-{
-    isize GB = (isize) 1000*1000*1000;
-    isize MB = (isize) 1000*1000;
-    isize KB = (isize) 1000;
-    isize B = (isize) 1;
-
-    const char* out = "";
-    isize unit = 1;
-
-    if(bytes > GB)
-    {
-        out = "GB";
-        unit = GB;
-    }
-    else if(bytes > MB)
-    {
-        out = "MB";
-        unit = MB;
-    }
-    else if(bytes > KB)
-    {
-        out = "KB";
-        unit = KB;
-    }
-    else
-    {
-        out = "B";
-        unit = B;
-    }
-
-    if(unit_or_null)
-        *unit_or_null = unit;
-
-    return out;
-}
-
-const char* format_memory_unit_ephemeral(isize bytes)
-{
-    isize unit = 1;
-    static String_Builder formatted = {0};
-    if(formatted.allocator == NULL)
-        array_init(&formatted, allocator_get_static());
-
-    const char* unit_text = get_memory_unit(bytes, &unit);
-    f64 ratio = (f64) bytes / (f64) unit;
-    format_into(&formatted, "%.1lf %s", ratio, unit_text);
-
-    return formatted.data;
-}
-
-void log_allocator_stats(const char* log_module, Log_Type log_type, Allocator_Stats stats)
-{
-    String_Builder formatted = {0};
-    array_init_backed(&formatted, NULL, 512);
-
-    LOG(log_module, log_type, "bytes_allocated: %s", format_memory_unit_ephemeral(stats.bytes_allocated));
-    LOG(log_module, log_type, "max_bytes_allocated: %s", format_memory_unit_ephemeral(stats.max_bytes_allocated));
-    LOG(log_module, log_type, "allocation_count: %lli", (lli) stats.allocation_count);
-    LOG(log_module, log_type, "deallocation_count: %lli", (lli) stats.deallocation_count);
-    LOG(log_module, log_type, "reallocation_count: %lli", (lli) stats.reallocation_count);
-
-    array_deinit(&formatted);
-}
-
-EXPORT void allocator_out_of_memory(
-    Allocator* allocator, isize new_size, void* old_ptr, isize old_size, isize align, 
-    Source_Info called_from, const char* format_string, ...)
-{
-    Allocator_Stats stats = {0};
-    if(allocator != NULL && allocator->get_stats != NULL)
-        stats = allocator_get_stats(allocator);
-        
-    if(stats.type_name == NULL)
-        stats.type_name = "<no type name>";
-
-    if(stats.name == NULL)
-        stats.name = "<no name>";
-    
-    String_Builder user_message = {0};
-    array_init_backed(&user_message, allocator_get_scratch(), 1024);
-    
-    va_list args;
-    va_start(args, format_string);
-    vformat_into(&user_message, format_string, args);
-    va_end(args);
-
-    LOG_FATAL("MEMORY", 
-        "Allocator %s %s ran out of memory\n"
-        "new_size:    %lli B\n"
-        "old_ptr:     %p\n"
-        "old_size:    %lli B\n"
-        "align:       %lli B\n"
-        "called from: " SOURCE_INFO_FMT "\n"
-        "user message:\n%s",
-        stats.type_name, stats.name, 
-        (lli) new_size, 
-        old_ptr,
-        (lli) old_size,
-        (lli) align,
-        SOURCE_INFO_PRINT(called_from),
-        cstring_from_builder(user_message)
-    );
-    
-    LOG_FATAL("MEMORY", "Allocator_Stats:");
-    log_group_push();
-        log_allocator_stats("MEMORY", LOG_TYPE_FATAL, stats);
-    log_group_pop();
-    
-    log_group_push();
-        log_callstack("MEMORY", LOG_TYPE_FATAL, -1, 1);
-    log_group_pop();
-
-    log_flush_all();
-    platform_trap(); 
-    platform_abort();
-}
-
 
 void render_screen_quad()
 {
@@ -852,125 +701,6 @@ void render_sci_texture(App_State* app, Compute_Texture texture, f32 min, f32 ma
         render_shader_deinit(&sci_shader);
 
     glfwSwapBuffers(app->window);
-}
-
-
-
-
-GL_Pixel_Format gl_pixel_format_from_pixel_format(Image_Pixel_Format pixel_format, isize channels)
-{
-    GL_Pixel_Format error_format = {0};
-    error_format.unrepresentable = true;
-    
-    GL_Pixel_Format out = {0};
-    GLuint channel_size = 0;
-    
-    switch(channels)
-    {
-        case 1: out.format = GL_RED; break;
-        case 2: out.format =  GL_RG; break;
-        case 3: out.format =  GL_RGB; break;
-        case 4: out.format =  GL_RGBA; break;
-        
-        default: return error_format;
-    }
-
-    switch(pixel_format)
-    {
-        case PIXEL_FORMAT_U8: {
-            channel_size = 1;
-            out.type = GL_UNSIGNED_BYTE;
-            switch(channels)
-            {
-                case 1: out.internal_format = GL_R8UI; break;
-                case 2: out.internal_format = GL_RG8UI; break;
-                case 3: out.internal_format = GL_RGB8UI; break;
-                case 4: out.internal_format = GL_RGBA8UI; break;
-            }
-        } break;
-        
-        case PIXEL_FORMAT_U16: {
-            channel_size = 2;
-            out.type = GL_UNSIGNED_SHORT;
-            switch(channels)
-            {
-                case 1: out.internal_format = GL_R16UI; break;
-                case 2: out.internal_format = GL_RG16UI; break;
-                case 3: out.internal_format = GL_RGB16UI; break;
-                case 4: out.internal_format = GL_RGBA16UI; break;
-            }
-        } break;
-        
-        case PIXEL_FORMAT_U32: {
-            channel_size = 4;
-            out.type = GL_UNSIGNED_INT;
-            switch(channels)
-            {
-                case 1: out.internal_format = GL_R32UI; break;
-                case 2: out.internal_format = GL_RG32UI; break;
-                case 3: out.internal_format = GL_RGB32UI; break;
-                case 4: out.internal_format = GL_RGBA32UI; break;
-            }
-        } break;
-        
-        case PIXEL_FORMAT_F32: {
-            channel_size = 4;
-            out.type = GL_FLOAT;
-            switch(channels)
-            {
-                case 1: out.internal_format = GL_R32F; break;
-                case 2: out.internal_format = GL_RG32F; break;
-                case 3: out.internal_format = GL_RGB32F; break;
-                case 4: out.internal_format = GL_RGBA32F; break;
-            }
-        } break;
-        
-        case PIXEL_FORMAT_U24: 
-        default: return error_format;
-    }
-
-    out.channels = (i32) channels;
-    out.pixel_size = out.channels * channel_size;
-    out.equivalent = pixel_format;
-    return out;
-}
-
-Image_Pixel_Format pixel_format_from_gl_pixel_format(GL_Pixel_Format gl_format, isize* channels)
-{
-    switch(gl_format.internal_format)
-    {
-        case GL_R8UI: *channels = 1; return PIXEL_FORMAT_U8;
-        case GL_RG8UI: *channels = 2; return PIXEL_FORMAT_U8;
-        case GL_RGB8UI: *channels = 3; return PIXEL_FORMAT_U8;
-        case GL_RGBA8UI: *channels = 4; return PIXEL_FORMAT_U8;
-
-        case GL_R16UI: *channels = 1; return PIXEL_FORMAT_U16;
-        case GL_RG16UI: *channels = 2; return PIXEL_FORMAT_U16;
-        case GL_RGB16UI: *channels = 3; return PIXEL_FORMAT_U16;
-        case GL_RGBA16UI: *channels = 4; return PIXEL_FORMAT_U16;
-
-        case GL_R32UI: *channels = 1; return PIXEL_FORMAT_U32;
-        case GL_RG32UI: *channels = 2; return PIXEL_FORMAT_U32;
-        case GL_RGB32UI: *channels = 3; return PIXEL_FORMAT_U32;
-        case GL_RGBA32UI: *channels = 4; return PIXEL_FORMAT_U32;
-
-        case GL_R32F: *channels = 1; return PIXEL_FORMAT_F32;
-        case GL_RG32F: *channels = 2; return PIXEL_FORMAT_F32;
-        case GL_RGB32F: *channels = 3; return PIXEL_FORMAT_F32;
-        case GL_RGBA32F: *channels = 4; return PIXEL_FORMAT_F32;
-    }
-    
-    *channels = gl_format.channels;
-    switch(gl_format.type)
-    {
-        case GL_UNSIGNED_BYTE: return PIXEL_FORMAT_U8;
-        case GL_UNSIGNED_SHORT: return PIXEL_FORMAT_U16;
-        case GL_UNSIGNED_INT: return PIXEL_FORMAT_U32;
-        case GL_FLOAT: return PIXEL_FORMAT_F32;
-    }
-    
-    *channels = 0;
-    return (Image_Pixel_Format) 0; 
 }
 
 Compute_Texture compute_texture_make_with(isize width, isize heigth, Image_Pixel_Format format, isize channels, const void* data)

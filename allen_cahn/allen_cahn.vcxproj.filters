@@ -19,6 +19,9 @@
     <Filter Include="shaders">
       <UniqueIdentifier>{9d1eb5bf-7696-420e-90b4-cadeddd51c9d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="gl_filter">
+      <UniqueIdentifier>{c27d30a0-1174-4889-987f-e3e501e5ded5}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.c">
@@ -29,18 +32,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="gl.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="gl_debug_output.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="gl_shader_util.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="gl_texture_util.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="temp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -196,6 +187,24 @@
     </ClInclude>
     <ClInclude Include="lib\_test_random.h">
       <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl.h">
+      <Filter>gl_filter</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_debug_output.h">
+      <Filter>gl_filter</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_frame_buffers.h">
+      <Filter>gl_filter</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_pixel_format.h">
+      <Filter>gl_filter</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_shader_util.h">
+      <Filter>gl_filter</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_texture_util.h">
+      <Filter>gl_filter</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
