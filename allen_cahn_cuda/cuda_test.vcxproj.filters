@@ -1,0 +1,230 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="lib">
+      <UniqueIdentifier>{4b278728-d4d5-4f2b-89bb-b3492306d232}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="gl_uitls">
+      <UniqueIdentifier>{a038fe40-d7fa-49a0-9e7a-1b81626c0f7a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="local">
+      <UniqueIdentifier>{42cb385a-49fd-4101-8343-39e7bbd69a16}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="shaders">
+      <UniqueIdentifier>{80c71c51-516a-46ae-8efb-da2f7c7ff5c6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="cuprintf.cuh">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="integration_methods.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="config.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\allocator_stack.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\allocator_wrapper.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\array.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\assert.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\base64.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\callstack.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\defines.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\error.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\file.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\format.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\format_lpf.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\format_netbpm.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\guid.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\handle_table.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\hash.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\hash_index.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\hash_index_template.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\hash_string.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\hash_table.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\image.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\log.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\logger_file.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\logger_memory.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\math.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\parse.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\perf.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\platform.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\profile.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\random.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\serialize.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\stable_array.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\string.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\time.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\unicode.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\vformat.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_array.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_base64.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_hash_index.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_hash_table.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_image.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_log.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_lpf.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_math.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_random.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_stable_array.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\_test_unicode.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\allocator.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\allocator_debug.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\allocator_failing.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\allocator_malloc.h">
+      <Filter>lib</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl.h">
+      <Filter>gl_uitls</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_debug_output.h">
+      <Filter>gl_uitls</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_frame_buffers.h">
+      <Filter>gl_uitls</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_pixel_format.h">
+      <Filter>gl_uitls</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_shader_util.h">
+      <Filter>gl_uitls</Filter>
+    </ClInclude>
+    <ClInclude Include="gl_utils\gl_texture_util.h">
+      <Filter>gl_uitls</Filter>
+    </ClInclude>
+    <ClInclude Include="main.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="render.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="snapshot.h">
+      <Filter>local</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="kernel.cu">
+      <Filter>local</Filter>
+    </CudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\allen_cahn.comp">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\heat_trasnfer.comp">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\identity_color.frag_vert">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\sci_color.frag_vert">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="shaders\test.comp">
+      <Filter>shaders</Filter>
+    </None>
+  </ItemGroup>
+</Project>

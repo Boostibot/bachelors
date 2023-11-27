@@ -63,7 +63,12 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
+      <AdditionalOptions>-diag-suppress 186 %(AdditionalOptions)</AdditionalOptions>
+      <Keep>true</Keep>
     </CudaCompile>
+    <CudaLink>
+      <AdditionalOptions>/NODEFAULTLIB:library %(AdditionalOptions)</AdditionalOptions>
+    </CudaLink>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -84,10 +89,87 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
+      <AdditionalOptions>-diag-suppress 186 %(AdditionalOptions)</AdditionalOptions>
+      <Keep>true</Keep>
     </CudaCompile>
+    <CudaLink>
+      <AdditionalOptions>/NODEFAULTLIB:library %(AdditionalOptions)</AdditionalOptions>
+    </CudaLink>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="kernel.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="config.h" />
+    <ClInclude Include="cuprintf.cuh" />
+    <ClInclude Include="render.h" />
+    <ClInclude Include="gl_utils\gl.h" />
+    <ClInclude Include="gl_utils\gl_debug_output.h" />
+    <ClInclude Include="gl_utils\gl_frame_buffers.h" />
+    <ClInclude Include="gl_utils\gl_pixel_format.h" />
+    <ClInclude Include="gl_utils\gl_shader_util.h" />
+    <ClInclude Include="gl_utils\gl_texture_util.h" />
+    <ClInclude Include="integration_methods.h" />
+    <ClInclude Include="lib\allocator.h" />
+    <ClInclude Include="lib\allocator_debug.h" />
+    <ClInclude Include="lib\allocator_failing.h" />
+    <ClInclude Include="lib\allocator_malloc.h" />
+    <ClInclude Include="lib\allocator_stack.h" />
+    <ClInclude Include="lib\allocator_wrapper.h" />
+    <ClInclude Include="lib\array.h" />
+    <ClInclude Include="lib\assert.h" />
+    <ClInclude Include="lib\base64.h" />
+    <ClInclude Include="lib\callstack.h" />
+    <ClInclude Include="lib\defines.h" />
+    <ClInclude Include="lib\error.h" />
+    <ClInclude Include="lib\file.h" />
+    <ClInclude Include="lib\format.h" />
+    <ClInclude Include="lib\format_lpf.h" />
+    <ClInclude Include="lib\format_netbpm.h" />
+    <ClInclude Include="lib\guid.h" />
+    <ClInclude Include="lib\handle_table.h" />
+    <ClInclude Include="lib\hash.h" />
+    <ClInclude Include="lib\hash_index.h" />
+    <ClInclude Include="lib\hash_index_template.h" />
+    <ClInclude Include="lib\hash_string.h" />
+    <ClInclude Include="lib\hash_table.h" />
+    <ClInclude Include="lib\image.h" />
+    <ClInclude Include="lib\log.h" />
+    <ClInclude Include="lib\logger_file.h" />
+    <ClInclude Include="lib\logger_memory.h" />
+    <ClInclude Include="lib\math.h" />
+    <ClInclude Include="lib\parse.h" />
+    <ClInclude Include="lib\perf.h" />
+    <ClInclude Include="lib\platform.h" />
+    <ClInclude Include="lib\profile.h" />
+    <ClInclude Include="lib\random.h" />
+    <ClInclude Include="lib\serialize.h" />
+    <ClInclude Include="lib\stable_array.h" />
+    <ClInclude Include="lib\string.h" />
+    <ClInclude Include="lib\time.h" />
+    <ClInclude Include="lib\unicode.h" />
+    <ClInclude Include="lib\vformat.h" />
+    <ClInclude Include="lib\_test.h" />
+    <ClInclude Include="lib\_test_array.h" />
+    <ClInclude Include="lib\_test_base64.h" />
+    <ClInclude Include="lib\_test_hash_index.h" />
+    <ClInclude Include="lib\_test_hash_table.h" />
+    <ClInclude Include="lib\_test_image.h" />
+    <ClInclude Include="lib\_test_log.h" />
+    <ClInclude Include="lib\_test_lpf.h" />
+    <ClInclude Include="lib\_test_math.h" />
+    <ClInclude Include="lib\_test_random.h" />
+    <ClInclude Include="lib\_test_stable_array.h" />
+    <ClInclude Include="lib\_test_unicode.h" />
+    <ClInclude Include="main.h" />
+    <ClInclude Include="snapshot.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\allen_cahn.comp" />
+    <None Include="shaders\heat_trasnfer.comp" />
+    <None Include="shaders\identity_color.frag_vert" />
+    <None Include="shaders\sci_color.frag_vert" />
+    <None Include="shaders\test.comp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

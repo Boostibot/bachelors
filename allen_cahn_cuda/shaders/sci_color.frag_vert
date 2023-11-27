@@ -1,0 +1,53 @@
+#version 430 core
+
+#ifdef FRAG
+
+    out vec4 color;
+    in vec2 uv;
+    layout(binding = 0) uniform sampler2D tex;
+    uniform float _min;
+    uniform float _max;
+
+    void main()
+    {
+        float minVal = _min;
+        float maxVal = _max;
+
+        vec2 reverse_uv = vec2(uv.x, uv.y);
+        vec3 texCol = texture(tex, reverse_uv).rgb;      
+        float val = texCol.r;
+        val = min(max(val, minVal), maxVal- 0.0001);
+        float d = maxVal - minVal;
+        val = d == 0.0 ? 0.5 : (val - minVal) / d;
+        float m = 0.25;
+        float num = floor(val / m);
+        float s = (val - num * m) / m;
+        float r = 0, g = 0, b = 0;
+
+        switch (int(num)) {
+            case 0 : r = 0.0; g = s; b = 1.0; break;
+            case 1 : r = 0.0; g = 1.0; b = 1.0-s; break;
+            case 2 : r = s; g = 1.0; b = 0.0; break;
+            case 3 : r = 1.0; g = 1.0 - s; b = 0.0; break;
+        }
+
+        //color = vec4(val, val, val, 1.0);
+
+        color = vec4(r, g, b, 1.0);
+    }
+#endif 
+
+#ifdef VERT
+
+    layout (location = 0) in vec3 a_pos;
+    layout (location = 1) in vec2 a_uv;
+
+    out vec2 uv;
+
+    void main()
+    {
+        uv = a_uv;
+        gl_Position = vec4(a_pos, 1.0);
+    }
+
+#endif

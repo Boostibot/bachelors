@@ -1,14 +1,7 @@
 
-//surpress: pointless comparison of unsigned integer with zero
-
-#define _CRT_SECURE_NO_WARNINGS
-
 #define JOT_ALL_IMPL
 //#define JOT_MEM_DEBUG
-#include "lib/platform_windows.c"
 
-
-#include "lib/platform.h"
 #include "lib/log.h"
 #include "lib/logger_file.h"
 #include "lib/allocator_debug.h"

@@ -1,0 +1,164 @@
+#version 430 core
+
+#ifndef CUSTOM_DEFINES
+#define WORK_GROUP_SIZE_X 1
+#define WORK_GROUP_SIZE_Y 1
+#define WORK_GROUP_SIZE_Z 1
+#endif
+
+layout (local_size_x = WORK_GROUP_SIZE_X, local_size_y = WORK_GROUP_SIZE_Y, local_size_z = WORK_GROUP_SIZE_Z) in;
+
+layout(r32f, binding = 0) uniform image2D prev_phi_map;
+layout(r32f, binding = 1) uniform image2D prev_T_map;
+
+layout(r32f, binding = 2) uniform image2D next_phi_map;
+layout(r32f, binding = 3) uniform image2D next_T_map;
+
+layout(r32f, binding = 4) uniform image2D output_phi_map;
+layout(r32f, binding = 5) uniform image2D output_T_map;
+
+uniform int _SIZE_X;
+uniform int _SIZE_Y;
+
+uniform int _INITIAL_SIZE_X;
+uniform int _INITIAL_SIZE_Y;
+uniform int _INITIAL_RADIUS;
+uniform int _frame_i;
+uniform float _INITIAL_PHI;
+uniform float _INITIAL_T;
+uniform float _AROUND_PHI;
+uniform float _AROUND_T;
+
+uniform float _dt;
+uniform float _alpha;
+uniform float _L;
+uniform float _xi;
+uniform float _a;
+uniform float _b;
+uniform float _beta;
+//uniform float _Tm;
+
+#define _Tm     1
+
+#define dx      1
+#define dy      1
+#define mK		1
+#define tau		1
+
+float reaction_term_0(float phi)
+{
+	return phi*(1 - phi)*(phi - 1.0/2);
+}
+
+float reaction_term_1(float phi, float T, float xi)
+{
+	return (_a*reaction_term_0(phi) - _b*_beta*xi*(T - _Tm))*mK;
+}
+
+float reaction_term_2(float phi, float T, float xi, vec2 grad_phi)
+{
+	float grad_val = length(grad_phi);
+	return (_a*reaction_term_0(phi) - _b*_beta*xi*xi*grad_val*(T - _Tm))*mK;
+}
+
+
+float phi_at(int x, int y)
+{
+	y = y % _SIZE_Y;
+	x = x % _SIZE_X;
+	return imageLoad(prev_phi_map, ivec2(x, y)).r;
+}
+
+float T_at(int x, int y)
+{
+	y = y % _SIZE_Y;
+	x = x % _SIZE_X;
+	return imageLoad(prev_T_map, ivec2(x, y)).r;
+}
+
+void main() 
+{
+	ivec2 center = ivec2(gl_GlobalInvocationID.xy);
+	int x = center.x;
+	int y = center.y;
+	
+	float phi_next = 1;
+	float T_next = 0;
+
+	float output_phi = 0;
+	float output_T = 0;
+
+	//Initial conditions
+	if(_frame_i == 0)
+	{
+		T_next = _AROUND_T;
+		phi_next = _AROUND_PHI;
+
+		ivec2 initial_center = ivec2(_SIZE_X / 4, _SIZE_Y / 4);
+
+		int lower_x = (_SIZE_X - _INITIAL_SIZE_X) / 2;
+		int upper_x = (_SIZE_X + _INITIAL_SIZE_X) / 2;
+		
+		int lower_y = (_SIZE_Y - _INITIAL_SIZE_Y) / 2;
+		int upper_y = (_SIZE_Y + _INITIAL_SIZE_Y) / 2;
+		if(((lower_x <= x && x <= upper_x) && 
+			(lower_y <= y && y <= upper_y))
+			|| length(initial_center - center) <= _INITIAL_RADIUS)
+		{
+			T_next = _INITIAL_T;
+			phi_next = _INITIAL_PHI;
+		}
+
+		output_phi = phi_next;
+		output_T = T_next;
+	}
+	else
+	{
+		float T = T_at(x, y);
+		float phi = phi_at(x, y);
+	
+		float phi_py = phi_at(x, y + 1);
+		float phi_my = phi_at(x, y - 1);
+		float phi_px = phi_at(x + 1, y);
+		float phi_mx = phi_at(x - 1, y);
+
+		float T_py = T_at(x, y + 1);
+		float T_my = T_at(x, y - 1);
+		float T_px = T_at(x + 1, y);
+		float T_mx = T_at(x - 1, y);
+
+		float sum_phi_neigbours = 0
+			+ tau*(phi_py - phi)
+			+ tau*(phi_my - phi)
+			+ tau*(phi_px - phi)
+			+ tau*(phi_mx - phi);
+		
+		float sum_T_neigbours = 0
+			+ tau*(T_py - T)
+			+ tau*(T_my - T)
+			+ tau*(T_px - T)
+			+ tau*(T_mx - T);
+
+		vec2 grad_phi = 0.5*vec2(
+			(phi_px - phi_mx),
+			(phi_py - phi_my)
+		);
+	
+		float reaction_term = reaction_term_2(phi, T, _xi, grad_phi);
+		float phi_dt = (sum_phi_neigbours/mK + reaction_term/(_xi*_xi)) / _alpha;
+		float T_dt = sum_T_neigbours / mK + _L * phi_dt;
+
+		phi_next = phi_dt * _dt + phi;
+		T_next = T_dt * _dt + T;
+		
+		
+		output_phi = phi_next;
+		output_T = T_next;
+	}
+
+	imageStore(next_phi_map, center, vec4(phi_next, 0, 0, 0));
+	imageStore(next_T_map, center, vec4(T_next, 0, 0, 0));
+
+	imageStore(output_phi_map, center, vec4(output_phi, 0, 0, 0));
+	imageStore(output_T_map, center, vec4(output_T, 0, 0, 0));
+}
