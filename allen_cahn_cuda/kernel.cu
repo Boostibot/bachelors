@@ -3,13 +3,7 @@
 #define JOT_ALL_IMPL
 #define JMAPI __host__ __device__ static inline
 
-#define STRINGIFY_(x) #x
-#define STRINGIFY(x) STRINGIFY_(x)
-#define ID(x) x
 #include "config.h"
-#define CONFIG() "config.h"
-#include CONFIG()
-#include ID("config"".h")
 #include "integration_methods.h"
 #include "render.h"
 #include "cuprintf.cuh"
