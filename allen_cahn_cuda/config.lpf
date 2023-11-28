@@ -19,7 +19,7 @@ example {
         b           :1
         beta        :8
         Tm          :2
-        #Tini        :0
+        Tini        :0
     }
 
     #initial conditions

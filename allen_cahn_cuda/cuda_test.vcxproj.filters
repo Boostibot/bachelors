@@ -204,6 +204,9 @@
     <ClInclude Include="snapshot.h">
       <Filter>local</Filter>
     </ClInclude>
+    <ClInclude Include="cuda_util.cuh">
+      <Filter>local</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="kernel.cu">

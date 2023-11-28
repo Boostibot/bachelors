@@ -244,19 +244,6 @@ INTERNAL bool _allen_cahn_read_file_config_recursive(Allen_Cahn_Config* out_conf
         return false;
     }
 
-    Platform_Mutex config_mutex = {0};
-    if(config_mutex.handle == NULL)
-    {
-        Error err = error_from_platform(platform_mutex_create(&config_mutex));
-        ASSERT_MSG(error_is_ok(err), "platform mutex create failed! %s", error_code(err).data);
-    }
-
-    if(depth == 0)
-    {
-        Error err = error_from_platform(platform_mutex_acquire(&config_mutex));
-        ASSERT_MSG(error_is_ok(err), "platform mutex acquasition failed! %s", error_code(err).data);
-    }
-
     LOG_INFO("config", "reading config file '%s'", config_file_name);
     log_group_push();
     Allocator* alloc = allocator_get_scratch();
@@ -330,8 +317,6 @@ INTERNAL bool _allen_cahn_read_file_config_recursive(Allen_Cahn_Config* out_conf
     array_deinit(&select);
     array_deinit(&config_data);
 
-    if(depth == 0)
-        platform_mutex_release(&config_mutex);
     return state;
 }
 

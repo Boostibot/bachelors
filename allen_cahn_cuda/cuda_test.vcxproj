@@ -101,6 +101,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="config.h" />
+    <ClInclude Include="cuda_util.cuh" />
     <ClInclude Include="cuprintf.cuh" />
     <ClInclude Include="render.h" />
     <ClInclude Include="gl_utils\gl.h" />

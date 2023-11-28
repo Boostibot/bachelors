@@ -8,6 +8,7 @@
 #include "render.h"
 #include "cuprintf.cuh"
 #include "cuprintf.cu"
+#include "cuda_util.cuh"
 
 #include "lib/platform.h"
 #include "lib/log.h"
@@ -35,6 +36,30 @@ const f64 FREE_RUN_SYM_FPS = 200;
 
 #define CONFIG_FILE "config.lpf"
 
+
+typedef struct Simulation_State {
+    Allen_Cahn_Config config;
+    Allen_Cahn_Config last_config;
+    i64 epoch_time;
+    Platform_Calendar_Time calendar_time;
+    Allocator* alloc;
+    
+    f32* initial_phi_map;
+    f32* initial_T_map;
+
+    f32* phi_map;
+    f32* T_map;
+    f32* next_phi_map;
+    f32* next_T_map;
+
+    f32* display_map1;
+    f32* display_map2;
+    f32* display_map3;
+    
+    Compute_Texture output_phi_map = {0};
+    Compute_Texture output_T_map = {0};
+} Simulation_State;
+
 typedef struct App_State {
     GLFWwindow* window;
 
@@ -42,7 +67,95 @@ typedef struct App_State {
     bool render_phi;
     f64 remaining_steps;
     f64 step_by;
+
+    i64 queued_reloads;
+    i64 queued_reloads_last;
+
+    Simulation_State simulation_state;
 } App_State;
+
+bool simulation_state_is_hard_reload(const Allen_Cahn_Config* config, const Allen_Cahn_Config* last_config)
+{
+    if(config->params.mesh_size_x != last_config->params.mesh_size_x || config->params.mesh_size_y != last_config->params.mesh_size_y)
+        return true;
+
+    //@HACK: proper comparison of fields is replaced by comparison of the flat memory because I am lazy.
+    String_Builder null_sttring_builder = {0};
+    Allen_Cahn_Initial_Conditions ini = config->initial_conditions;
+    Allen_Cahn_Initial_Conditions ini_last = last_config->initial_conditions;
+    ini.start_snapshot = null_sttring_builder;
+    ini_last.start_snapshot = null_sttring_builder;
+
+    if(memcmp(&ini, &ini_last, sizeof ini_last) != 0)
+        return true;
+
+    if(builder_is_equal(config->initial_conditions.start_snapshot, last_config->initial_conditions.start_snapshot) == false)
+        return true;
+
+    return false;
+}
+
+void simulation_state_deinit(Simulation_State* state)
+{
+    (void) state;
+}
+
+void allen_cahn_set_initial_conditions(f32* initial_phi_map, f32* initial_T_map, Allen_Cahn_Config config);
+
+void simulation_state_reload(Simulation_State* state, Allen_Cahn_Config* config)
+{
+    if(state->alloc == NULL)
+        state->alloc = allocator_get_default();
+
+    if(config == NULL || simulation_state_is_hard_reload(&state->last_config, config))
+    {
+        isize old_pixel_count = state->last_config.params.mesh_size_x * state->last_config.params.mesh_size_y;
+        allocator_deallocate(state->alloc, state->initial_phi_map, old_pixel_count*sizeof(f32), DEF_ALIGN, SOURCE_INFO());
+        allocator_deallocate(state->alloc, state->initial_T_map, old_pixel_count*sizeof(f32), DEF_ALIGN, SOURCE_INFO());
+
+        cudaFree(state->phi_map);
+        cudaFree(state->T_map);
+        cudaFree(state->next_phi_map);
+        cudaFree(state->next_T_map);
+
+        compute_texture_deinit(&state->output_phi_map);
+        compute_texture_deinit(&state->output_T_map);
+
+        if(config != NULL)
+        {
+            isize pixel_count_x = config->params.mesh_size_x;
+            isize pixel_count_y = config->params.mesh_size_y;
+            isize pixel_count = pixel_count_x * pixel_count_y;
+
+            state->initial_phi_map = (f32*) allocator_allocate_cleared(state->alloc, pixel_count * sizeof(f32), DEF_ALIGN, SOURCE_INFO());
+            state->initial_T_map = (f32*) allocator_allocate_cleared(state->alloc, pixel_count * sizeof(f32), DEF_ALIGN, SOURCE_INFO());
+            allen_cahn_set_initial_conditions(state->initial_phi_map, state->initial_T_map, *config);
+
+            CUDA_TEST(cudaMalloc((void**)&state->phi_map,          pixel_count * sizeof(f32)));
+            CUDA_TEST(cudaMalloc((void**)&state->T_map,            pixel_count * sizeof(f32)));
+            CUDA_TEST(cudaMalloc((void**)&state->next_phi_map,     pixel_count * sizeof(f32)));
+            CUDA_TEST(cudaMalloc((void**)&state->next_T_map,       pixel_count * sizeof(f32)));
+
+            CUDA_TEST(cudaMemcpy(state->phi_map, state->initial_phi_map, pixel_count * sizeof(f32), cudaMemcpyHostToDevice));
+            CUDA_TEST(cudaMemcpy(state->T_map, state->initial_T_map, pixel_count * sizeof(f32), cudaMemcpyHostToDevice));
+    
+            state->output_phi_map  = compute_texture_make(pixel_count_x, pixel_count_y, PIXEL_FORMAT_F32, 1);
+            state->output_T_map    = compute_texture_make(pixel_count_x, pixel_count_y, PIXEL_FORMAT_F32, 1);
+        }
+    }
+
+    //@TODO: not leak memeory here
+    if(state->epoch_time == 0)
+        state->epoch_time = platform_local_epoch_time();
+
+    state->calendar_time = platform_epoch_time_to_calendar_time(state->epoch_time);
+    if(config)
+    {
+        state->config = *config;
+        state->last_config = *config;
+        platform_directory_create(config->snapshots.folder.data);
+    }
+}
 
 void app_state_init(App_State* state, GLFWwindow* window)
 {
@@ -81,9 +194,15 @@ JMAPI f32 allen_cahn_reaction_term_2(f32 phi, f32 T, f32 xi, Vec2 grad_phi, Alle
 
 __global__ void allen_cahn_simulate(f32* phi_map_next, f32* T_map_next, const f32* phi_map, const f32* T_map, Allen_Cahn_Params params, isize iter)
 {
-    f32 tau = 1;
-    f32 mK = 1;
-    f32 grad_interp = 0.5f;
+    f32 dx = (f32) params.sym_size / params.mesh_size_x;
+    f32 dy = (f32) params.sym_size / params.mesh_size_y;
+    f32 mK = dx * dy;
+    
+    //uniform grid
+    f32 tau_x = 1;
+    f32 tau_y = 1;
+    //f32 tau_x = dy / dx;
+    //f32 tau_y = dx / dy;
 
     for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.mesh_size_x; x += blockDim.x * gridDim.x) 
     {
@@ -109,20 +228,20 @@ __global__ void allen_cahn_simulate(f32* phi_map_next, f32* T_map_next, const f3
                 }
 
 	        f32 sum_phi_neigbours = 0
-		        + tau*(phi_py - phi)
-		        + tau*(phi_my - phi)
-		        + tau*(phi_px - phi)
-		        + tau*(phi_mx - phi);
+		        + tau_y*(phi_py - phi)
+		        + tau_y*(phi_my - phi)
+		        + tau_x*(phi_px - phi)
+		        + tau_x*(phi_mx - phi);
 		
 	        f32 sum_T_neigbours = 0
-		        + tau*(T_py - T)
-		        + tau*(T_my - T)
-		        + tau*(T_px - T)
-		        + tau*(T_mx - T);
+		        + tau_y*(T_py - T)
+		        + tau_y*(T_my - T)
+		        + tau_x*(T_px - T)
+		        + tau_x*(T_mx - T);
 
 	        Vec2 grad_phi = {
-		        (phi_px - phi_mx) * grad_interp,
-		        (phi_py - phi_my) * grad_interp
+		        (phi_px - phi_mx) * dx / 2,
+		        (phi_py - phi_my) * dy / 2
 	        };
         
 	        f32 reaction_term = allen_cahn_reaction_term_2(phi, T, params.xi, grad_phi, params);
@@ -139,31 +258,24 @@ __global__ void allen_cahn_simulate(f32* phi_map_next, f32* T_map_next, const f3
     }
 }
 
-void _test_cuda(cudaError_t error, const char* expression, Source_Info info)
-{
-    if(error != cudaSuccess)
-    {
-        assertion_report(expression, info, "cuda failed with error %s", cudaGetErrorString(error));
-        platform_trap();
-        platform_abort();
-    }
-}
-
-#define CUDA_TEST(status) _test_cuda((status), #status, SOURCE_INFO())
-#define CUDA_ERR_AND(err) (err) != cudaSuccess ? (err) :
 
 Error cuda_error(cudaError_t error);
 String cuda_translate_error(u32 code, void* context);
 void render_cuda_memory(App_State* app, Compute_Texture texture, const f32* cuda_memory, f32 min, f32 max);
 void allen_cahn_custom_config(Allen_Cahn_Config* out_config);
 
-bool file_change_func(void* context)
+bool app_poll_reloads(App_State* state)
 {
-    Allen_Cahn_Config* config = (Allen_Cahn_Config*) context;
-    Allocator_Set prev_set = allocator_set_both(config->allocator, config->allocator);
-    TEST(allen_cahn_read_file_config(config, CONFIG_FILE));
-    allocator_set(prev_set);
+    if(state->queued_reloads > platform_interlocked_excahnge64(&state->queued_reloads_last, state->queued_reloads))
+        return true;
+    else
+        return false;
+}
 
+bool queue_file_reload(void* context)
+{
+    App_State* state = (App_State*) context;
+    platform_interlocked_increment64(&state->queued_reloads);
     return true;
 }
 
@@ -196,17 +308,15 @@ void allen_cahn_set_initial_conditions(f32* initial_phi_map, f32* initial_T_map,
 
 void run_func_allen_cahn_cuda(void* context)
 {
-    compare_rk4();
+    GLFWwindow* window = (GLFWwindow*) context;
+    App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
+    Simulation_State* simualtion = &app->simulation_state;
+    
+    queue_file_reload(app);
     cudaPrintfInit();
-    
-    Allen_Cahn_Config config = {0};
-    config.allocator = allocator_get_default();
-    allen_cahn_custom_config(&config);
-    file_change_func(&config);
-    //TEST(allen_cahn_read_file_config(&config, CONFIG_FILE));
-    
+
     Platform_File_Watch file_watch = {0};
-    Error watch_error = error_from_platform(platform_file_watch(&file_watch, ".", PLATFORM_FILE_WATCH_CHANGE, file_change_func, &config));
+    Error watch_error = error_from_platform(platform_file_watch(&file_watch, ".", PLATFORM_FILE_WATCH_CHANGE, queue_file_reload, app));
     ASSERT_MSG(error_is_ok(watch_error), "file watch failed %s", error_code(watch_error).data);
 
     int device_id = 0;
@@ -214,41 +324,9 @@ void run_func_allen_cahn_cuda(void* context)
     
     int device_processor_count = 0;
     cudaDeviceGetAttribute(&device_processor_count, cudaDevAttrMultiProcessorCount, device_id);
-    
-    isize pixel_count = config.params.mesh_size_x * config.params.mesh_size_y;
 
-    f32* initial_phi_map = (f32*) allocator_allocate_cleared(allocator_get_default(), pixel_count * sizeof(f32), DEF_ALIGN, SOURCE_INFO());
-    f32* initial_T_map = (f32*) allocator_allocate_cleared(allocator_get_default(), pixel_count * sizeof(f32), DEF_ALIGN, SOURCE_INFO());
-
-    f32* phi_map = NULL;
-    f32* T_map = NULL;
-    f32* next_phi_map = NULL;
-    f32* next_T_map = NULL;
-
-    f32* display_map1 = NULL;
-    f32* display_map2 = NULL;
-    f32* display_map3 = NULL;
-
-    CUDA_TEST(cudaMalloc((void**)&phi_map,          pixel_count * sizeof(f32)));
-    CUDA_TEST(cudaMalloc((void**)&T_map,            pixel_count * sizeof(f32)));
-    CUDA_TEST(cudaMalloc((void**)&next_phi_map,     pixel_count * sizeof(f32)));
-    CUDA_TEST(cudaMalloc((void**)&next_T_map,       pixel_count * sizeof(f32)));
-    //CUDA_TEST(cudaMalloc((void**)&display_map1,     pixel_count * sizeof(f32)));
-    //CUDA_TEST(cudaMalloc((void**)&display_map2,     pixel_count * sizeof(f32)));
-    //CUDA_TEST(cudaMalloc((void**)&display_map3,     pixel_count * sizeof(f32)));
-
-    allen_cahn_set_initial_conditions(initial_phi_map, initial_T_map, config);
-
-    CUDA_TEST(cudaMemcpy(phi_map, initial_phi_map, pixel_count * sizeof(f32), cudaMemcpyHostToDevice));
-    CUDA_TEST(cudaMemcpy(T_map, initial_T_map, pixel_count * sizeof(f32), cudaMemcpyHostToDevice));
-
-    Compute_Texture output_phi_map  = compute_texture_make(config.params.mesh_size_x, config.params.mesh_size_y, PIXEL_FORMAT_F32, 1);
-    Compute_Texture output_T_map    = compute_texture_make(config.params.mesh_size_x, config.params.mesh_size_y, PIXEL_FORMAT_F32, 1);
-
-    Platform_Calendar_Time calendar_time = platform_epoch_time_to_calendar_time(platform_local_epoch_time());
-    String_Builder serialized_image = {0};
-
-    platform_directory_create(config.snapshots.folder.data);
+    //compare_rk4();
+    //String_Builder serialized_image = {0};
 
     i64 save_counter = 0;
     i64 frame_counter = 0;
@@ -262,20 +340,29 @@ void run_func_allen_cahn_cuda(void* context)
     f64 simulated_last_time = 0;
 
     f64 simulation_time_sum = 0;
-
-    GLFWwindow* window = (GLFWwindow*) context;
-    App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
 	while (!glfwWindowShouldClose(window))
     {
         f64 now = clock_s();
+
+        if(app_poll_reloads(app))
+        {
+            Allen_Cahn_Config config = {0};
+            TEST(allen_cahn_read_file_config(&config, CONFIG_FILE));
+            
+            if(config.snapshots.folder.size > 0)
+                platform_directory_create(config.snapshots.folder.data);
+
+            simulation_state_reload(simualtion, &config);
+        }
+
         //if(0)
         if(now - render_last_time > 1.0/RENDER_FREQ)
         {
             render_last_time = now;
             if(app->render_phi)
-                render_cuda_memory(app, output_phi_map, phi_map, 0, 1);
+                render_cuda_memory(app, simualtion->output_phi_map, simualtion->phi_map, 0, 1);
             else
-                render_cuda_memory(app, output_T_map, T_map, 0, 1.5);
+                render_cuda_memory(app, simualtion->output_T_map, simualtion->T_map, 0, 1.5);
                 
             glfwSwapBuffers(app->window);
         }
@@ -312,7 +399,7 @@ void run_func_allen_cahn_cuda(void* context)
 
             dim3 bs(64, 1);
             dim3 grid(device_processor_count, 1);
-            allen_cahn_simulate<<<grid, bs>>>(next_phi_map, next_T_map, phi_map, T_map, config.params, frame_counter);
+            allen_cahn_simulate<<<grid, bs>>>(simualtion->next_phi_map, simualtion->next_T_map, simualtion->phi_map, simualtion->T_map, simualtion->config.params, frame_counter);
             CUDA_TEST(cudaGetLastError());
             CUDA_TEST(cudaDeviceSynchronize());
             cudaPrintfDisplay();
@@ -368,10 +455,10 @@ void run_func_allen_cahn_cuda(void* context)
 
             frame_time_sum += delta;
             frame_counter += 1;
-            simulation_time_sum += config.params.dt;
+            simulation_time_sum += simualtion->config.params.dt;
 
-            SWAP(&phi_map, &next_phi_map, f32*);
-            SWAP(&T_map, &next_T_map, f32*);
+            SWAP(&simualtion->phi_map, &simualtion->next_phi_map, f32*);
+            SWAP(&simualtion->T_map, &simualtion->next_T_map, f32*);
 
         }
         
