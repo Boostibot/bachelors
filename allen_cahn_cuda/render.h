@@ -60,7 +60,7 @@ EXPORT void render_sci_texture(Compute_Texture texture, f32 min, f32 max)
     {
         Allocator_Set prev = allocator_set_default(allocator_get_static());
         Error error = render_shader_init_from_disk(&sci_shader, STRING("shaders/sci_color.frag_vert"));
-        TEST_MSG(error_is_ok(error), "Error while loading shaders!");
+        TEST_MSG(error_is_ok(error), "Error %s while loading shaders!", error_code(error));
         allocator_set(prev);
     }
     

@@ -72,7 +72,7 @@ EXPORT bool allen_cahn_read_file_config(Allen_Cahn_Config* out_config, const cha
 //@TODO: lpf_write vs lpf_write_as_root!
 String ephemeral_format_lpf_dyn_entry(Lpf_Dyn_Entry entry)
 {
-    Lpf_Dyn_Entry root = {0};
+    //Lpf_Dyn_Entry root = {0};
     return STRING("");
 }
 
@@ -257,8 +257,7 @@ INTERNAL bool _allen_cahn_read_file_config_recursive(Allen_Cahn_Config* out_conf
     bool state = false;
     if(error_is_ok(error) == false)
     {
-        //TODO: errors as cstrings!
-        LOG_ERROR("config", "Error %s while reading config file %s", error_code(error).data, config_file_name);
+        LOG_ERROR("config", "Error %s while reading config file %s", error_code(error), config_file_name);
     }
     else
     {

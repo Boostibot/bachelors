@@ -24,7 +24,7 @@ typedef struct Cuda_Allocator {
 
 EXPORT void* cuda_allocator_allocate(Allocator* self_, isize new_size, void* old_ptr, isize old_size, isize align, Source_Info called_from)
 {
-    Cuda_Allocator* self = (Cuda_Allocator*) (void*) self_; 
+    //Cuda_Allocator* self = (Cuda_Allocator*) (void*) self_; 
     ASSERT_MSG((old_ptr != NULL) == (old_size != 0), "invalid combination of size and ptr");
 
     if(old_ptr)

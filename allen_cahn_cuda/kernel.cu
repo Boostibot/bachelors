@@ -21,6 +21,10 @@
 #include "lib/format_netbpm.h"
 #include "lib/math.h"
 
+//@TODO: schema s laplacianem
+//       linux backend
+//       
+
 #include "glfw/glfw3.h"
 #include <cuda_gl_interop.h>
 #include <cuda_runtime.h>
@@ -317,7 +321,7 @@ void run_func_allen_cahn_cuda(void* context)
 
     Platform_File_Watch file_watch = {0};
     Error watch_error = error_from_platform(platform_file_watch(&file_watch, ".", PLATFORM_FILE_WATCH_CHANGE, queue_file_reload, app));
-    ASSERT_MSG(error_is_ok(watch_error), "file watch failed %s", error_code(watch_error).data);
+    ASSERT_MSG(error_is_ok(watch_error), "file watch failed %s", error_code(watch_error));
 
     int device_id = 0;
     CUDA_TEST(cudaSetDevice(device_id));
