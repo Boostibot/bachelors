@@ -157,7 +157,7 @@ void simulation_state_reload(Simulation_State* state, Allen_Cahn_Config* config)
     {
         state->config = *config;
         state->last_config = *config;
-        platform_directory_create(config->snapshots.folder.data);
+        platform_directory_create(string_from_builder(config->snapshots.folder));
     }
 }
 
@@ -312,6 +312,7 @@ void allen_cahn_set_initial_conditions(f32* initial_phi_map, f32* initial_T_map,
 
 void run_func_allen_cahn_cuda(void* context)
 {
+
     GLFWwindow* window = (GLFWwindow*) context;
     App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
     Simulation_State* simualtion = &app->simulation_state;
@@ -320,7 +321,7 @@ void run_func_allen_cahn_cuda(void* context)
     cudaPrintfInit();
 
     Platform_File_Watch file_watch = {0};
-    Error watch_error = error_from_platform(platform_file_watch(&file_watch, ".", PLATFORM_FILE_WATCH_CHANGE, queue_file_reload, app));
+    Error watch_error = error_from_platform(platform_file_watch(&file_watch, STRING("."), PLATFORM_FILE_WATCH_CHANGE, queue_file_reload, app));
     ASSERT_MSG(error_is_ok(watch_error), "file watch failed %s", error_code(watch_error));
 
     int device_id = 0;
@@ -354,7 +355,7 @@ void run_func_allen_cahn_cuda(void* context)
             TEST(allen_cahn_read_file_config(&config, CONFIG_FILE));
             
             if(config.snapshots.folder.size > 0)
-                platform_directory_create(config.snapshots.folder.data);
+                platform_directory_create(string_from_builder(config.snapshots.folder));
 
             simulation_state_reload(simualtion, &config);
         }
@@ -472,6 +473,8 @@ void run_func_allen_cahn_cuda(void* context)
     platform_file_unwatch(&file_watch);
 }
 
+
+
 void* glfw_malloc_func(size_t size, void* user);
 void* glfw_realloc_func(void* block, size_t size, void* user);
 void glfw_free_func(void* block, void* user);
@@ -482,9 +485,39 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
 void run_func(void* context);
 void error_func(void* context, Platform_Sandox_Error error_code);
 
+void platform_test_func()
+{
+    Platform_Directory_Entry* entries = NULL;
+    isize entries_count = 0;
+    platform_directory_list_contents_alloc(STRING("."), &entries, &entries_count, 3);
+
+    platform_file_info(STRING("temp.h"), NULL);
+    platform_file_info(STRING("main.h"), NULL);
+    platform_file_info(STRING("config.h"), NULL);
+    platform_file_info(STRING("temp.h"), NULL);
+
+    String_Builder dir_padding = {0};
+
+    //String_Builder complete_list = {0};
+
+    for(isize i = 0; i < entries_count; i++)
+    {
+        Platform_Directory_Entry entry = entries[i];
+        array_clear(&dir_padding);
+        for(isize j = 0; j < entry.directory_depth; j++)
+            builder_append(&dir_padding, STRING("  "));
+
+        //builder_append(&complete_list)
+        LOG_INFO("dirs", "%lli %s%s", i, cstring_from_builder(dir_padding), entry.path);
+    }
+
+    //LOG_INFO("dirs", complete_list.data);
+    array_deinit(&dir_padding);
+    platform_directory_list_contents_free(entries);
+}
+
 int main()
 {
-    platform_init();
     Malloc_Allocator static_allocator = {0};
     malloc_allocator_init(&static_allocator);
     allocator_set_static(&static_allocator.allocator);
@@ -492,11 +525,22 @@ int main()
     Malloc_Allocator malloc_allocator = {0};
     malloc_allocator_init_use(&malloc_allocator, 0);
     
+    Debug_Allocator debug_alloc = {0};
+    debug_allocator_init_use(&debug_alloc, DEBUG_ALLOCATOR_DEINIT_LEAK_CHECK | DEBUG_ALLOCATOR_CAPTURE_CALLSTACK);
+
+    Platform_Allocator platform_alloc = platform_allocator_from_allocator(&debug_alloc.allocator);
+    platform_init(&platform_alloc);
+
+    platform_test_func();
+    
+    platform_deinit();
+    debug_allocator_print_alive_allocations(debug_alloc, -1);
+    
+    return 0;
+
     error_system_init(&static_allocator.allocator);
     file_logger_init_use(&global_logger, &malloc_allocator.allocator, &malloc_allocator.allocator);
 
-    Debug_Allocator debug_alloc = {0};
-    debug_allocator_init_use(&debug_alloc, DEBUG_ALLOCATOR_DEINIT_LEAK_CHECK | DEBUG_ALLOCATOR_CAPTURE_CALLSTACK);
 
     GLFWallocator allocator = {0};
     allocator.allocate = glfw_malloc_func;
