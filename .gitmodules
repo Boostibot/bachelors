@@ -1,3 +1,6 @@
 [submodule "allen_cahn/lib"]
 	path = allen_cahn/lib
 	url = https://github.com/Boostibot/c_lib.git
+[submodule "allen_cahn/gl_utils"]
+	path = allen_cahn/gl_utils
+	url = https://github.com/Boostibot/gl_utils.git
