@@ -473,8 +473,6 @@ void run_func_allen_cahn_cuda(void* context)
     platform_file_unwatch(&file_watch);
 }
 
-
-
 void* glfw_malloc_func(size_t size, void* user);
 void* glfw_realloc_func(void* block, size_t size, void* user);
 void glfw_free_func(void* block, void* user);
@@ -495,6 +493,9 @@ void platform_test_func()
     platform_file_info(STRING("main.h"), NULL);
     platform_file_info(STRING("config.h"), NULL);
     platform_file_info(STRING("temp.h"), NULL);
+
+    LOG_INFO("platform", "executable path:     '%s'", platform_get_executable_path());
+    LOG_INFO("platform", "current working dir: '%s'", platform_directory_get_current_working());
 
     String_Builder dir_padding = {0};
 
@@ -518,6 +519,7 @@ void platform_test_func()
 
 int main()
 {
+    platform_init();
     Malloc_Allocator static_allocator = {0};
     malloc_allocator_init(&static_allocator);
     allocator_set_static(&static_allocator.allocator);
@@ -528,19 +530,8 @@ int main()
     Debug_Allocator debug_alloc = {0};
     debug_allocator_init_use(&debug_alloc, DEBUG_ALLOCATOR_DEINIT_LEAK_CHECK | DEBUG_ALLOCATOR_CAPTURE_CALLSTACK);
 
-    Platform_Allocator platform_alloc = platform_allocator_from_allocator(&debug_alloc.allocator);
-    platform_init(&platform_alloc);
-
-    platform_test_func();
-    
-    platform_deinit();
-    debug_allocator_print_alive_allocations(debug_alloc, -1);
-    
-    return 0;
-
     error_system_init(&static_allocator.allocator);
     file_logger_init_use(&global_logger, &malloc_allocator.allocator, &malloc_allocator.allocator);
-
 
     GLFWallocator allocator = {0};
     allocator.allocate = glfw_malloc_func;
