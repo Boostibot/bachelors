@@ -322,7 +322,6 @@ void run_func_allen_cahn(void* context)
     
     f64 fps_display_last_time_sum = 0;
     f64 fps_display_last_time = 0;
-    i64 fps_display_last_frames = 0;
     
     f64 render_last_time = 0;
     f64 simulated_last_time = 0;
@@ -344,16 +343,12 @@ void run_func_allen_cahn(void* context)
         if(now - fps_display_last_time > 1.0/FPS_DISPLAY_FREQ)
         {
             f64 time_sum_delta = frame_time_sum - fps_display_last_time_sum;
-            f64 counter_delta = (f64) (frame_counter - fps_display_last_frames);
-            f64 avg_fps = 0;
             if(time_sum_delta != 0)
             {
-                avg_fps = counter_delta / time_sum_delta;
                 glfwSetWindowTitle(window, format_ephemeral("iter %lli", (lli) frame_counter).data);
             }
 
             fps_display_last_time = now;
-            fps_display_last_frames = frame_counter;
             fps_display_last_time_sum = frame_time_sum;
         }
 

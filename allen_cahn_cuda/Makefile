@@ -1,20 +1,26 @@
 DIRS=build
 CC=gcc
-FLAGS=-rdynamic -g -ggdb
+FLAGS=-rdynamic -g -ggdb -Wall -Wformat -Wfloat-conversion -Wlogical-op -Wno-unknown-pragmas -Wno-unused-function -Wno-unused-local-typedefs
 LINK_FLAGS=-lm -lglfw
 
-main: main.o platform.o
-	$(CC) build/main.o build/platform.o -o build/main $(LINK_FLAGS)
+ALL_SOURCES=$(shell find -L -regex '.*/.*\.\(c\|h\|cpp\|hpp\|cu\|cuh\)$ ')
+DEPENDENCIES=$(ALL_SOURCES) Makefile
+# @TODO: -Wdouble-promotion -Wsign-conversion
+# @TODO: add format flags to format and logging functions
 
-main.o: main.c lib/platform.h extrenal/include/glfw/glfw3.h
+#We do complete rebuild when anything changes. Its simpler that way.
+build/main.out: build/main.o build/platform.o $(DEPENDENCIES)
+	$(CC) build/main.o build/platform.o -o build/main.out $(LINK_FLAGS)
+
+build/main.o: $(DEPENDENCIES)
 	$(CC) $(FLAGS) -c main.c -o build/main.o
 	
-platform.o: lib/platform.h lib/platform_linux.c
+build/platform.o: $(DEPENDENCIES)
 	$(CC) $(FLAGS) -c lib/platform_linux.c -o build/platform.o
 
 clean:
 	rm -rf build
 
-$(info $(shell rm -rf $(DIRS)))
+# $(info $(shell rm -rf $(DIRS)))
 $(info $(shell mkdir -p $(DIRS)))
 
