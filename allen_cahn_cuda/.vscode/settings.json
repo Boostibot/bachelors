@@ -11,6 +11,12 @@
         "string_view": "c",
         "initializer_list": "c",
         "random": "c",
-        "limits.h": "c"
+        "limits.h": "c",
+        "cerrno": "c",
+        "allocator_debug.h": "c",
+        "stdio.h": "c",
+        "gl.h": "c",
+        "glfw3.h": "c",
+        "gl_pixel_format.h": "c"
     }
 }

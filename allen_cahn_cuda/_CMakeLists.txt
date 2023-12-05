@@ -15,6 +15,13 @@ project(AllenCahnCuda VERSION 0.1
 add_executable(app main_platform_dev.c lib/platform.h lib/platform_linux.c)
 target_link_libraries(app m) #link math
 
+set(default_build_type "Release")
+if(EXISTS "${CMAKE_SOURCE_DIR}/.git")
+  set(default_build_type "Debug")
+endif()
+
+SET(GCC_COVERAGE_COMPILE_FLAGS "-rdynamic -g -ggdb")
+
 #Run using:
 #cmake -S . -B build
 #cmake --build build

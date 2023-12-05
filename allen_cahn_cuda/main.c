@@ -2,6 +2,7 @@
 #define JOT_ALL_IMPL
 //#define JOT_MEM_DEBUG
 
+#include "lib/file.h"
 #include "lib/log.h"
 #include "lib/logger_file.h"
 #include "lib/allocator_debug.h"
@@ -16,7 +17,7 @@
 #include "gl_utils/gl_shader_util.h"
 #include "gl_utils/gl_pixel_format.h"
 
-#include "glfw/glfw3.h"
+#include <GLFW/glfw3.h>
 
 const i32 SCR_WIDTH = 1000;
 const i32 SCR_HEIGHT = 1000;
@@ -255,7 +256,7 @@ void compare_rk4()
 
 void run_func_allen_cahn(void* context)
 {
-    compare_rk4();
+    // compare_rk4();
 
     const i32 PAUSE_AFTER_SAVES = 3;
     const i32 SAVE_EVERY = -1;
@@ -305,7 +306,7 @@ void run_func_allen_cahn(void* context)
     GLFWwindow* window = context;
     App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
 
-    platform_directory_create(SAVE_FOLDER);
+    platform_directory_create(string_make(SAVE_FOLDER));
 
     Platform_Calendar_Time calendar_time = platform_epoch_time_to_calendar_time(platform_local_epoch_time());
     String_Builder serialized_image = {0};
@@ -499,15 +500,15 @@ int main()
     file_logger_init_use(&global_logger, &malloc_allocator.allocator, &malloc_allocator.allocator);
 
     Debug_Allocator debug_alloc = {0};
-    debug_allocator_init_use(&debug_alloc, DEBUG_ALLOCATOR_DEINIT_LEAK_CHECK | DEBUG_ALLOCATOR_CAPTURE_CALLSTACK);
+    debug_allocator_init_use(&debug_alloc, allocator_get_default(), DEBUG_ALLOCATOR_DEINIT_LEAK_CHECK | DEBUG_ALLOCATOR_CAPTURE_CALLSTACK);
 
-    GLFWallocator allocator = {0};
-    allocator.allocate = glfw_malloc_func;
-    allocator.reallocate = glfw_realloc_func;
-    allocator.deallocate = glfw_free_func;
-    allocator.user = &malloc_allocator;
+    // GLFWallocator allocator = {0};
+    // allocator.allocate = glfw_malloc_func;
+    // allocator.reallocate = glfw_realloc_func;
+    // allocator.deallocate = glfw_free_func;
+    // allocator.user = &malloc_allocator;
  
-    glfwInitAllocator(&allocator);
+    // glfwInitAllocator(&allocator);
     glfwSetErrorCallback(glfw_error_func);
     TEST_MSG(glfwInit(), "Failed to init glfw");
 
