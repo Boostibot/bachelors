@@ -8,7 +8,7 @@ void _test_cuda(cudaError_t error, const char* expression, Source_Info info)
     {
         assertion_report(expression, info, "cuda failed with error %s", cudaGetErrorString(error));
         platform_trap();
-        platform_abort();
+        abort();
     }
 }
 
