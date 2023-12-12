@@ -26,6 +26,9 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
+#include <stddef.h>
+#include <sal.h>
+
 const i32 SCR_WIDTH = 1000;
 const i32 SCR_HEIGHT = 1000;
 
@@ -333,7 +336,7 @@ void allen_cahn_set_initial_conditions(f32* initial_phi_map, f32* initial_T_map,
         }
     }
 }
-
+EXPORT MODIFIER_FORMAT_FUNC(format, 3) void log_message(const char* module, Log_Type type, Source_Info source, MODIFIER_FORMAT_ARG const char* format, ...);
 void run_func_allen_cahn_cuda(void* context)
 {
     LOG_INFO("App", "current working dir: '%s'", platform_directory_get_current_working());
@@ -809,4 +812,10 @@ void allen_cahn_custom_config(Allen_Cahn_Config* out_config)
     out_config->snapshots = snapshots;
 }
 
-#include "lib/platform_windows.c"
+#if PLATFORM_OS == PLATFORM_OS_WINDOWS
+    #include "lib/platform_windows.c"
+#elif 
+    #include "lib/platform_linux.c"
+#else
+    #error Provide support for this operating system or define PLATFORM_OS to one of the values in platform.h
+#endif

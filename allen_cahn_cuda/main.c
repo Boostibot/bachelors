@@ -1,4 +1,4 @@
-
+#define _CRT_SECURE_NO_WARNINGS
 #define JOT_ALL_IMPL
 //#define JOT_MEM_DEBUG
 
@@ -507,7 +507,6 @@ int main()
         run_func, NULL, 
         error_func, NULL);
 
-
     platform_deinit();
 }
 
@@ -671,7 +670,7 @@ void error_func(void* context, Platform_Sandbox_Error error)
     LOG_ERROR("APP", "%s exception occured", msg);
     LOG_TRACE("APP", "printing trace:");
     log_group_push();
-    log_translated_callstack("APP", LOG_TYPE_TRACE, error.stack_trace, error.stack_trace_size);
+    log_translated_callstack("APP", LOG_TYPE_TRACE, error.call_stack, error.call_stack_size);
     log_group_pop();
 }
 
@@ -805,3 +804,12 @@ void compute_texture_get_pixels_converted(Image_Builder* into, Compute_Texture t
     
     glGetTextureImage(texture.id, 0, gl_format.format, gl_format.type, (GLsizei) image_builder_all_pixels_size(*into), into->pixels);
 }
+
+
+#if PLATFORM_OS == PLATFORM_OS_WINDOWS
+    #include "lib/platform_windows.c"
+#elif 
+    #include "lib/platform_linux.c"
+#else
+    #error Provide support for this operating system or define PLATFORM_OS to one of the values in platform.h
+#endif
