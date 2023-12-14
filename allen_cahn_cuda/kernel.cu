@@ -224,12 +224,6 @@ __global__ void allen_cahn_simulate(f32* phi_map_next, f32* T_map_next, const f3
 	        f32 T_my = map_at(T_map, x, y - 1, params);
 	        f32 T_px = map_at(T_map, x + 1, y, params);
 	        f32 T_mx = map_at(T_map, x - 1, y, params);
-            
-            if(y == 0)
-                if(T > 0 || phi > 0)
-                {
-                    //cuPrintf("%lli (%d, %d) {T: %16.8f phi: %16.8f} \n", iter, x, y, T, phi);
-                }
 
 	        f32 sum_phi_neigbours = 0
 		        + tau_y*(phi_py - phi)
@@ -244,12 +238,11 @@ __global__ void allen_cahn_simulate(f32* phi_map_next, f32* T_map_next, const f3
 		        + tau_x*(T_mx - T);
 
 	        Vec2 grad_phi = {
-		        (phi_px - phi_mx) * dx / 2,
-		        (phi_py - phi_my) * dy / 2
+		        (phi_px - phi_mx) * dx / (2 * mK),
+		        (phi_py - phi_my) * dy / (2 * mK)
 	        };
         
 	        f32 reaction_term = allen_cahn_reaction_term_2(phi, T, params.xi, grad_phi, params);
-	        //f32 reaction_term = 0;
 	        f32 phi_dt = (sum_phi_neigbours/mK + reaction_term/(params.xi*params.xi)) / params.alpha;
 	        f32 T_dt = sum_T_neigbours / mK + params.L * phi_dt;
 
