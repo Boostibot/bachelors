@@ -306,9 +306,11 @@ void run_func_allen_cahn(void* context)
     GLFWwindow* window = context;
     App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
 
-    platform_directory_create(string_make(SAVE_FOLDER));
+    platform_directory_create(string_make(SAVE_FOLDER), NULL);
 
-    Platform_Calendar_Time calendar_time = platform_epoch_time_to_calendar_time(platform_local_epoch_time());
+    //Platform_Calendar_Time calendar_time = platform_epoch_time_to_calendar_time(platform_local_epoch_time());
+    Platform_Calendar_Time calendar_time = platform_local_calendar_time_from_epoch_time(platform_epoch_time());
+
     String_Builder serialized_image = {0};
 
     Render_Shader compute_shader = {0};

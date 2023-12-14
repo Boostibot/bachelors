@@ -51,9 +51,6 @@
     <ClInclude Include="lib\file.h">
       <Filter>lib</Filter>
     </ClInclude>
-    <ClInclude Include="lib\format.h">
-      <Filter>lib</Filter>
-    </ClInclude>
     <ClInclude Include="lib\format_lpf.h">
       <Filter>lib</Filter>
     </ClInclude>

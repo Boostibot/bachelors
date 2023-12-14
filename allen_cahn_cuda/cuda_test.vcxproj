@@ -127,7 +127,6 @@
     <ClInclude Include="lib\defines.h" />
     <ClInclude Include="lib\error.h" />
     <ClInclude Include="lib\file.h" />
-    <ClInclude Include="lib\format.h" />
     <ClInclude Include="lib\format_lpf.h" />
     <ClInclude Include="lib\format_netbpm.h" />
     <ClInclude Include="lib\guid.h" />
