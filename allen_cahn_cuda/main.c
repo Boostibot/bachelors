@@ -1,4 +1,4 @@
-
+#define _CRT_SECURE_NO_WARNINGS
 #define JOT_ALL_IMPL
 //#define JOT_MEM_DEBUG
 
@@ -479,9 +479,38 @@ void glfw_resize_func(GLFWwindow* window, int width, int heigth);
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
 
 void run_func(void* context);
-void error_func(void* context, Platform_Sandox_Error error_code);
+void error_func(void* context, Platform_Sandbox_Error error);
+
+void func4() 
+{
+    // log_callstack("app", LOG_TYPE_TRACE, -1, 1);
+    *(char*) NULL = 0;
+    ASSERT(false);
+}
+void func3() {func4();}
+void func2() {func3();}
+void func1() {func2();}
+
+void run_func(void* context)
+{
+    // log_callstack("app", LOG_TYPE_DEBUG, -1, 1);
+    (void) context;
+    for(int i = 0; i < 10; i++)
+        func1();
+}
 
 int main()
+{
+    platform_init();
+
+    platform_exception_sandbox(
+        run_func, NULL, 
+        error_func, NULL);
+
+    platform_deinit();
+}
+
+int _main()
 {
     platform_init();
     Malloc_Allocator static_allocator = {0};
@@ -560,12 +589,12 @@ int main()
 
 void* glfw_malloc_func(size_t size, void* user)
 {
-    return malloc_allocator_malloc((Malloc_Allocator*) user, size);
+    return malloc_allocator_malloc((Malloc_Allocator*) user, (isize) size);
 }
 
 void* glfw_realloc_func(void* block, size_t size, void* user)
 {
-    return malloc_allocator_realloc((Malloc_Allocator*) user, block, size);
+    return malloc_allocator_realloc((Malloc_Allocator*) user, block, (isize) size);
 }
 
 void glfw_free_func(void* block, void* user)
@@ -633,15 +662,15 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
     }
 }
 
-void error_func(void* context, Platform_Sandox_Error error_code)
+void error_func(void* context, Platform_Sandbox_Error error)
 {
     (void) context;
-    const char* msg = platform_sandbox_error_to_string(error_code);
+    const char* msg = platform_exception_to_string(error.exception);
     
     LOG_ERROR("APP", "%s exception occured", msg);
     LOG_TRACE("APP", "printing trace:");
     log_group_push();
-    log_callstack("APP", LOG_TYPE_ERROR, -1, 1);
+    log_translated_callstack("APP", LOG_TYPE_TRACE, error.call_stack, error.call_stack_size);
     log_group_pop();
 }
 
@@ -712,7 +741,7 @@ Compute_Texture compute_texture_make_with(isize width, isize heigth, Image_Pixel
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexImage2D(GL_TEXTURE_2D, 0, pixel_format.internal_format, (GLuint) width, (GLuint) heigth, 0, pixel_format.format, pixel_format.type, data);
+	glTexImage2D(GL_TEXTURE_2D, 0, (GLint) pixel_format.internal_format, (GLsizei) width, (GLsizei) heigth, 0, pixel_format.format, pixel_format.type, data);
 
     tex.format = pixel_format;
     tex.width = (i32) width;
@@ -730,7 +759,7 @@ Compute_Texture compute_texture_make(isize width, isize heigth, Image_Pixel_Form
 void compute_texture_bind(Compute_Texture texture, GLenum access, isize slot)
 {
 	glBindImageTexture((GLuint) slot, texture.id, 0, GL_FALSE, 0, access, texture.format.internal_format);
-    glBindTextureUnit((i32) slot, texture.id);
+    glBindTextureUnit((GLuint) slot, texture.id);
 }
 
 void compute_texture_deinit(Compute_Texture* texture)
@@ -775,3 +804,12 @@ void compute_texture_get_pixels_converted(Image_Builder* into, Compute_Texture t
     
     glGetTextureImage(texture.id, 0, gl_format.format, gl_format.type, (GLsizei) image_builder_all_pixels_size(*into), into->pixels);
 }
+
+
+#if PLATFORM_OS == PLATFORM_OS_WINDOWS
+    #include "lib/platform_windows.c"
+#elif 
+    #include "lib/platform_linux.c"
+#else
+    #error Provide support for this operating system or define PLATFORM_OS to one of the values in platform.h
+#endif

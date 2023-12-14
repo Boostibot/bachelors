@@ -1561,16 +1561,6 @@ __declspec(thread) void* sandbox_error_context;
 __declspec(thread) Platform_Sandox_Error sanbox_error_code;
 __declspec(thread) bool sandbox_is_signal_handler_set = false;
 
-void platform_abort()
-{
-    RaiseException(PLATFORM_EXCEPTION_ABORT, 0, 0, NULL);
-}
-
-void platform_terminate()
-{
-    RaiseException(PLATFORM_EXCEPTION_TERMINATE, 0, 0, NULL);
-}
-
 LONG WINAPI _sanbox_exception_filter(EXCEPTION_POINTERS * ExceptionInfo)
 {
     Platform_Sandox_Error error = PLATFORM_EXCEPTION_NONE;

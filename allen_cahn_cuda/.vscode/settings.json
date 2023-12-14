@@ -17,6 +17,10 @@
         "stdio.h": "c",
         "gl.h": "c",
         "glfw3.h": "c",
-        "gl_pixel_format.h": "c"
-    }
+        "gl_pixel_format.h": "c",
+        "dlfcn.h": "c",
+        "execinfo.h": "c"
+    },
+
+    "customWindowZoom.zoomLevelChangeValue": 0.5,
 }

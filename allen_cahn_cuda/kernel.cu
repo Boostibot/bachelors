@@ -21,20 +21,20 @@
 #include "lib/format_netbpm.h"
 #include "lib/math.h"
 
-//@TODO: schema s laplacianem
-//       linux backend
-//       
-
 #include "glfw/glfw3.h"
 #include <cuda_gl_interop.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+
+#include <stddef.h>
+#include <sal.h>
 
 const i32 SCR_WIDTH = 1000;
 const i32 SCR_HEIGHT = 1000;
 
 const f64 FPS_DISPLAY_FREQ = 50000;
 const f64 RENDER_FREQ = 30;
+const f64 POLL_FREQ = 30;
 
 const f64 FREE_RUN_SYM_FPS = 200;
 
@@ -251,6 +251,33 @@ __global__ void allen_cahn_simulate(f32* phi_map_next, f32* T_map_next, const f3
 		
             phi_map_next[x + y*params.mesh_size_x] = phi_next;
             T_map_next[x + y*params.mesh_size_x] = T_next;
+
+            
+            phi_map_next[x + y*params.mesh_size_x] = 0;
+            T_map_next[x + y*params.mesh_size_x] = 0;
+        }
+    }
+}
+
+
+__global__ void allen_cahn_simulate_empty(f32* phi_map_next, f32* T_map_next, const f32* phi_map, const f32* T_map, Allen_Cahn_Params params, isize iter)
+{
+    f32 dx = (f32) params.sym_size / params.mesh_size_x;
+    f32 dy = (f32) params.sym_size / params.mesh_size_y;
+    f32 mK = dx * dy;
+    
+    //uniform grid
+    f32 tau_x = 1;
+    f32 tau_y = 1;
+    //f32 tau_x = dy / dx;
+    //f32 tau_y = dx / dy;
+
+    for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.mesh_size_x; x += blockDim.x * gridDim.x) 
+    {
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.mesh_size_x; y += blockDim.y * gridDim.y) 
+        {
+            phi_map_next[x + y*params.mesh_size_x] = 0;
+            T_map_next[x + y*params.mesh_size_x] = 0;
         }
     }
 }
@@ -302,9 +329,10 @@ void allen_cahn_set_initial_conditions(f32* initial_phi_map, f32* initial_T_map,
         }
     }
 }
-
+EXPORT MODIFIER_FORMAT_FUNC(format, 3) void log_message(const char* module, Log_Type type, Source_Info source, MODIFIER_FORMAT_ARG const char* format, ...);
 void run_func_allen_cahn_cuda(void* context)
 {
+    LOG_INFO("App", "current working dir: '%s'", platform_directory_get_current_working());
 
     GLFWwindow* window = (GLFWwindow*) context;
     App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
@@ -334,10 +362,12 @@ void run_func_allen_cahn_cuda(void* context)
     f64 fps_display_last_time = 0;
     i64 fps_display_last_frames = 0;
     
+    f64 poll_last_time = 0;
     f64 render_last_time = 0;
     f64 simulated_last_time = 0;
 
     f64 simulation_time_sum = 0;
+
 	while (!glfwWindowShouldClose(window))
     {
         f64 now = clock_s();
@@ -356,6 +386,7 @@ void run_func_allen_cahn_cuda(void* context)
         //if(0)
         if(now - render_last_time > 1.0/RENDER_FREQ)
         {
+            PERF_COUNTER_START(render);
             render_last_time = now;
             if(app->render_phi)
                 render_cuda_memory(app, simualtion->output_phi_map, simualtion->phi_map, 0, 1);
@@ -363,6 +394,7 @@ void run_func_allen_cahn_cuda(void* context)
                 render_cuda_memory(app, simualtion->output_T_map, simualtion->T_map, 0, 1.5);
                 
             glfwSwapBuffers(app->window);
+            PERF_COUNTER_END(render);
         }
 
         if(now - fps_display_last_time > 1.0/FPS_DISPLAY_FREQ)
@@ -390,6 +422,8 @@ void run_func_allen_cahn_cuda(void* context)
 
         if(step_sym)
         {
+            PERF_COUNTER_START(simulation_step);
+
             simulated_last_time = now;
             app->remaining_steps -= 1;
 
@@ -400,7 +434,9 @@ void run_func_allen_cahn_cuda(void* context)
             allen_cahn_simulate<<<grid, bs>>>(simualtion->next_phi_map, simualtion->next_T_map, simualtion->phi_map, simualtion->T_map, simualtion->config.params, frame_counter);
             CUDA_TEST(cudaGetLastError());
             CUDA_TEST(cudaDeviceSynchronize());
+            PERF_COUNTER_START(cudaPrintfDisplay_c);
             cudaPrintfDisplay();
+            PERF_COUNTER_END(cudaPrintfDisplay_c);
             
             f64 end_start_time = clock_s();
 
@@ -457,10 +493,16 @@ void run_func_allen_cahn_cuda(void* context)
 
             SWAP(&simualtion->phi_map, &simualtion->next_phi_map, f32*);
             SWAP(&simualtion->T_map, &simualtion->next_T_map, f32*);
-
+            
+            PERF_COUNTER_END(simulation_step);
         }
         
-		glfwPollEvents();
+        if(now - poll_last_time > 1.0/POLL_FREQ)
+        {
+            PERF_COUNTER_START(poll_evennts);
+		    glfwPollEvents();
+            PERF_COUNTER_END(poll_evennts);
+        }
     }
 
     platform_file_unwatch(&file_watch);
@@ -474,7 +516,7 @@ void glfw_resize_func(GLFWwindow* window, int width, int heigth);
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
 
 void run_func(void* context);
-void error_func(void* context, Platform_Sandox_Error error_code);
+void error_func(void* context, Platform_Sandbox_Error error_code);
 
 void platform_test_func()
 {
@@ -510,6 +552,7 @@ void platform_test_func()
     platform_directory_list_contents_free(entries);
 }
 
+
 int main()
 {
     platform_init();
@@ -521,7 +564,7 @@ int main()
     malloc_allocator_init_use(&malloc_allocator, 0);
     
     Debug_Allocator debug_alloc = {0};
-    debug_allocator_init_use(&debug_alloc, DEBUG_ALLOCATOR_DEINIT_LEAK_CHECK | DEBUG_ALLOCATOR_CAPTURE_CALLSTACK);
+    debug_allocator_init_use(&debug_alloc, &malloc_allocator.allocator, DEBUG_ALLOCATOR_DEINIT_LEAK_CHECK | DEBUG_ALLOCATOR_CAPTURE_CALLSTACK);
 
     error_system_init(&static_allocator.allocator);
     file_logger_init_use(&global_logger, &malloc_allocator.allocator, &malloc_allocator.allocator);
@@ -662,15 +705,15 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
     }
 }
 
-void error_func(void* context, Platform_Sandox_Error error_code)
+void error_func(void* context, Platform_Sandbox_Error error)
 {
     (void) context;
-    const char* msg = platform_sandbox_error_to_string(error_code);
+    const char* msg = platform_exception_to_string(error.exception);
     
     LOG_ERROR("APP", "%s exception occured", msg);
     LOG_TRACE("APP", "printing trace:");
     log_group_push();
-    log_callstack("APP", LOG_TYPE_ERROR, -1, 1);
+    log_translated_callstack("APP", LOG_TYPE_TRACE, error.call_stack, error.call_stack_size);
     log_group_pop();
 }
 
@@ -762,4 +805,10 @@ void allen_cahn_custom_config(Allen_Cahn_Config* out_config)
     out_config->snapshots = snapshots;
 }
 
-#include "lib/platform_windows.c"
+#if PLATFORM_OS == PLATFORM_OS_WINDOWS
+    #include "lib/platform_windows.c"
+#elif 
+    #include "lib/platform_linux.c"
+#else
+    #error Provide support for this operating system or define PLATFORM_OS to one of the values in platform.h
+#endif
