@@ -1,7 +1,7 @@
 
-#define _CRT_SECURE_NO_WARNINGS
 #define JOT_ALL_IMPL
 #define JMAPI __host__ __device__ static inline
+#include "lib/platform.h"
 
 #include "config.h"
 #include "integration_methods.h"
@@ -10,7 +10,6 @@
 #include "cuprintf.cu"
 #include "cuda_util.cuh"
 
-#include "lib/platform.h"
 #include "lib/log.h"
 #include "lib/logger_file.h"
 #include "lib/allocator_debug.h"
@@ -27,7 +26,6 @@
 #include <device_launch_parameters.h>
 
 #include <stddef.h>
-#include <sal.h>
 
 const i32 SCR_WIDTH = 1000;
 const i32 SCR_HEIGHT = 1000;
@@ -805,10 +803,12 @@ void allen_cahn_custom_config(Allen_Cahn_Config* out_config)
     out_config->snapshots = snapshots;
 }
 
-#if PLATFORM_OS == PLATFORM_OS_WINDOWS
-    #include "lib/platform_windows.c"
-#elif 
-    #include "lib/platform_linux.c"
-#else
-    #error Provide support for this operating system or define PLATFORM_OS to one of the values in platform.h
+#if 0
+    #if PLATFORM_OS == PLATFORM_OS_WINDOWS
+        #include "lib/platform_windows.c"
+    #elif PLATFORM_OS == PLATFORM_OS_UNIX
+        #include "lib/platform_linux.c"
+    #else
+        #error Provide support for this operating system or define PLATFORM_OS to one of the values in platform.h
+    #endif
 #endif

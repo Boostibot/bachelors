@@ -19,7 +19,8 @@
         "glfw3.h": "c",
         "gl_pixel_format.h": "c",
         "dlfcn.h": "c",
-        "execinfo.h": "c"
+        "execinfo.h": "c",
+        "platform.h": "c"
     },
 
     "customWindowZoom.zoomLevelChangeValue": 0.5,

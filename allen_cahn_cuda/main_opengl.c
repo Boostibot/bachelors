@@ -258,6 +258,7 @@ void run_func_allen_cahn(void* context)
 {
     // compare_rk4();
 
+
     const i32 PAUSE_AFTER_SAVES = 3;
     const i32 SAVE_EVERY = -1;
     const char* const SAVE_FOLDER = "snapshots";
@@ -501,7 +502,7 @@ void run_func(void* context)
         func1();
 }
 
-int main()
+int _main()
 {
     platform_init();
 
@@ -510,11 +511,17 @@ int main()
         error_func, NULL);
 
     platform_deinit();
+    return 0;
 }
 
-int _main()
+int main()
 {
     platform_init();
+
+    i64 epoch_time = platform_epoch_time();
+    Platform_Calendar_Time now_local_ = platform_local_calendar_time_from_epoch_time(epoch_time);
+    ASSERT(epoch_time == platform_epoch_time_from_local_calendar_time(now_local_));
+
     Malloc_Allocator static_allocator = {0};
     malloc_allocator_init(&static_allocator);
     allocator_set_static(&static_allocator.allocator);
@@ -807,10 +814,10 @@ void compute_texture_get_pixels_converted(Image_Builder* into, Compute_Texture t
     glGetTextureImage(texture.id, 0, gl_format.format, gl_format.type, (GLsizei) image_builder_all_pixels_size(*into), into->pixels);
 }
 
-
 #if PLATFORM_OS == PLATFORM_OS_WINDOWS
+    #error WINDOWS?!
     #include "lib/platform_windows.c"
-#elif 
+#elif PLATFORM_OS == PLATFORM_OS_UNIX
     #include "lib/platform_linux.c"
 #else
     #error Provide support for this operating system or define PLATFORM_OS to one of the values in platform.h

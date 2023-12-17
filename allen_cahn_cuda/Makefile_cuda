@@ -1,0 +1,27 @@
+DIRS=build
+C_CC=gcc
+C_FLAGS=-g -ggdb -Wall -Wformat -Wfloat-conversion -Wlogical-op  -Wsign-conversion -Wno-unknown-pragmas -Wno-unused-function -Wno-unused-local-typedefs -Wno-missing-braces
+
+CUDA_CC=nvcc
+CUDA_FLAGS=
+LINK_FLAGS=-lm -lglfw -rdynamic -lcuda -lcudart
+
+ALL_SOURCES=$(shell find -L -regex '.*/.*\.\(c\|h\|cpp\|hpp\|cu\|cuh\)$ ')
+DEPENDENCIES=$(ALL_SOURCES) Makefile
+# -Wdouble-promotion
+
+#We do complete rebuild when anything changes. Its simpler that way.
+build/main.out: build/kernel.o build/platform.o $(DEPENDENCIES)
+	$(C_CC) build/kernel.o build/platform.o -o build/main.out $(LINK_FLAGS)
+
+build/kernel.o: $(DEPENDENCIES)
+	$(CUDA_CC) $(CUDA_FLAGS) -c kernel.cu
+	
+build/platform.o: $(DEPENDENCIES)
+	$(C_CC) $(C_FLAGS) -c lib/platform_linux.c -o build/platform.o
+
+clean:
+	rm -rf build
+
+# $(info $(shell rm -rf $(DIRS)))
+$(info $(shell mkdir -p $(DIRS)))
