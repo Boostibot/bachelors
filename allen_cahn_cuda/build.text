@@ -1,0 +1,3 @@
+
+nvcc -Xcudafe --display_error_number -O3 -c kernel.cu -o kernel.o
+g++ main.c -o main.out -lm -rdynamic -L/lib/cuda/include -lcuda -lcudart kernel.o

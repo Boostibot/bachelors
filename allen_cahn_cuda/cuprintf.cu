@@ -685,8 +685,12 @@ static int doPrintfDisplay(int headings, int clear, char *bufstart, char *bufend
 //  returns a pointer to it for when a kernel is called. It's up to the caller
 //  to free it.
 //
-extern "C" cudaError_t cudaPrintfInit(size_t bufferLen)
+extern "C" cudaError_t cudaPrintfInit(size_t bufferLen_or_zero)
 {
+    size_t bufferLen = 1048576;
+    if(bufferLen_or_zero > 0)
+        bufferLen = bufferLen_or_zero;
+
     // Fix up bufferlen to be a multiple of CUPRINTF_MAX_LEN
         bufferLen = (bufferLen < (size_t)CUPRINTF_MAX_LEN) ? CUPRINTF_MAX_LEN : bufferLen;
     if((bufferLen % CUPRINTF_MAX_LEN) > 0)
@@ -744,6 +748,7 @@ extern "C" void cudaPrintfEnd()
 //              outputFP     - File descriptor to output to (NULL => stdout)
 //              showThreadID - If true, prints [block,thread] before each line
 //
+
 extern "C" cudaError_t cudaPrintfDisplay(void *outputFP, bool showThreadID)
 {
         printf_fp = (FILE *)((outputFP == NULL) ? stdout : outputFP);

@@ -1,9 +1,10 @@
 #pragma once
 
-#include "gl_utils/gl.h"
-#include "gl_utils/gl_debug_output.h"
-#include "gl_utils/gl_shader_util.h"
-#include "gl_utils/gl_pixel_format.h"
+#error HEY!
+// #include "gl_utils/gl.h"
+// #include "gl_utils/gl_debug_output.h"
+// #include "gl_utils/gl_shader_util.h"
+// #include "gl_utils/gl_pixel_format.h"
 
 typedef struct Compute_Texture {
     GLuint id;

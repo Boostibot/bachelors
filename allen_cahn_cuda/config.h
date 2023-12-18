@@ -5,22 +5,7 @@
 #include "lib/math.h"
 #include "lib/serialize.h"
 #include "lib/file.h"
-
-typedef struct Allen_Cahn_Params{
-    i32 mesh_size_x;
-    i32 mesh_size_y;
-    f32 sym_size;
-
-    f32 dt;
-    f32 L;
-    f32 xi;
-    f32 a;
-    f32 b;
-    f32 alpha;
-    f32 beta;
-    f32 Tm;
-    f32 Tinit;
-} Allen_Cahn_Params;
+#include "kernel.h"
 
 typedef struct Allen_Cahn_Initial_Conditions{
     f32 inside_phi;
@@ -62,11 +47,10 @@ typedef struct Allen_Cahn_Scale {
     f32 lambda;
 } Allen_Cahn_Scale;
 
-
 EXPORT bool serialize_allen_cahn_params(Lpf_Dyn_Entry* entry, Allen_Cahn_Params* val, Read_Or_Write action);
-EXPORT bool serialize_allen_cahn_initial_conditions(Lpf_Dyn_Entry* entry, Allen_Cahn_Initial_Conditions* val, Read_Or_Write action);
-EXPORT bool serialize_allen_cahn_snapshots(Lpf_Dyn_Entry* entry, Allen_Cahn_Snapshots* val, Read_Or_Write action);
-EXPORT bool serialize_allen_cahn_config(Lpf_Dyn_Entry* entry, Allen_Cahn_Config* val, Read_Or_Write action);
+EXPORT bool serialize_allen_cahn_initial_conditions(Lpf_Dyn_Entry* entry, Allen_Cahn_Initial_Conditions* val, f32 sym_size, bool completeley_optional, Read_Or_Write action);
+EXPORT bool serialize_allen_cahn_snapshots(Lpf_Dyn_Entry* entry, Allen_Cahn_Snapshots* val, f32 dt, String config_name, bool completeley_optional, Read_Or_Write action);
+EXPORT bool serialize_allen_cahn_config(Lpf_Dyn_Entry* entry, Allen_Cahn_Config* val, String config_name, Read_Or_Write action);
 EXPORT bool allen_cahn_read_file_config(Allen_Cahn_Config* out_config, const char* config_file_name);
 
 //@TODO: lpf_write vs lpf_write_as_root!

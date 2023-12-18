@@ -20,7 +20,15 @@
         "gl_pixel_format.h": "c",
         "dlfcn.h": "c",
         "execinfo.h": "c",
-        "platform.h": "c"
+        "platform.h": "c",
+        "algorithm": "cpp",
+        "xutility": "cpp",
+        "cuda_util.cuh": "c",
+        "cuprintf.h": "c",
+        "error.h": "c",
+        "logger_file.h": "c",
+        "file.h": "c",
+        "kernel.h": "c"
     },
 
     "customWindowZoom.zoomLevelChangeValue": 0.5,
