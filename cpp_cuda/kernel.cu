@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include <cmath>
 #include <stdio.h>
+#include <assert.h>
 
 __host__ __device__ real_t map_at(const real_t* map, int x, int y, Allen_Cahn_Params params)
 {
@@ -78,9 +79,6 @@ __global__ void allen_cahn_simulate(real_t* phi_map_next, real_t* T_map_next, co
         
 	        real_t reaction_term = allen_cahn_reaction_term_2(phi, T, params.xi, grad_phi_x, grad_phi_y, params);
 
-            if(x == 0 && y == 0)
-                malloc(2);
-
 	        real_t phi_dt = (sum_phi_neigbours/mK + reaction_term/(params.xi*params.xi)) / params.alpha;
 	        real_t T_dt = sum_T_neigbours / mK + params.L * phi_dt;
 
@@ -89,9 +87,6 @@ __global__ void allen_cahn_simulate(real_t* phi_map_next, real_t* T_map_next, co
 		
             phi_map_next[x + y*params.mesh_size_x] = phi_next;
             T_map_next[x + y*params.mesh_size_x] = T_next;
-            
-            phi_map_next[x + y*params.mesh_size_x] = 0;
-            T_map_next[x + y*params.mesh_size_x] = 0;
         }
     }
 }

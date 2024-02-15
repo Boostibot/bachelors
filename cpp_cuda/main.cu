@@ -1,4 +1,4 @@
-﻿#if 0
+#if 0
     #if defined(__NVCOMPILER) || defined(__NVCC__) 
 
 
@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <chrono>
 #include <algorithm>
+#include <filesystem>
 
 const double FPS_DISPLAY_FREQ = 50000;
 const double RENDER_FREQ = 30;
@@ -172,18 +173,17 @@ void allen_cahn_set_initial_conditions(real_t* initial_phi_map, real_t* initial_
 #define DEF_WINDOW_WIDTH	1200 
 #define DEF_WINDOW_HEIGHT	700
 #define DEF_SYM_FREQ_MS		30.0 
-//#define DO_SDL2            
+#define DO_GRAPHICAL_BUILD  
 
+#ifdef DO_GRAPHICAL_BUILD
 #include "gl.h"
 
-#ifdef DO_SDL2
-#include <SDL/SDL.h>
-#else
-#include <GLFW/glfw3.h>
-#endif
+//#include <GLFW/glfw3.h>
+#include "extrenal/include/glfw/glfw3.h"
 
 void glfw_resize_func(GLFWwindow* window, int width, int heigth);
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
+#endif
 
 int main()
 {
@@ -211,125 +211,110 @@ int main()
     CUDA_TEST(cudaDeviceGetAttribute(&device_processor_count, cudaDevAttrMultiProcessorCount, device_id));
     LOG_INFO("App", "device_processor_count %d", device_processor_count);
 
+    #ifndef DO_GRAPHICAL_BUILD
+    config.interactive_mode = false;
+    #endif // DO_GRAPHICAL_BUILD
+
 
     //OPENGL setup
     if(config.interactive_mode)
-    {
+    {   
+        #ifdef DO_GRAPHICAL_BUILD
+        TEST_MSG(glfwInit(), "Failed to init glfw");
 
-        #ifdef DO_SDL2
-	        if (SDL_Init(SDL_INIT_VIDEO) < 0)
-			        return 1;
-
-            SDL_GL_SetAttribute( SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-            SDL_GL_SetAttribute( SDL_GL_CONTEXT_MINOR_VERSION, 2);
-
-            SDL_Window* window = SDL_CreateWindow(WINDOW_TITLE, 
-                SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 
-			    DEF_WINDOW_WIDTH, DEF_WINDOW_HEIGHT, 
-			    SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
-
-            TEST_MSG(window != NULL, "Failed to make sdl window");
-
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-
-        #else
-            TEST_MSG(glfwInit(), "Failed to init glfw");
-
-            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-            glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, true);  
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, true);  
  
-            GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-            ASSERT(monitor && mode);
-            if(monitor != NULL && mode != NULL)
-            {
-                glfwWindowHint(GLFW_RED_BITS, mode->redBits);
-                glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
-                glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
-                glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
-            }
+        GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        ASSERT(monitor && mode);
+        if(monitor != NULL && mode != NULL)
+        {
+            glfwWindowHint(GLFW_RED_BITS, mode->redBits);
+            glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
+            glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
+            glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+        }
  
-            GLFWwindow* window = glfwCreateWindow(1600, 900, "sym", NULL, NULL);
-            TEST_MSG(window != NULL, "Failed to make glfw window");
+        GLFWwindow* window = glfwCreateWindow(1600, 900, "sym", NULL, NULL);
+        TEST_MSG(window != NULL, "Failed to make glfw window");
 
-            //glfwSetWindowUserPointer(window, &app);
-            glfwMakeContextCurrent(window);
-            glfwSetWindowUserPointer(window, app);
-            glfwSetFramebufferSizeCallback(window, glfw_resize_func);
-            glfwSetKeyCallback(window, glfw_key_func);
-            glfwSwapInterval(0);
-            gl_init(glfwGetProcAddress);
+        //glfwSetWindowUserPointer(window, &app);
+        glfwMakeContextCurrent(window);
+        glfwSetWindowUserPointer(window, app);
+        glfwSetFramebufferSizeCallback(window, glfw_resize_func);
+        glfwSetKeyCallback(window, glfw_key_func);
+        glfwSwapInterval(0);
+        gl_init(glfwGetProcAddress);
 
-            GL_Texture draw_texture = gl_texture_make(simualtion->config.params.mesh_size_x, simualtion->config.params.mesh_size_y, PIXEL_TYPE_F32, 1, NULL);
+        GL_Texture draw_texture = gl_texture_make(simualtion->config.params.mesh_size_x, simualtion->config.params.mesh_size_y, PIXEL_TYPE_F32, 1, NULL);
     
-            int frame_counter = 0;
-            double frame_time_sum = 0;
+        int frame_counter = 0;
+        double frame_time_sum = 0;
     
-            double fps_display_last_time_sum = 0;
-            double fps_display_last_time = 0;
+        double fps_display_last_time_sum = 0;
+        double fps_display_last_time = 0;
     
-            double poll_last_time = 0;
-            double render_last_time = 0;
-            double simulated_last_time = 0;
+        double poll_last_time = 0;
+        double render_last_time = 0;
+        double simulated_last_time = 0;
 
-            double simulation_time_sum = 0;
+        double simulation_time_sum = 0;
 
-	        while (!glfwWindowShouldClose(window))
+	    while (!glfwWindowShouldClose(window))
+        {
+            double frame_start_time = clock_s();
+
+            if(frame_start_time - render_last_time > 1.0/RENDER_FREQ)
             {
-                double frame_start_time = clock_s();
-
-                if(frame_start_time - render_last_time > 1.0/RENDER_FREQ)
-                {
-                    render_last_time = frame_start_time;
-                    if(app->render_phi)
-                        draw_sci_cuda_memory(draw_texture, 0.3, 0.7, simualtion->phi_map);
-                    else
-                        draw_sci_cuda_memory(draw_texture, 0, 1, simualtion->T_map);
-                }
-
-                if(frame_start_time - fps_display_last_time > 1.0/FPS_DISPLAY_FREQ)
-                {
-                    double time_sum_delta = frame_time_sum - fps_display_last_time_sum;
-                    if(time_sum_delta != 0)
-                        glfwSetWindowTitle(window, std::to_string(time_sum_delta).c_str());
-
-                    fps_display_last_time = frame_start_time;
-                    fps_display_last_time_sum = frame_time_sum;
-                }
-
-                bool step_sym = false;
-                if(app->is_in_step_mode)
-                    step_sym = app->remaining_steps > 0.5;
+                render_last_time = frame_start_time;
+                if(app->render_phi)
+                    draw_sci_cuda_memory(draw_texture, config.display_min, config.display_max, simualtion->phi_map);
                 else
-                    step_sym = frame_start_time - simulated_last_time > 1.0/app->step_by/FREE_RUN_SYM_FPS;
-                    
-                if(step_sym)
-                {
-                    simulated_last_time = frame_start_time;
-                    app->remaining_steps -= 1;
-                    CUDA_TEST(kernel_step(simualtion->next_phi_map, simualtion->next_T_map, simualtion->phi_map, simualtion->T_map, simualtion->config.params, device_processor_count, frame_counter));
-
-                    double end_start_time = clock_s();
-                    double delta = end_start_time - frame_start_time;
-
-                    frame_time_sum += delta;
-                    frame_counter += 1;
-                    simulation_time_sum += simualtion->config.params.dt;
-                    std::swap(simualtion->phi_map, simualtion->next_phi_map);
-                    std::swap(simualtion->T_map, simualtion->next_T_map);
-                }
-
-                glfwSwapBuffers(window);
-                glfwPollEvents();
+                    draw_sci_cuda_memory(draw_texture, config.display_min, config.display_max, simualtion->T_map);
             }
 
-    
-            glfwDestroyWindow(window);
-            glfwTerminate();
+            if(frame_start_time - fps_display_last_time > 1.0/FPS_DISPLAY_FREQ)
+            {
+                double time_sum_delta = frame_time_sum - fps_display_last_time_sum;
+                if(time_sum_delta != 0)
+                    glfwSetWindowTitle(window, std::to_string(time_sum_delta).c_str());
 
-        
+                fps_display_last_time = frame_start_time;
+                fps_display_last_time_sum = frame_time_sum;
+            }
+
+            bool step_sym = false;
+            if(app->is_in_step_mode)
+                step_sym = app->remaining_steps > 0.5;
+            else
+                step_sym = frame_start_time - simulated_last_time > 1.0/app->step_by/FREE_RUN_SYM_FPS;
+                    
+            if(step_sym)
+            {
+                simulated_last_time = frame_start_time;
+                app->remaining_steps -= 1;
+                CUDA_TEST(kernel_step(simualtion->next_phi_map, simualtion->next_T_map, simualtion->phi_map, simualtion->T_map, simualtion->config.params, device_processor_count, frame_counter));
+
+                double end_start_time = clock_s();
+                double delta = end_start_time - frame_start_time;
+
+                frame_time_sum += delta;
+                frame_counter += 1;
+                simulation_time_sum += simualtion->config.params.dt;
+                std::swap(simualtion->phi_map, simualtion->next_phi_map);
+                std::swap(simualtion->T_map, simualtion->next_T_map);
+            }
+
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+        }
+
+    
+        glfwDestroyWindow(window);
+        glfwTerminate();
         #endif
     }
     else
@@ -361,7 +346,7 @@ int main()
     return 0;    
 }
 
-#ifndef DO_SDL2
+#ifdef DO_GRAPHICAL_BUILD
 
 #define MIN(a, b)   ((a) < (b) ? (a) : (b))
 #define MAX(a, b)   ((a) > (b) ? (a) : (b))
