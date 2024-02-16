@@ -1,0 +1,41 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="local">
+      <UniqueIdentifier>{42cb385a-49fd-4101-8343-39e7bbd69a16}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="cuda_util.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="integration_methods.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="kernel.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="log.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="assert.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="config.h">
+      <Filter>local</Filter>
+    </ClInclude>
+    <ClInclude Include="gl.h">
+      <Filter>local</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>local</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="kernel.cu">
+      <Filter>local</Filter>
+    </CudaCompile>
+  </ItemGroup>
+</Project>

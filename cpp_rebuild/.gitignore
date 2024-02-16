@@ -1,0 +1,7 @@
+x64/
+.vs/
+resources/ignored/*
+logs/
+snapshots/
+build/
+main.i
