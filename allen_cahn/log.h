@@ -224,8 +224,6 @@ void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t i
     if(type == LOG_FLUSH)
         return;
 
-        //@TODO
-
     std::timespec ts = {0};
     (void) std::timespec_get(&ts, TIME_UTC);
     struct tm* now = std::gmtime(&ts.tv_sec);

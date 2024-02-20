@@ -38,32 +38,26 @@ const double POLL_FREQ = 30;
 
 const double FREE_RUN_SYM_FPS = 200;
 
+#define WINDOW_TITLE        "sym"
+#define TARGET_FRAME_TIME	16.0 
+#define DEF_WINDOW_WIDTH	800 
+#define DEF_WINDOW_HEIGHT	800
+#define DO_GRAPHICAL_BUILD  
+
 static double clock_s();
-
-typedef struct Simulation_State {
-    Allen_Cahn_Config config;
-    Allen_Cahn_Config last_config;
-    
-    real_t* initial_phi_map;
-    real_t* initial_T_map;
-
-    real_t* phi_map;
-    real_t* T_map;
-    real_t* next_phi_map;
-    real_t* next_T_map;
-
-    real_t* display_map1;
-    real_t* display_map2;
-    real_t* display_map3;
-} Simulation_State;
 
 typedef struct App_State {
     bool is_in_step_mode;
-    bool render_phi;
+    uint8_t render_target; //0:phi 1:T rest: debug_option at index - 2; 
     double remaining_steps;
     double step_by;
 
-    Simulation_State simulation_state;
+    Allen_Cahn_Config config;
+    Allen_Cahn_Config last_config;
+    Allen_Cahn_Maps maps;
+
+    real_t* initial_phi_map;
+    real_t* initial_T_map;
 } App_State;
 
 bool simulation_state_is_hard_reload(const Allen_Cahn_Config* config, const Allen_Cahn_Config* last_config)
@@ -86,43 +80,49 @@ bool simulation_state_is_hard_reload(const Allen_Cahn_Config* config, const Alle
     return false;
 }
 
-void simulation_state_deinit(Simulation_State* state)
-{
-    (void) state;
-}
-
 void allen_cahn_set_initial_conditions(real_t* initial_phi_map, real_t* initial_T_map, Allen_Cahn_Config config);
 
-void simulation_state_reload(Simulation_State* state, Allen_Cahn_Config* config)
+void simulation_state_reload(App_State* state, Allen_Cahn_Config* config)
 {
-
     if(config == NULL || simulation_state_is_hard_reload(&state->last_config, config))
     {
-        free(state->initial_phi_map);
-        free(state->initial_T_map);
+        free(state->initial_phi_map); state->initial_phi_map = NULL;
+        free(state->initial_T_map); state->initial_T_map = NULL;
 
-        cudaFree(state->phi_map);
-        cudaFree(state->T_map);
-        cudaFree(state->next_phi_map);
-        cudaFree(state->next_T_map);
+        cudaFree(state->maps.Phi[0]); state->maps.Phi[0] = NULL;
+        cudaFree(state->maps.Phi[1]); state->maps.Phi[1] = NULL;
+        cudaFree(state->maps.T[0]); state->maps.T[0] = NULL;
+        cudaFree(state->maps.T[1]); state->maps.T[1] = NULL;
+
+        for(size_t i = 0; i < ALLEN_CAHN_DEBUG_MAPS; i++)
+        {
+            cudaFree(state->maps.debug_maps[i]);
+            state->maps.debug_maps[i] = NULL;
+        }
 
         if(config != NULL)
         {
             size_t pixel_count_x = (size_t) config->params.mesh_size_x;
             size_t pixel_count_y = (size_t) config->params.mesh_size_y;
             size_t pixel_count = pixel_count_x * pixel_count_y;
+            size_t byte_count = pixel_count * sizeof(real_t);
 
-            state->initial_phi_map = (real_t*) malloc(pixel_count * sizeof(real_t));
-            state->initial_T_map = (real_t*) malloc(pixel_count * sizeof(real_t));
+            state->initial_phi_map = (real_t*) malloc(byte_count);
+            state->initial_T_map = (real_t*) malloc(byte_count);
             allen_cahn_set_initial_conditions(state->initial_phi_map, state->initial_T_map, *config);
 
-            CUDA_TEST(cudaMalloc((void**)&state->phi_map,          pixel_count * sizeof(real_t)));
-            CUDA_TEST(cudaMalloc((void**)&state->T_map,            pixel_count * sizeof(real_t)));
-            CUDA_TEST(cudaMalloc((void**)&state->next_phi_map,     pixel_count * sizeof(real_t)));
-            CUDA_TEST(cudaMalloc((void**)&state->next_T_map,       pixel_count * sizeof(real_t)));
+            CUDA_TEST(cudaMalloc((void**) &state->maps.Phi[0], byte_count));
+            CUDA_TEST(cudaMalloc((void**) &state->maps.Phi[1], byte_count));
+            CUDA_TEST(cudaMalloc((void**) &state->maps.T[0], byte_count));
+            CUDA_TEST(cudaMalloc((void**) &state->maps.T[1], byte_count));
+            for(size_t i = 0; i < ALLEN_CAHN_DEBUG_MAPS; i++)
+            {
+                CUDA_TEST(cudaMalloc((void**) &state->maps.debug_maps[i], byte_count));
+                state->maps.debug_request[i] = true;
+            }
 
-            CUDA_TEST(cudaMemcpy(state->phi_map, state->initial_phi_map, pixel_count * sizeof(real_t), cudaMemcpyHostToDevice));
-            CUDA_TEST(cudaMemcpy(state->T_map, state->initial_T_map, pixel_count * sizeof(real_t), cudaMemcpyHostToDevice));
+            CUDA_TEST(cudaMemcpy(state->maps.Phi[0], state->initial_phi_map, byte_count, cudaMemcpyHostToDevice));
+            CUDA_TEST(cudaMemcpy(state->maps.T[0], state->initial_T_map, byte_count, cudaMemcpyHostToDevice));
         }
     }
 
@@ -145,7 +145,7 @@ void allen_cahn_set_initial_conditions(real_t* initial_phi_map, real_t* initial_
     {
         for(size_t x = 0; x < (size_t) params.mesh_size_x; x++)
         {
-            Vec2 pos = Vec2{((real_t) x+0.5f) / params.mesh_size_x * params.sym_size, ((real_t) y+0.5f) / params.mesh_size_y * params.sym_size}; 
+            Vec2 pos = Vec2{((real_t) x+0.5f) / params.mesh_size_x * params.L0, ((real_t) y+0.5f) / params.mesh_size_y * params.L0}; 
             size_t i = x + y*(size_t) params.mesh_size_x;
 
             real_t center_dist = (real_t) hypot(initial.circle_center.x - pos.x, initial.circle_center.y - pos.y);
@@ -167,12 +167,6 @@ void allen_cahn_set_initial_conditions(real_t* initial_phi_map, real_t* initial_
         }
     }
 }
-#define WINDOW_TITLE        "sym"
-#define TARGET_FRAME_TIME	16.0 
-#define DEF_WINDOW_WIDTH	1200 
-#define DEF_WINDOW_HEIGHT	700
-#define DEF_SYM_FREQ_MS		30.0 
-#define DO_GRAPHICAL_BUILD  
 
 #ifdef DO_GRAPHICAL_BUILD
 #include "gl.h"
@@ -196,10 +190,27 @@ int main()
     app->is_in_step_mode = true;
     app->remaining_steps = 0;
     app->step_by = 1;
-    app->render_phi = true;
     
-    Simulation_State* simualtion = &app->simulation_state;
-    simulation_state_reload(simualtion, &config);
+    simulation_state_reload(app, &config);
+
+    LOG_INFO("config", "mesh_size_x = %d", config.params.mesh_size_x);
+    LOG_INFO("config", "mesh_size_y = %d", config.params.mesh_size_y);
+    LOG_INFO("config", "L0 = %f", config.params.L0); 
+
+    LOG_INFO("config", "dt = %f", config.params.dt);
+    LOG_INFO("config", "L = %f", config.params.L);
+    LOG_INFO("config", "xi = %f", config.params.xi);
+    LOG_INFO("config", "a = %f", config.params.a);
+    LOG_INFO("config", "b = %f", config.params.b);
+    LOG_INFO("config", "alpha = %f", config.params.alpha);
+    LOG_INFO("config", "beta = %f", config.params.beta);
+    LOG_INFO("config", "Tm = %f", config.params.Tm);
+    LOG_INFO("config", "Tinit = %f", config.params.Tinit);
+
+    LOG_INFO("config", "S = %f", config.params.S);
+    LOG_INFO("config", "m = %f", config.params.m);
+    LOG_INFO("config", "theta0 = %f", config.params.theta0);
+    LOG_INFO("config", "do_anisotropy = %d", (int) config.params.do_anisotropy);
 
     //CUDA setup
     int device_id = 0;
@@ -237,7 +248,7 @@ int main()
             glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
         }
  
-        GLFWwindow* window = glfwCreateWindow(1600, 900, "sym", NULL, NULL);
+        GLFWwindow* window = glfwCreateWindow(DEF_WINDOW_WIDTH, DEF_WINDOW_HEIGHT, WINDOW_TITLE, NULL, NULL);
         TEST_MSG(window != NULL, "Failed to make glfw window");
 
         //glfwSetWindowUserPointer(window, &app);
@@ -245,10 +256,9 @@ int main()
         glfwSetWindowUserPointer(window, app);
         glfwSetFramebufferSizeCallback(window, glfw_resize_func);
         glfwSetKeyCallback(window, glfw_key_func);
-        // glfwSwapInterval(0);
+        glfwSwapInterval(0);
         gl_init((void*) glfwGetProcAddress);
 
-        // GL_Texture draw_texture = gl_texture_make((size_t) simualtion->config.params.mesh_size_x, (size_t) simualtion->config.params.mesh_size_y, PIXEL_TYPE_F32, 1, NULL);
     
         size_t frame_counter = 0;
         double frame_time_sum = 0;
@@ -260,7 +270,6 @@ int main()
         double simulated_last_time = 0;
         double poll_last_time = 0;
 
-        double simulation_time_sum = 0;
 
 	    while (!glfwWindowShouldClose(window))
         {
@@ -270,14 +279,24 @@ int main()
             bool update_frame_time_display = frame_start_time - time_display_last_time > 1.0/FPS_DISPLAY_FREQ;
             bool poll_events = frame_start_time - poll_last_time > 1.0/POLL_FREQ;
 
-
             if(update_screen)
             {
                 render_last_time = frame_start_time;
-                if(app->render_phi)
-                    draw_sci_cuda_memory("phi", simualtion->config.params.mesh_size_x, simualtion->config.params.mesh_size_y, config.display_min, config.display_max, simualtion->phi_map);
-                else
-                    draw_sci_cuda_memory("phi", simualtion->config.params.mesh_size_x, simualtion->config.params.mesh_size_y, config.display_min, config.display_max, simualtion->T_map);
+
+                real_t* selected_map = NULL;
+                switch (app->render_target)
+                {
+                    case 0: selected_map = app->maps.Phi[0]; break;
+                    case 1: selected_map = app->maps.T[0]; break;
+                
+                    default: {
+                        if(0 <= app->render_target - 2 && app->render_target - 2 < ALLEN_CAHN_DEBUG_MAPS)
+                            selected_map = app->maps.debug_maps[app->render_target - 2];
+                    } break;
+                }
+
+                if(selected_map)
+                    draw_sci_cuda_memory("main", app->config.params.mesh_size_x, app->config.params.mesh_size_y, config.display_min, config.display_max, config.linear_filtering, selected_map);
             }
 
             if(update_frame_time_display)
@@ -300,16 +319,13 @@ int main()
             {
                 simulated_last_time = frame_start_time;
                 app->remaining_steps -= 1;
-                CUDA_TEST(kernel_step(simualtion->next_phi_map, simualtion->next_T_map, simualtion->phi_map, simualtion->T_map, simualtion->config.params, device_processor_count, frame_counter));
+                CUDA_TEST(kernel_step(&app->maps, app->config.params, device_processor_count, frame_counter));
 
                 double end_start_time = clock_s();
                 double delta = end_start_time - frame_start_time;
 
                 frame_time_sum += delta;
                 frame_counter += 1;
-                simulation_time_sum += simualtion->config.params.dt;
-                std::swap(simualtion->phi_map, simualtion->next_phi_map);
-                std::swap(simualtion->T_map, simualtion->next_T_map);
             }
 
             //Only swap buffers when draw happened
@@ -322,7 +338,6 @@ int main()
                 glfwPollEvents();
             }
         }
-
     
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -343,9 +358,7 @@ int main()
                 LOG_INFO("app", "... completed %i%%", (int) (i * 100 / iters));
             }
 
-            CUDA_TEST(kernel_step(simualtion->next_phi_map, simualtion->next_T_map, simualtion->phi_map, simualtion->T_map, simualtion->config.params, device_processor_count, i));
-            std::swap(simualtion->phi_map, simualtion->next_phi_map);
-            std::swap(simualtion->T_map, simualtion->next_T_map);
+            CUDA_TEST(kernel_step(&app->maps, app->config.params, device_processor_count, i));
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
@@ -361,9 +374,6 @@ int main()
 
 #define MIN(a, b)   ((a) < (b) ? (a) : (b))
 #define MAX(a, b)   ((a) > (b) ? (a) : (b))
-#define CLAMP(value, low, high) MAX(low, MIN(value, high))
-#define DIV_ROUND_UP(value, div_by) (((value) + (div_by) - 1) / (div_by))
-#define MODULO(val, range) (((val) % (range) + (range)) % (range))
 
 void glfw_resize_func(GLFWwindow* window, int width, int heigth)
 {
@@ -385,12 +395,43 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
             app->remaining_steps = app->step_by;
         if(key == GLFW_KEY_SPACE)
             app->is_in_step_mode = !app->is_in_step_mode;
-        if(key == GLFW_KEY_F1)
-        {
-            app->render_phi = !app->render_phi;
-            LOG_INFO("APP", "Rendering %s", app->render_phi ? "phi" : "T");
-        }
+
+        uint8_t new_render_target = app->render_target;
+
+        //Switching of render targets. 0 is Phi 1 is T
+        if(key == GLFW_KEY_F1) new_render_target= 0;
+        if(key == GLFW_KEY_F2) new_render_target= 1;
+        if(key == GLFW_KEY_F3) new_render_target= 2;
+        if(key == GLFW_KEY_F4) new_render_target= 3;
+        if(key == GLFW_KEY_F5) new_render_target= 4;
+        if(key == GLFW_KEY_F6) new_render_target= 5;
+        if(key == GLFW_KEY_F7) new_render_target= 6;
+        if(key == GLFW_KEY_F8) new_render_target= 7;
+        if(key == GLFW_KEY_F9) new_render_target= 8;
+        if(key == GLFW_KEY_F10) new_render_target= 9;
         
+        // if(new_render_target != app->render_target)
+        {
+            app->render_target = new_render_target;
+            const char* render_target_name = "<EMPTY>";
+            switch (new_render_target)
+            {
+                case 0: render_target_name = "Phi"; break;
+                case 1: render_target_name = "T"; break;
+            
+                default: {
+                    if(0 <= new_render_target - 2 && new_render_target - 2 < ALLEN_CAHN_DEBUG_MAPS)
+                    {
+                        const char* name = app->maps.debug_names[new_render_target - 2];
+                        if(strlen(name) != 0)
+                            render_target_name = name;
+                    }
+                } break;
+            }
+
+            LOG_INFO("APP", "rendering: %s", render_target_name);
+        }
+
         double iters_before = app->step_by;
         if(key == GLFW_KEY_O)
             app->step_by = app->step_by*1.3 + 1;
@@ -427,7 +468,7 @@ void allen_cahn_custom_config(Allen_Cahn_Config* out_config)
     scale.lambda = 1;
     
     Allen_Cahn_Params params = {0};
-    params.sym_size = _L0;
+    params.L0 = _L0;
     params.mesh_size_x = _SIZE_X;
     params.mesh_size_y = _SIZE_Y;
     params.L = allen_cahn_scale_latent_heat(_L, scale);

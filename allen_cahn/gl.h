@@ -43,7 +43,7 @@ typedef struct GL_Texture {
 void gl_init(void* load_function);
 GL_Texture gl_texture_make(size_t width, size_t heigth, Pixel_Type format, size_t channels, const void* data_or_null);
 void draw_sci_texture(unsigned texture, float min, float max);
-void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, const float* cuda_memory);
+void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const float* cuda_memory);
 
 #ifdef NO_GL
 
@@ -304,20 +304,27 @@ void draw_sci_texture(unsigned texture, float min, float max)
                 vec2 reverse_uv = vec2(uv.x, uv.y);
                 vec3 texCol = texture(tex, reverse_uv).rgb;      
                 float val = texCol.r;
-                if(val < minVal)
+                if(isnan(val))
+                {
+                    color = vec4(1, 0, 1, 1); //Bright purple
+                }
+                else if(val < minVal)
                 {
                     float display = (1 - atan(minVal - val)/PI*2)*0.3;
                     color = vec4(display, display, display, 1.0);
-                    //color = vec4(0, 0, 0, 1.0);
+                    //Shades from dark gray to black
+
                 }
                 else if(val > maxVal)
                 {
                     float display = (atan(val - minVal)/PI*2*0.3 + 0.7);
                     color = vec4(display, display, display, 1.0);
-                    //color = vec4(1, 1, 1, 1.0);
+                    //Shades from bright gray to white
                 }
                 else
                 {
+                    //Spectreum blue -> cyan -> green -> yellow -> red
+
                     val = min(max(val, minVal), maxVal- 0.0001);
                     float d = maxVal - minVal;
                     val = d == 0.0 ? 0.5 : (val - minVal) / d;
@@ -382,7 +389,7 @@ void draw_sci_texture(unsigned texture, float min, float max)
 }
 
 #include "cuda_util.h"
-void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, const float* cuda_memory)
+void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const float* cuda_memory)
 {
     enum { 
         MAX_CUDA_GRAPHIC_RESOURCES = 16,
@@ -438,8 +445,8 @@ void draw_sci_cuda_memory(const char* name, int width, int height, float min, fl
 
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear_filtering ? GL_LINEAR : GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear_filtering ? GL_LINEAR : GL_NEAREST);
             glGenerateMipmap(GL_TEXTURE_2D);
 
             texture.cpu_memory = malloc((size_t) width * (size_t) height * sizeof(float));

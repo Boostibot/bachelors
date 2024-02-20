@@ -35,10 +35,12 @@ typedef struct Allen_Cahn_Config{
     Allen_Cahn_Snapshots snapshots;
     Allen_Cahn_Initial_Conditions initial_conditions;
     std::string config_name;
-    bool interactive_mode;
 
+    bool interactive_mode;
+    bool linear_filtering;
     real_t display_min;
     real_t display_max;
+
 } Allen_Cahn_Config;
 
 typedef struct Allen_Cahn_Scale {
@@ -327,13 +329,14 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             
         uint8_t matched_program = true
             & (uint8_t) key_value_get_bool(pairs, &config->interactive_mode, "interactive")
+            & (uint8_t) key_value_get_bool(pairs, &config->linear_filtering, "linear_filtering")
             & (uint8_t) key_value_get_real(pairs, &config->display_min, "display_min")
             & (uint8_t) key_value_get_real(pairs, &config->display_max, "display_max");
             
         uint8_t matched_params = true
             & (uint8_t) key_value_get_int(pairs, &params->mesh_size_x, "mesh_size_x")
             & (uint8_t) key_value_get_int(pairs, &params->mesh_size_y, "mesh_size_y")
-            & (uint8_t) key_value_get_real(pairs, &params->sym_size, "sym_size")
+            & (uint8_t) key_value_get_real(pairs, &params->L0, "L0")
             & (uint8_t) key_value_get_real(pairs, &params->dt, "dt")
             & (uint8_t) key_value_get_real(pairs, &params->L, "L")
             & (uint8_t) key_value_get_real(pairs, &params->xi, "xi")
@@ -342,7 +345,12 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_real(pairs, &params->alpha, "alpha")
             & (uint8_t) key_value_get_real(pairs, &params->beta, "beta")
             & (uint8_t) key_value_get_real(pairs, &params->Tm, "Tm")
-            & (uint8_t) key_value_get_real(pairs, &params->Tinit, "Tini");
+            & (uint8_t) key_value_get_real(pairs, &params->Tinit, "Tini")
+            & (uint8_t) key_value_get_real(pairs, &params->S, "S")
+            & (uint8_t) key_value_get_real(pairs, &params->m, "m")
+            & (uint8_t) key_value_get_real(pairs, &params->theta0, "theta0")
+            & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "do_anisotropy")
+            ;
 
         state = matched_initial && matched_snaps && matched_params && matched_program;
         if(state == false)
