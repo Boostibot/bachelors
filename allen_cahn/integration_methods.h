@@ -129,11 +129,11 @@ static void compare_rk4()
         double rk4_r = runge_kutta4(t_ini, x_ini, T, tau, rk4_func_x, NULL);
         double exact_r = T*T/2;
 
-        LOG_INFO("RK4", "T = %f", T);
-        LOG_INFO(">RK4", "exact:         %f", exact_r);
-        LOG_INFO(">RK4", "euler:         %f", euler_r);
-        LOG_INFO(">RK4", "semi_euler:    %f", semi_euler_r);
-        LOG_INFO(">RK4", "rk4_var_r:     %f", rk4_var_r);
-        LOG_INFO(">RK4", "rk4_r:         %f", rk4_r);
+        LOG_INFO("RK4", "T = %lf", T);
+        LOG_INFO(">RK4", "exact:         %lf", exact_r);
+        LOG_INFO(">RK4", "euler:         %lf", euler_r);
+        LOG_INFO(">RK4", "semi_euler:    %lf", semi_euler_r);
+        LOG_INFO(">RK4", "rk4_var_r:     %lf", rk4_var_r);
+        LOG_INFO(">RK4", "rk4_r:         %lf", rk4_r);
     }
 }

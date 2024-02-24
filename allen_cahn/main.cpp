@@ -1,23 +1,4 @@
-#if 0
-    #if defined(__NVCOMPILER) || defined(__NVCC__) 
 
-
-    #pragma nv_diag_suppress 186 /* Dissable: pointless comparison of unsigned integer with zero*/
-    #pragma nv_diag_suppress 177 /* Dissable: was declared but never referenced for functions */
-
-    //missing intrinsic?
-    void __builtin_ia32_serialize() {}
-    #endif
-
-    #if defined(__GNUC__) || defined(__clang__)
-    #pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* Dissable deprecated warnings (required for cudaMemcpyToArray for OpenGL interop) */
-    #pragma GCC diagnostic ignored "-Wunused-function"
-    // #pragma GCC diagnostic ignored "-Wunused-local-typedef"
-    #pragma GCC diagnostic ignored "-Wmissing-braces"
-    #endif
-#endif
-
-#define _CRT_SECURE_NO_WARNINGS
 #define JOT_ALL_IMPL
 #include "config.h"
 #include "integration_methods.h"
@@ -33,7 +14,7 @@
 #include <filesystem>
 
 const double FPS_DISPLAY_FREQ = 50000;
-const double RENDER_FREQ = 30;
+const double RENDER_FREQ = 60;
 const double POLL_FREQ = 30;
 
 const double FREE_RUN_SYM_FPS = 200;
@@ -51,6 +32,7 @@ typedef struct App_State {
     uint8_t render_target; //0:phi 1:T rest: debug_option at index - 2; 
     double remaining_steps;
     double step_by;
+    double dt;
 
     Allen_Cahn_Config config;
     Allen_Cahn_Config last_config;
@@ -89,10 +71,11 @@ void simulation_state_reload(App_State* state, Allen_Cahn_Config* config)
         free(state->initial_phi_map); state->initial_phi_map = NULL;
         free(state->initial_T_map); state->initial_T_map = NULL;
 
-        cudaFree(state->maps.Phi[0]); state->maps.Phi[0] = NULL;
-        cudaFree(state->maps.Phi[1]); state->maps.Phi[1] = NULL;
-        cudaFree(state->maps.T[0]); state->maps.T[0] = NULL;
-        cudaFree(state->maps.T[1]); state->maps.T[1] = NULL;
+        for(size_t i = 0; i < ALLEN_CAHN_HISTORY; i++)
+        {
+            cudaFree(state->maps.Phi[i]); state->maps.Phi[0] = NULL;
+            cudaFree(state->maps.T[i]); state->maps.T[0] = NULL;
+        }
 
         for(size_t i = 0; i < ALLEN_CAHN_DEBUG_MAPS; i++)
         {
@@ -111,15 +94,14 @@ void simulation_state_reload(App_State* state, Allen_Cahn_Config* config)
             state->initial_T_map = (real_t*) malloc(byte_count);
             allen_cahn_set_initial_conditions(state->initial_phi_map, state->initial_T_map, *config);
 
-            CUDA_TEST(cudaMalloc((void**) &state->maps.Phi[0], byte_count));
-            CUDA_TEST(cudaMalloc((void**) &state->maps.Phi[1], byte_count));
-            CUDA_TEST(cudaMalloc((void**) &state->maps.T[0], byte_count));
-            CUDA_TEST(cudaMalloc((void**) &state->maps.T[1], byte_count));
-            for(size_t i = 0; i < ALLEN_CAHN_DEBUG_MAPS; i++)
+            for(size_t i = 0; i < ALLEN_CAHN_HISTORY; i++)
             {
-                CUDA_TEST(cudaMalloc((void**) &state->maps.debug_maps[i], byte_count));
-                state->maps.debug_request[i] = true;
+                CUDA_TEST(cudaMalloc((void**) &state->maps.Phi[i], byte_count));
+                CUDA_TEST(cudaMalloc((void**) &state->maps.T[i], byte_count));
             }
+            
+            for(size_t i = 0; i < ALLEN_CAHN_DEBUG_MAPS; i++)
+                CUDA_TEST(cudaMalloc((void**) &state->maps.debug_maps[i], byte_count));
 
             CUDA_TEST(cudaMemcpy(state->maps.Phi[0], state->initial_phi_map, byte_count, cudaMemcpyHostToDevice));
             CUDA_TEST(cudaMemcpy(state->maps.T[0], state->initial_T_map, byte_count, cudaMemcpyHostToDevice));
@@ -193,33 +175,30 @@ int main()
     
     simulation_state_reload(app, &config);
 
-    LOG_INFO("config", "mesh_size_x = %d", config.params.mesh_size_x);
-    LOG_INFO("config", "mesh_size_y = %d", config.params.mesh_size_y);
-    LOG_INFO("config", "L0 = %f", config.params.L0); 
+    #define LOG_INFO_CONFIG_REAL(var) LOG_INFO("config", #var " = " REAL_FMT_LOW_PREC, config.params.var);
+    #define LOG_INFO_CONFIG_INT(var) LOG_INFO("config", #var " = %i", config.params.var);
 
-    LOG_INFO("config", "dt = %f", config.params.dt);
-    LOG_INFO("config", "L = %f", config.params.L);
-    LOG_INFO("config", "xi = %f", config.params.xi);
-    LOG_INFO("config", "a = %f", config.params.a);
-    LOG_INFO("config", "b = %f", config.params.b);
-    LOG_INFO("config", "alpha = %f", config.params.alpha);
-    LOG_INFO("config", "beta = %f", config.params.beta);
-    LOG_INFO("config", "Tm = %f", config.params.Tm);
-    LOG_INFO("config", "Tinit = %f", config.params.Tinit);
+    LOG_INFO_CONFIG_INT(mesh_size_x);
+    LOG_INFO_CONFIG_INT(mesh_size_y);
+    LOG_INFO_CONFIG_REAL(L0);
 
-    LOG_INFO("config", "S = %f", config.params.S);
-    LOG_INFO("config", "m = %f", config.params.m);
-    LOG_INFO("config", "theta0 = %f", config.params.theta0);
-    LOG_INFO("config", "do_anisotropy = %d", (int) config.params.do_anisotropy);
+    LOG_INFO_CONFIG_REAL(dt); 
+    LOG_INFO_CONFIG_REAL(L);  
+    LOG_INFO_CONFIG_REAL(xi); 
+    LOG_INFO_CONFIG_REAL(a);  
+    LOG_INFO_CONFIG_REAL(b);
+    LOG_INFO_CONFIG_REAL(alpha);
+    LOG_INFO_CONFIG_REAL(beta);
+    LOG_INFO_CONFIG_REAL(Tm);
+    LOG_INFO_CONFIG_REAL(Tinit);
 
-    //CUDA setup
-    int device_id = 0;
-    CUDA_TEST(cudaSetDevice(device_id));
-    LOG_INFO("App", "Device set");
-    
-    int device_processor_count = 0;
-    CUDA_TEST(cudaDeviceGetAttribute(&device_processor_count, cudaDevAttrMultiProcessorCount, device_id));
-    LOG_INFO("App", "device_processor_count %d", device_processor_count);
+    LOG_INFO_CONFIG_REAL(S);
+    LOG_INFO_CONFIG_REAL(m);
+    LOG_INFO_CONFIG_REAL(theta0);
+    LOG_INFO("config", "do_anisotropy = %s", config.params.do_anisotropy ? "true" : "false");
+
+    #undef LOG_INFO_CONFIG_REAL
+    #undef LOG_INFO_CONFIG_INT
 
     #ifndef DO_GRAPHICAL_BUILD
     config.interactive_mode = false;
@@ -296,7 +275,7 @@ int main()
                 }
 
                 if(selected_map)
-                    draw_sci_cuda_memory("main", app->config.params.mesh_size_x, app->config.params.mesh_size_y, config.display_min, config.display_max, config.linear_filtering, selected_map);
+                    draw_sci_cuda_memory("main", app->config.params.mesh_size_x, app->config.params.mesh_size_y, (float) app->config.display_min, (float) app->config.display_max, config.linear_filtering, selected_map);
             }
 
             if(update_frame_time_display)
@@ -319,7 +298,7 @@ int main()
             {
                 simulated_last_time = frame_start_time;
                 app->remaining_steps -= 1;
-                CUDA_TEST(kernel_step(&app->maps, app->config.params, device_processor_count, frame_counter));
+                CUDA_TEST(kernel_step(&app->maps, app->config.params, frame_counter));
 
                 double end_start_time = clock_s();
                 double delta = end_start_time - frame_start_time;
@@ -337,6 +316,9 @@ int main()
                 poll_last_time = frame_start_time;
                 glfwPollEvents();
             }
+            double end_frame_time = clock_s();
+            
+            app->dt = end_frame_time - frame_start_time;
         }
     
         glfwDestroyWindow(window);
@@ -358,7 +340,7 @@ int main()
                 LOG_INFO("app", "... completed %i%%", (int) (i * 100 / iters));
             }
 
-            CUDA_TEST(kernel_step(&app->maps, app->config.params, device_processor_count, i));
+            CUDA_TEST(kernel_step(&app->maps, app->config.params, i));
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
@@ -383,21 +365,64 @@ void glfw_resize_func(GLFWwindow* window, int width, int heigth)
 	glViewport(0, 0, width, heigth);
 }
 
+#define CONTROL_SPEED_SYM_SPEED 25000
+#define CONTROL_SPEED_DISPLAY_RANGE 5000
+
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
     (void) mods;
     (void) scancode;
     (void) window;
     App_State* app = (App_State*) glfwGetWindowUserPointer(window); (void) app;
+
     if(action == GLFW_RELEASE)
     {
         if(key == GLFW_KEY_ENTER)
             app->remaining_steps = app->step_by;
         if(key == GLFW_KEY_SPACE)
+        {
             app->is_in_step_mode = !app->is_in_step_mode;
+            LOG_INFO("APP", "Simulation %s", app->is_in_step_mode ? "paused" : "running");
+        }
+        if(key == GLFW_KEY_A)
+        {
+            app->config.params.do_anisotropy = !app->config.params.do_anisotropy;
+            LOG_INFO("APP", "Anisotropy %s", app->config.params.do_anisotropy ? "true" : "false");
+        }
+        if(key == GLFW_KEY_R)
+        {
+            LOG_INFO("APP", "Input range to display in form 'MIN space MAX'");
 
-        uint8_t new_render_target = app->render_target;
+            real_t new_display_max = app->config.display_max;
+            real_t new_display_min = app->config.display_min;
+            if(scanf(REAL_FMT " " REAL_FMT, &new_display_min, &new_display_max) != 2)
+            {
+                LOG_INFO("APP", "Bad range syntax!");
+            }
+            else
+            {
+                LOG_INFO("APP", "displaying range [" REAL_FMT_LOW_PREC ", " REAL_FMT_LOW_PREC "]", new_display_min, new_display_max);
+                app->config.display_max = (real_t) new_display_max;
+                app->config.display_min = (real_t) new_display_min;
+            }
+        }
 
+        if(key == GLFW_KEY_S)
+        {
+            LOG_INFO("APP", "Input simulation speed modifier in form 'NUM'");
+            double new_step_by = app->step_by;
+            if(scanf("%lf", &new_step_by) != 1)
+            {
+                LOG_INFO("APP", "Bad speed syntax!");
+            }
+            else
+            {
+                LOG_INFO("APP", "using simulation speed %.2lf", new_step_by);
+                app->step_by = new_step_by;
+            }
+        }
+
+        uint8_t new_render_target = (uint8_t) -1;
         //Switching of render targets. 0 is Phi 1 is T
         if(key == GLFW_KEY_F1) new_render_target= 0;
         if(key == GLFW_KEY_F2) new_render_target= 1;
@@ -410,19 +435,29 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
         if(key == GLFW_KEY_F9) new_render_target= 8;
         if(key == GLFW_KEY_F10) new_render_target= 9;
         
-        // if(new_render_target != app->render_target)
+        if(new_render_target != (uint8_t) -1)
         {
             app->render_target = new_render_target;
             const char* render_target_name = "<EMPTY>";
             switch (new_render_target)
             {
-                case 0: render_target_name = "Phi"; break;
-                case 1: render_target_name = "T"; break;
+                case 0: 
+                    render_target_name = "Phi"; 
+                    memset(app->maps.debug_request, 0, sizeof app->maps.debug_request); 
+                    break;
+                case 1: 
+                    render_target_name = "T"; 
+                    memset(app->maps.debug_request, 0, sizeof app->maps.debug_request); 
+                    break;
             
                 default: {
-                    if(0 <= new_render_target - 2 && new_render_target - 2 < ALLEN_CAHN_DEBUG_MAPS)
+                    int index = new_render_target - 2; 
+                    if(0 <= index && index < ALLEN_CAHN_DEBUG_MAPS)
                     {
-                        const char* name = app->maps.debug_names[new_render_target - 2];
+                        //Set this debug request
+                        memset(app->maps.debug_request, 0, sizeof app->maps.debug_request);
+                        app->maps.debug_request[index] = true;
+                        const char* name = app->maps.debug_names[index];
                         if(strlen(name) != 0)
                             render_target_name = name;
                     }
@@ -432,14 +467,6 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
             LOG_INFO("APP", "rendering: %s", render_target_name);
         }
 
-        double iters_before = app->step_by;
-        if(key == GLFW_KEY_O)
-            app->step_by = app->step_by*1.3 + 1;
-        if(key == GLFW_KEY_P)
-            app->step_by = MAX((app->step_by - 1)/1.3, 1.0);
-
-        if(iters_before != app->step_by)
-            LOG_INFO("APP", "Steps per iter %lf", app->step_by);
     }
 }
 #endif

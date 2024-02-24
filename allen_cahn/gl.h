@@ -389,12 +389,9 @@ void draw_sci_texture(unsigned texture, float min, float max)
 }
 
 #include "cuda_util.h"
-void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const float* cuda_memory)
+void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const real_t* cuda_memory)
 {
-    enum { 
-        MAX_CUDA_GRAPHIC_RESOURCES = 16,
-        PIXEL_SIZE = 3
-    };
+    enum { MAX_CUDA_GRAPHIC_RESOURCES = 16 };
     typedef struct {
         int width;
         int height;
@@ -406,6 +403,9 @@ void draw_sci_cuda_memory(const char* name, int width, int height, float min, fl
 
     static Texture textures[MAX_CUDA_GRAPHIC_RESOURCES] = {0}; 
     static int used_texture_count = 0;
+
+    size_t pixel_count = (size_t) width * (size_t) height;
+    size_t byte_count = pixel_count * sizeof(float);
 
     int resource_index = -1;
     for(int i = 0; i < used_texture_count; i++)
@@ -449,18 +449,32 @@ void draw_sci_cuda_memory(const char* name, int width, int height, float min, fl
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear_filtering ? GL_LINEAR : GL_NEAREST);
             glGenerateMipmap(GL_TEXTURE_2D);
 
-            texture.cpu_memory = malloc((size_t) width * (size_t) height * sizeof(float));
+            texture.cpu_memory = malloc(byte_count);
 
             resource_index = used_texture_count++;
             textures[resource_index] = texture;
-            // CUDA_TEST(cudaGraphicsGLRegisterImage(&cuda_resources[resource_index], texture.handle, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsNone)); 
         }
     }
-            
+
+    float* read_cuda_memory_from = (float*) (void*) cuda_memory;
+    static float* emphemeral_conversion_buffer = NULL;
+    //if we are using doubles for computation we need to convert to float
+    // because opengl without extensions cannot work with 64 bit floats
+    // (as of 2023)
+    if(sizeof(real_t) != sizeof(float))
+    {
+        ASSERT(sizeof(real_t) == sizeof(double));
+        if(emphemeral_conversion_buffer == NULL)
+            CUDA_TEST(cudaMalloc((void**) &emphemeral_conversion_buffer, byte_count));
+
+        CUDA_TEST(kernel_float_from_double(emphemeral_conversion_buffer, (double*) (void*) cuda_memory, pixel_count));   
+        read_cuda_memory_from =  emphemeral_conversion_buffer;
+    }
+
     //cudaGraphicsGLRegisterImage kept failing with "unknown error" on MX450 on ubuntu. 
-    // Because of this we do incredibly inefficient copy to host memory and back to device through opengl call.
+    // Because of this we do this incredibly inefficient copy to host memory and back to device through opengl call.
     Texture texture = textures[resource_index];
-    CUDA_TEST(cudaMemcpy(texture.cpu_memory, cuda_memory, (size_t) width * (size_t) height * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_TEST(cudaMemcpy(texture.cpu_memory, read_cuda_memory_from, byte_count, cudaMemcpyDeviceToHost));
 
     glBindTexture(GL_TEXTURE_2D, texture.handle);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED, GL_FLOAT, texture.cpu_memory);

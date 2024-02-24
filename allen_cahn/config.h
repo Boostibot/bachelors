@@ -228,7 +228,7 @@ bool key_value_get_vec2(const Key_Value& map, Vec2* out, const char* str)
     auto found = map.find(str);
     bool state = found != map.end();
     const char* value = found->second.c_str();
-    state = state && sscanf(value, "%f %f", &out->x, &out->y) == 2;
+    state = state && sscanf(value, REAL_FMT " " REAL_FMT, &out->x, &out->y) == 2;
     if(state == false)
         LOG_ERROR("config", "couldnt find or match Vec '%s'", str);
 
@@ -241,7 +241,7 @@ bool key_value_get_real(const Key_Value& map, real_t* out, const char* str)
     bool state = found != map.end();
 
     const char* value = found->second.c_str();
-    state = state && sscanf(value, "%f", out) == 1;
+    state = state && sscanf(value, REAL_FMT, out) == 1;
     if(state == false)
         LOG_ERROR("config", "couldnt find or match real_t '%s'", str);
     return state;
