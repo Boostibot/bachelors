@@ -5,11 +5,45 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "CUDA C++: Launch",
+            "type": "cuda-gdb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/main.out",
+            "preLaunchTask": "make",
+            "cwd": "${workspaceFolder}", //"${fileDirname}",
+            // "externalConsole": true,
+        },
+        {
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/main.out",
             "preLaunchTask": "make",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}", //"${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set Disassembly Flavor to Intel",
+                    "text": "-gdb-set disassembly-flavor intel",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "name": "(gdb) Scratch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/cojugate_gradient.out",
+            "preLaunchTask": "make_scratch",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}", //"${fileDirname}",

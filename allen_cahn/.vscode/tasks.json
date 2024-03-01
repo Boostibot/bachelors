@@ -7,7 +7,12 @@
             "command": "make",
             "args": [],
         },
-
+        {
+            "label": "make_scratch",
+            "type": "shell",
+            "command": "make scratch",
+            "args": [],
+        },
         {
             "label": "install_dependecies",
             "type": "shell",

@@ -3,19 +3,20 @@
 #include <string>
 
 typedef struct Vec2{
-    real_t x;
-    real_t y;
+    Real x;
+    Real y;
 } Vec2;
 
 typedef struct Allen_Cahn_Initial_Conditions{
-    real_t inside_phi;
-    real_t inside_T;
+    Real inside_phi;
+    Real inside_T;
 
-    real_t outside_phi;
-    real_t outside_T;
+    Real outside_phi;
+    Real outside_T;
 
     Vec2 circle_center;
-    real_t circle_radius;
+    Real circle_inner_radius;
+    Real circle_outer_radius;
 
     Vec2 square_from;
     Vec2 square_to;
@@ -24,8 +25,8 @@ typedef struct Allen_Cahn_Initial_Conditions{
 } Allen_Cahn_Initial_Conditions;
 
 typedef struct Allen_Cahn_Snapshots{
-    real_t every;
-    real_t sym_time;
+    Real every;
+    Real sym_time;
     std::string folder;
     std::string prefix;
 } Allen_Cahn_Snapshots;
@@ -38,54 +39,54 @@ typedef struct Allen_Cahn_Config{
 
     bool interactive_mode;
     bool linear_filtering;
-    real_t display_min;
-    real_t display_max;
+    Real display_min;
+    Real display_max;
 
 } Allen_Cahn_Config;
 
 typedef struct Allen_Cahn_Scale {
-    real_t L0;
-    real_t Tm;
-    real_t Tini;
-    real_t c;
-    real_t rho;
-    real_t lambda;
+    Real L0;
+    Real Tm;
+    Real Tini;
+    Real c;
+    Real rho;
+    Real lambda;
 } Allen_Cahn_Scale;
 
-real_t allen_cahn_scale_heat(real_t T, Allen_Cahn_Scale scale)
+Real allen_cahn_scale_heat(Real T, Allen_Cahn_Scale scale)
 {
     return 1 + (T - scale.Tm)/(scale.Tm - scale.Tini);
 }
 
-real_t allen_cahn_scale_latent_heat(real_t L, Allen_Cahn_Scale scale)
+Real allen_cahn_scale_latent_heat(Real L, Allen_Cahn_Scale scale)
 {
     return L * scale.rho * scale.c/(scale.Tm - scale.Tini);
 }
 
-real_t allen_cahn_scale_pos(real_t x, Allen_Cahn_Scale scale)
+Real allen_cahn_scale_pos(Real x, Allen_Cahn_Scale scale)
 {
     return x / scale.L0;
 }
 
-real_t allen_cahn_scale_xi(real_t xi, Allen_Cahn_Scale scale)
+Real allen_cahn_scale_xi(Real xi, Allen_Cahn_Scale scale)
 {
     (void) scale;
     //return xi;
     return xi / scale.L0;
 }
 
-real_t allen_cahn_scale_time(real_t t, Allen_Cahn_Scale scale)
+Real allen_cahn_scale_time(Real t, Allen_Cahn_Scale scale)
 {
-    const real_t _t0 = (scale.rho*scale.c/scale.lambda)*scale.L0*scale.L0;
+    const Real _t0 = (scale.rho*scale.c/scale.lambda)*scale.L0*scale.L0;
     return t / _t0;
 }
 
-real_t allen_cahn_scale_beta(real_t beta, Allen_Cahn_Scale scale)
+Real allen_cahn_scale_beta(Real beta, Allen_Cahn_Scale scale)
 {
     return beta * scale.L0 * (scale.Tm - scale.Tini);
 }
 
-real_t allen_cahn_scale_alpha(real_t alpha, Allen_Cahn_Scale scale)
+Real allen_cahn_scale_alpha(Real alpha, Allen_Cahn_Scale scale)
 {
     return alpha * scale.lambda / (scale.rho * scale.c);
 }
@@ -227,23 +228,21 @@ bool key_value_get_vec2(const Key_Value& map, Vec2* out, const char* str)
 {
     auto found = map.find(str);
     bool state = found != map.end();
-    const char* value = found->second.c_str();
-    state = state && sscanf(value, REAL_FMT " " REAL_FMT, &out->x, &out->y) == 2;
+    state = state && sscanf(found->second.c_str(), REAL_FMT " " REAL_FMT, &out->x, &out->y) == 2;
     if(state == false)
         LOG_ERROR("config", "couldnt find or match Vec '%s'", str);
 
     return state;
 }
 
-bool key_value_get_real(const Key_Value& map, real_t* out, const char* str)
+bool key_value_get_real(const Key_Value& map, Real* out, const char* str)
 {
     auto found = map.find(str);
     bool state = found != map.end();
 
-    const char* value = found->second.c_str();
-    state = state && sscanf(value, REAL_FMT, out) == 1;
+    state = state && sscanf(found->second.c_str(), REAL_FMT, out) == 1;
     if(state == false)
-        LOG_ERROR("config", "couldnt find or match real_t '%s'", str);
+        LOG_ERROR("config", "couldnt find or match Real '%s'", str);
     return state;
 }
 
@@ -251,8 +250,7 @@ bool key_value_get_int(const Key_Value& map, int* out, const char* str)
 {
     auto found = map.find(str);
     bool state = found != map.end();
-    const char* value = found->second.c_str();
-    state = state && sscanf(value, "%i", out) == 1;
+    state = state && sscanf(found->second.c_str(), "%i", out) == 1;
     if(state == false)
         LOG_ERROR("config", "couldnt find or match int '%s'", str);
 
@@ -316,7 +314,8 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_real(pairs, &initial->outside_phi, "outside_phi")
             & (uint8_t) key_value_get_real(pairs, &initial->outside_T, "outside_T")
             & (uint8_t) key_value_get_vec2(pairs, &initial->circle_center, "circle_center")
-            & (uint8_t) key_value_get_real(pairs, &initial->circle_radius, "circle_radius")
+            & (uint8_t) key_value_get_real(pairs, &initial->circle_inner_radius, "circle_inner_radius")
+            & (uint8_t) key_value_get_real(pairs, &initial->circle_outer_radius, "circle_outer_radius")
             & (uint8_t) key_value_get_vec2(pairs, &initial->square_from, "square_from")
             & (uint8_t) key_value_get_vec2(pairs, &initial->square_to, "square_to")
             & (uint8_t) key_value_get_string(pairs, &initial->start_snapshot, "start_snapshot");

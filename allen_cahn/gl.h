@@ -3,83 +3,18 @@
 #include "log.h"
 #include "assert.h"
 
-typedef enum Pixel_Type {
-    PIXEL_TYPE_U8 ,
-    PIXEL_TYPE_U16,
-    PIXEL_TYPE_U24,
-    PIXEL_TYPE_U32,
-    PIXEL_TYPE_U64,
-
-    PIXEL_TYPE_I8 ,
-    PIXEL_TYPE_I16,
-    PIXEL_TYPE_I24,
-    PIXEL_TYPE_I32,
-    PIXEL_TYPE_I64,
-    
-    PIXEL_TYPE_F8 ,
-    PIXEL_TYPE_F16,
-    PIXEL_TYPE_F32,
-    PIXEL_TYPE_F64,
-
-    PIXEL_TYPE_INVALID = INT_MIN
-} Pixel_Type;
-
-typedef struct GL_Pixel_Format {
-    unsigned channel_type;     //GL_FLOAT, GL_UNSIGNED_BYTE, ...
-    unsigned access_format;    //GL_RGBA, GL_RED, ...
-    unsigned internal_format;  //GL_RGBA16I, GL_R8, GL_RGBA16F...
-} GL_Pixel_Format;
-
-typedef struct GL_Texture {
-    unsigned handle;    
-    GL_Pixel_Format format;
-    Pixel_Type pixel_type;
-    int pixel_size;
-
-    int width;
-    int heigth;
-} GL_Texture;
-
 void gl_init(void* load_function);
-GL_Texture gl_texture_make(size_t width, size_t heigth, Pixel_Type format, size_t channels, const void* data_or_null);
 void draw_sci_texture(unsigned texture, float min, float max);
 void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const float* cuda_memory);
 
 #ifdef NO_GL
-
-void draw_sci_texture(GL_Texture texture, float min, float max)
-{
-    (void) texture;
-    (void) min;
-    (void) max;
-}
-GL_Texture gl_texture_make(size_t width, size_t heigth, Pixel_Type format, size_t channels, const void* data_or_null)
-{
-    GL_Texture tex = {0};
-    tex.width = width;
-    tex.heigth = heigth;
-
-    (void) format;
-    (void) channels;
-    (void) data_or_null;
-
-    return tex;
-}
-
-
-void draw_sci_cuda_memory(GL_Texture texture, float min, float max, const float* cuda_memory)
-{
-    (void) texture;
-    (void) min;
-    (void) max;
-    (void) cuda_memory;
-}
-
+void gl_init(void* load_function) {}
+void draw_sci_texture(unsigned texture, float min, float max) {}
+void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const float* cuda_memory) {}
 #else
 
 #define GLAD_GL_IMPLEMENTATION
-#include "cuda_util.h"
-#include "extrenal/glad2/gl.h"
+#include "external/glad/glad.h"
 
 const char* gl_translate_error(GLenum code)
 {
@@ -388,8 +323,7 @@ void draw_sci_texture(unsigned texture, float min, float max)
     #undef TEXTURE_BINDING
 }
 
-#include "cuda_util.h"
-void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const real_t* cuda_memory)
+void draw_sci_cuda_memory(const char* name, int width, int height, float min, float max, bool linear_filtering, const Real* cuda_memory)
 {
     enum { MAX_CUDA_GRAPHIC_RESOURCES = 16 };
     typedef struct {
@@ -456,29 +390,16 @@ void draw_sci_cuda_memory(const char* name, int width, int height, float min, fl
         }
     }
 
-    float* read_cuda_memory_from = (float*) (void*) cuda_memory;
-    static float* emphemeral_conversion_buffer = NULL;
-    //if we are using doubles for computation we need to convert to float
-    // because opengl without extensions cannot work with 64 bit floats
-    // (as of 2023)
-    if(sizeof(real_t) != sizeof(float))
-    {
-        ASSERT(sizeof(real_t) == sizeof(double));
-        if(emphemeral_conversion_buffer == NULL)
-            CUDA_TEST(cudaMalloc((void**) &emphemeral_conversion_buffer, byte_count));
-
-        CUDA_TEST(kernel_float_from_double(emphemeral_conversion_buffer, (double*) (void*) cuda_memory, pixel_count));   
-        read_cuda_memory_from =  emphemeral_conversion_buffer;
-    }
-
     //cudaGraphicsGLRegisterImage kept failing with "unknown error" on MX450 on ubuntu. 
     // Because of this we do this incredibly inefficient copy to host memory and back to device through opengl call.
     Texture texture = textures[resource_index];
-    CUDA_TEST(cudaMemcpy(texture.cpu_memory, read_cuda_memory_from, byte_count, cudaMemcpyDeviceToHost));
+    device_float_modify((Real*) cuda_memory, (float*) texture.cpu_memory, pixel_count, MODIFY_DOWNLOAD);
 
     glBindTexture(GL_TEXTURE_2D, texture.handle);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED, GL_FLOAT, texture.cpu_memory);
     draw_sci_texture((unsigned) texture.handle, min, max);
+
+    glFinish();
 }
 
 void gl_init(void* load_function)
