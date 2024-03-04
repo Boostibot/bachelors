@@ -331,7 +331,7 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
         bool matched_solver = key_value_get_string(pairs, &solver_string, "solver");
         if(matched_solver)
         {
-            for(int i = 0; i < sizeof(solver_strings) / sizeof(*solver_strings); i++)
+            for(size_t i = 0; i < sizeof(solver_strings) / sizeof(*solver_strings); i++)
             {
                 if(solver_string == solver_strings[i])
                     solver_type = solver_types[i];
@@ -340,7 +340,7 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             if(solver_type == SOLVER_TYPE_NONE)
             {
                 LOG_ERROR("config", "invalid value '%s' for solver! Expecting one of:", solver_string.data());
-                for(int i = 0; i < sizeof(solver_strings) / sizeof(*solver_strings); i++)
+                for(size_t i = 0; i < sizeof(solver_strings) / sizeof(*solver_strings); i++)
                     LOG_ERROR("config", "> %s", solver_strings[i]);
 
                 matched_solver = false;
