@@ -73,6 +73,11 @@
         "__nullptr": "cpp",
         "__locale": "cpp",
         "ios": "cpp",
-        "ranges": "cpp"
+        "ranges": "cpp",
+        "__functional_base": "cpp",
+        "__functional_base_03": "cpp",
+        "__tuple": "cpp",
+        "__functional_03": "cpp",
+        "target": "cpp"
     }
 }

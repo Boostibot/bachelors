@@ -269,12 +269,12 @@ void _cuda_realloc_in_place(void** ptr_ptr, size_t new_size, size_t old_size, in
 #define cuda_realloc(old_ptr, new_size, old_size, flags)          _cuda_realloc(old_ptr, new_size, old_size, flags, __FILE__, __LINE__)
 #define cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags) _cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags, __FILE__, __LINE__)
 
-SHARED Real* at_mod(Real* map, int x, int y, Allen_Cahn_Params params)
+SHARED Real* at_mod(Real* map, int x, int y, int n, int m)
 {
-    int x_mod = MOD(x, params.mesh_size_x);
-    int y_mod = MOD(y, params.mesh_size_y);
+    int x_mod = MOD(x, m);
+    int y_mod = MOD(y, n);
 
-    return &map[x_mod + y_mod*params.mesh_size_x];
+    return &map[x_mod + y_mod*m];
 }
 
 SHARED Real f0(Real phi)
@@ -282,14 +282,43 @@ SHARED Real f0(Real phi)
 	return phi*(1 - phi)*(phi - 1.0f/2);
 }
 
-enum {
-    MAP_GRAD_PHI = 0,
-    MAP_GRAD_T = 1,
-    MAP_REACTION = 2,
-    MAP_ANISO_FACTOR = 3,
-    MAP_RESIDUAL_PHI = 4,
 
-};
+int explicit_solver_resize(Explicit_Solver* solver, int n, int m)
+{
+    size_t N = (size_t)m*(size_t)n;
+    size_t N_old = (size_t)solver->m*(size_t)solver->n;
+    if(solver->m != m || solver->n != n)
+    {
+        //Big evil programming practices because we are cool and we know
+        // what we are doing and dont care much about what others have to
+        // say
+        Real* debug_maps = (Real*) (void*) &solver->debug_maps;
+        for(int i = 0; i < sizeof(solver->debug_maps) / sizeof(Real); i++)
+            cuda_realloc_in_place((void**) &debug_maps[i], N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
+
+        solver->m = m;
+        solver->n = n;
+    }
+
+    return EXPLICIT_SOLVER_REQUIRED_HISTORY;
+}
+
+void explicit_state_resize(Explicit_State* state, int n, int m)
+{
+    size_t N = (size_t)m*(size_t)n;
+    size_t N_old = (size_t)state->m*(size_t)state->n;
+    if(state->m != m || state->n != n)
+    {
+        cuda_realloc_in_place((void**) &state->F, N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
+        cuda_realloc_in_place((void**) &state->U, N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
+
+        state->m = m;
+        state->n = n;
+    }
+}
+
+
+
 
 
 enum {
@@ -298,10 +327,10 @@ enum {
 };
 
 template <unsigned FLAGS>
-__global__ void allen_cahn_simulate(Real* Phi_map_next, Real* T_map_next, Real* Phi_map, Real* T_map, const Explicit_State expli, const Debug_State debug, const Allen_Cahn_Params params, const size_t iter)
+__global__ void allen_cahn_simulate(Real* Phi_map_next, Real* T_map_next, Real* Phi_map, Real* T_map, const Explicit_Solver expli, const Allen_Cahn_Params params, const size_t iter)
 {
-    Real dx = (Real) params.L0 / params.mesh_size_x;
-    Real dy = (Real) params.L0 / params.mesh_size_y;
+    Real dx = (Real) params.L0 / params.m;
+    Real dy = (Real) params.L0 / params.n;
     Real mK = dx * dy;
 
     Real a = params.a;
@@ -313,25 +342,27 @@ __global__ void allen_cahn_simulate(Real* Phi_map_next, Real* T_map_next, Real* 
     Real L = params.L; //Latent heat, not L0 (sym size) ! 
     Real dt = params.dt;
     Real S = params.S; //anisotrophy strength
-    Real m = params.m; //anisotrophy frequency (?)
+    Real m0 = params.m0; //anisotrophy frequency (?)
     Real theta0 = params.theta0;
+    int n = expli.n;
+    int m = expli.m;
 
-    for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.mesh_size_x; x += blockDim.x * gridDim.x) 
+    for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.m; x += blockDim.x * gridDim.x) 
     {
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.mesh_size_x; y += blockDim.y * gridDim.y) 
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.m; y += blockDim.y * gridDim.y) 
         {
-            Real T = *at_mod(T_map, x, y, params);
-            Real Phi = *at_mod(Phi_map, x, y, params);
+            Real T = T_map[x + y*m];
+            Real Phi = Phi_map[x + y*m];
 
-            Real Phi_U = *at_mod(Phi_map, x, y + 1, params);
-            Real Phi_D = *at_mod(Phi_map, x, y - 1, params);
-            Real Phi_R = *at_mod(Phi_map, x + 1, y, params);
-            Real Phi_L = *at_mod(Phi_map, x - 1, y, params);
+            Real Phi_U = *at_mod(Phi_map, x, y + 1, n, m);
+            Real Phi_D = *at_mod(Phi_map, x, y - 1, n, m);
+            Real Phi_R = *at_mod(Phi_map, x + 1, y, n, m);
+            Real Phi_L = *at_mod(Phi_map, x - 1, y, n, m);
 
-            Real T_U = *at_mod(T_map, x, y + 1, params);
-            Real T_D = *at_mod(T_map, x, y - 1, params);
-            Real T_R = *at_mod(T_map, x + 1, y, params);
-            Real T_L = *at_mod(T_map, x - 1, y, params);
+            Real T_U = *at_mod(T_map, x, y + 1, n, m);
+            Real T_D = *at_mod(T_map, x, y - 1, n, m);
+            Real T_R = *at_mod(T_map, x + 1, y, n, m);
+            Real T_L = *at_mod(T_map, x - 1, y, n, m);
 
             Real grad_T_x = dy*(T_R - T_L);
             Real grad_T_y = dx*(T_U - T_D);
@@ -346,13 +377,13 @@ __global__ void allen_cahn_simulate(Real* Phi_map_next, Real* T_map_next, Real* 
             if constexpr(FLAGS & FLAG_DO_ANISOTROPHY)
             {
                 //prevent nans
-                if(grad_Phi_norm > 0.0001)
+                // if(grad_Phi_norm > 0.0001)
                 {
 
                     Real theta = atan2(grad_Phi_y, grad_Phi_x);
                     // Real grad_Phi_y_norm = grad_Phi_y / grad_Phi_norm;
                     // Real theta = asinf(grad_Phi_y_norm);
-                    g_theta = 1.0f - S*cosf(m*theta + theta0);
+                    g_theta = 1.0f - S*cosf(m0*theta + theta0);
                 }
             }
 
@@ -371,75 +402,87 @@ __global__ void allen_cahn_simulate(Real* Phi_map_next, Real* T_map_next, Real* 
         
             if constexpr(FLAGS & FLAG_DO_DEBUG)
             {
-                *at_mod(debug.maps[MAP_GRAD_PHI], x, y, params) = hypotf(Phi_R - Phi_L, Phi_U - Phi_D);
-                *at_mod(debug.maps[MAP_GRAD_T], x, y, params) = hypotf(T_R - T_L, T_U - T_D);
-                *at_mod(debug.maps[MAP_REACTION], x, y, params) = int_K_f / mK;
-                *at_mod(debug.maps[MAP_ANISO_FACTOR], x, y, params) = g_theta;
+                *at_mod(expli.debug_maps.grad_phi, x, y, n, m) = hypotf(Phi_R - Phi_L, Phi_U - Phi_D);
+                *at_mod(expli.debug_maps.grad_T, x, y, n, m) = hypotf(T_R - T_L, T_U - T_D);
+                *at_mod(expli.debug_maps.reaction, x, y, n, m) = int_K_f / mK;
+                *at_mod(expli.debug_maps.aniso_factor, x, y, n, m) = g_theta;
 
-                if(ALLEN_CAHN_HISTORY >= 3)
+                #if 0
+                if(0)
                 {
                     //@TODO: calculate properly!
                     Real* T_map_prev = expli.U[MOD(iter - 1, ALLEN_CAHN_HISTORY)];
                     Real* Phi_map_prev = expli.F[MOD(iter - 1, ALLEN_CAHN_HISTORY)];
 
-                    Real T_prev = *at_mod(T_map_prev, x, y, params);
-                    Real Phi_prev = *at_mod(Phi_map_prev, x, y, params);
+                    Real T_prev = *at_mod(T_map_prev, x, y, n, m);
+                    Real Phi_prev = *at_mod(Phi_map_prev, x, y, n, m);
 
                     Real dt_Phi_prev = (Phi - Phi_prev) / dt;
                     Real r_Phi = (dt_Phi_prev - dt_Phi);
 
-                    *at_mod(debug.maps[MAP_RESIDUAL_PHI], x, y, params) = abs(r_Phi);
+                    *at_mod(expli.debug_maps.step_residual, x, y, params) = abs(r_Phi);
                 }
+                #endif
             }
 
-            *at_mod(Phi_map_next, x, y, params) = Phi_next;
-            *at_mod(T_map_next, x, y, params) = T_next;
+            Phi_map_next[x + y*m] = Phi_next;
+            T_map_next[x + y*m] = T_next;
         }
     }
 }
 
-extern "C" void explicit_solver_step(Explicit_State* state, Debug_State* debug_state_or_null, Allen_Cahn_Params params, size_t iter)
+extern "C" void explicit_solver_step(Explicit_Solver* solver, Explicit_State state, Explicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
     Cuda_Info info = cuda_one_time_setup();
     dim3 bs(64, 1);
     dim3 grid(info.prop.multiProcessorCount, 1);
 
-    Real* Phi_map_next = state->F[(iter + 1) % ALLEN_CAHN_HISTORY];
-    Real* Phi_map = state->F[(iter) % ALLEN_CAHN_HISTORY];
+    Real* Phi_next = next_state.F;
+    Real* Phi = state.F;
     
-    Real* T_map_next = state->U[(iter + 1) % ALLEN_CAHN_HISTORY];
-    Real* T_map = state->U[(iter) % ALLEN_CAHN_HISTORY];
+    Real* T_next = next_state.U;
+    Real* T = state.U;
 
-    bool do_aniso = params.do_anisotropy;
-    bool do_debug = debug_state_or_null != NULL;
-
-    Debug_State empy_debug = {0};
-    if(do_aniso && do_debug)
-        allen_cahn_simulate<FLAG_DO_ANISOTROPHY | FLAG_DO_DEBUG><<<grid, bs>>>(Phi_map_next, T_map_next, Phi_map, T_map, *state, *debug_state_or_null, params, iter);
-    if(do_aniso && !do_debug)
-        allen_cahn_simulate<FLAG_DO_ANISOTROPHY><<<grid, bs>>>(Phi_map_next, T_map_next, Phi_map, T_map, *state, empy_debug, params, iter);
-    if(!do_aniso && do_debug)
-        allen_cahn_simulate<FLAG_DO_DEBUG><<<grid, bs>>>(Phi_map_next, T_map_next, Phi_map, T_map, *state, *debug_state_or_null, params, iter);
-    if(!do_aniso && !do_debug)
-        allen_cahn_simulate<0><<<grid, bs>>>(Phi_map_next, T_map_next, Phi_map, T_map, *state, empy_debug, params, iter);
-
-    if(debug_state_or_null)
-    {
-        memset(debug_state_or_null->names, 0, sizeof debug_state_or_null->names); 
-        #define ASSIGN_MAP_NAME(name) \
-            memcpy((debug_state_or_null)->names[(name)], #name, sizeof(#name));
-        ASSIGN_MAP_NAME(MAP_GRAD_PHI);
-        ASSIGN_MAP_NAME(MAP_GRAD_T);
-        ASSIGN_MAP_NAME(MAP_REACTION);
-        ASSIGN_MAP_NAME(MAP_ANISO_FACTOR);
-        ASSIGN_MAP_NAME(MAP_RESIDUAL_PHI);
-
-        #undef ASSIGN_MAP_NAME
-    }
+    if(params.do_anisotropy && do_debug)
+        allen_cahn_simulate<FLAG_DO_ANISOTROPHY | FLAG_DO_DEBUG><<<grid, bs>>>(Phi_next, T_next, Phi, T, *solver, params, iter);
+    if(params.do_anisotropy && !do_debug)
+        allen_cahn_simulate<FLAG_DO_ANISOTROPHY><<<grid, bs>>>(Phi_next, T_next, Phi, T, *solver, params, iter);
+    if(!params.do_anisotropy && do_debug)
+        allen_cahn_simulate<FLAG_DO_DEBUG><<<grid, bs>>>(Phi_next, T_next, Phi, T, *solver, params, iter);
+    if(!params.do_anisotropy && !do_debug)
+        allen_cahn_simulate<0><<<grid, bs>>>(Phi_next, T_next, Phi, T, *solver, params, iter);
 
     CUDA_DEBUG_TEST(cudaGetLastError());
     CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
+
+
+void explicit_solver_get_maps(Explicit_Solver* solver, Explicit_State state, Sim_Map* maps, int map_count)
+{
+    int __map_i = 0;
+    memset(maps, 0, sizeof maps[0] * map_count);
+
+    #define ASSIGN_MAP_NAMED(var_ptr, var_name) \
+        if(__map_i < map_count) \
+        { \
+            maps[__map_i].data = var_ptr; \
+            maps[__map_i].name = var_name; \
+            maps[__map_i].m = solver->m; \
+            maps[__map_i].n = solver->n; \
+            __map_i += 1; \
+        }\
+
+    #define ASSIGN_MAP(var_ptr) ASSIGN_MAP_NAMED(var_ptr, #var_ptr) 
+
+    ASSIGN_MAP_NAMED(state.F, "Phi");            
+    ASSIGN_MAP_NAMED(state.U, "T");            
+    ASSIGN_MAP_NAMED(solver->debug_maps.grad_phi, "grad_phi");
+    ASSIGN_MAP_NAMED(solver->debug_maps.grad_T, "grad_T");
+    ASSIGN_MAP_NAMED(solver->debug_maps.aniso_factor, "aniso_factor");
+    ASSIGN_MAP_NAMED(solver->debug_maps.reaction, "reaction");
+    ASSIGN_MAP_NAMED(solver->debug_maps.step_residual, "step_residual");
+}
+
 
 template <typename Function>
 __global__ void _kernel_cuda_for_each(int from, int item_count, Function func)
@@ -494,12 +537,27 @@ Real vector_dot_product(const Real *a, const Real *b, int n)
   return thrust::inner_product(d_a, d_a + n, d_b, 0.0);
 }
 
-struct Cross_Matrix {
+struct Cross_Matrix_Static {
     Real C;
     Real U;
     Real D;
     Real L;
     Real R;
+};
+
+struct Cross_Matrix {
+    Real* C;
+    Real* U;
+    Real* D;
+    Real* L;
+    Real* R;
+};
+
+struct Cross_Matrix_Anisotrophy {
+    Real* scale;
+    Real X;
+    Real Y;
+    Real C_minus_one;
 };
 
 void* cross_matrix_vector_alloced(Real* vector, int n, int m)
@@ -546,8 +604,9 @@ typedef struct Conjugate_Gardient_Convergence {
     bool converged;
 } Conjugate_Gardient_Convergence;
 
-void cross_matrix_multiply_padded(Real* out, const Cross_Matrix A, const Real* x, int n, int m)
+void cross_matrix_static_multiply_padded(Real* out, const Cross_Matrix_Static* _A, const Real* x, int n, int m)
 {
+    Cross_Matrix_Static A = * (Cross_Matrix_Static*)_A;
     cuda_for(0, m*n, [=]SHARED(int i){
         Real val = 0;
         val += x[i]*A.C;
@@ -561,8 +620,9 @@ void cross_matrix_multiply_padded(Real* out, const Cross_Matrix A, const Real* x
     });
 }
 
-void cross_matrix_multiply_not_padded(Real* out, const Cross_Matrix A, const Real* x, int n, int m)
+void cross_matrix_static_multiply_not_padded(Real* out, const Cross_Matrix_Static* _A, const Real* x, int n, int m)
 {
+    Cross_Matrix_Static A = * (Cross_Matrix_Static*)_A;
     int N = m*n;
     cuda_for(0, N, [=]SHARED(int i){
         Real val = 0;
@@ -576,7 +636,82 @@ void cross_matrix_multiply_not_padded(Real* out, const Cross_Matrix A, const Rea
     });
 }
 
-Conjugate_Gardient_Convergence cross_matrix_conjugate_gradient_solve(Cross_Matrix A, Real* x, const Real* b, int n, int m, const Conjugate_Gardient_Params* params_or_null)
+void cross_matrix_multiply_padded(Real* out, const Cross_Matrix* _A, const Real* x, int n, int m)
+{
+    Cross_Matrix A = * (Cross_Matrix*)_A;
+    cuda_for(0, m*n, [=]SHARED(int i){
+        Real val = 0;
+        val += x[i]*A.C[i];
+        val += x[i+1]*A.R[i];
+        val += x[i-1]*A.L[i];
+        val += x[i+m]*A.U[i];
+        val += x[i-m]*A.D[i];
+
+        out[i] = val;
+    });
+}
+
+void cross_matrix_multiply_not_padded(Real* out, const Cross_Matrix* _A, const Real* x, int n, int m)
+{
+    Cross_Matrix A = * (Cross_Matrix*)_A;
+    int N = m*n;
+    cuda_for(0, N, [=]SHARED(int i){
+        Real val = 0;
+        val += x[i]*A.C[i];
+        if(i+1 < N)  val += x[i+1]*A.R[i];
+        if(i-1 >= 0) val += x[i-1]*A.L[i];
+        if(i+m < N)  val += x[i+m]*A.U[i];
+        if(i-m >= 0) val += x[i-m]*A.D[i];
+
+        out[i] = val;
+    });
+}
+
+void cross_matrix_aniso_multiply_padded(Real* out, const Cross_Matrix_Anisotrophy* _A, const Real* x, int n, int m)
+{
+    Cross_Matrix_Anisotrophy A = * (Cross_Matrix_Anisotrophy*)_A;
+    cuda_for(0, m*n, [=]SHARED(int i){
+        Real s = A.scale[i];
+        Real X = A.X*s;
+        Real Y = A.Y*s;
+        Real C = 1 + A.C_minus_one*s;
+
+        Real val = 0;
+        val += x[i]*C;
+        val += x[i+1]*X;
+        val += x[i-1]*X;
+        val += x[i+m]*Y;
+        val += x[i-m]*Y;
+
+        out[i] = val;
+    });
+}
+
+void cross_matrix_aniso_multiply_not_padded(Real* out, const Cross_Matrix_Anisotrophy* _A, const Real* x, int n, int m)
+{
+    Cross_Matrix_Anisotrophy A = * (Cross_Matrix_Anisotrophy*)_A;
+    int N = m*n;
+    cuda_for(0, N, [=]SHARED(int i){
+        Real s = A.scale[i];
+        Real X = A.X*s;
+        Real Y = A.Y*s;
+        Real C = 1 + A.C_minus_one*s;
+
+        Real val = 0;
+        val += x[i]*C;
+        if(i+1 < N)  val += x[i+1]*X;
+        if(i-1 >= 0) val += x[i-1]*X;
+        if(i+m < N)  val += x[i+m]*Y;
+        if(i-m >= 0) val += x[i-m]*Y;
+
+        out[i] = val;
+    });
+}
+
+
+typedef void(*Matrix_Mul_Func)(Real* out, const void* A, const Real* x, int n, int m);
+
+Conjugate_Gardient_Convergence cross_matrix_conjugate_gradient_solve(const void* A, Real* x, const Real* b, int n, int m, void* matrix_mul, const Conjugate_Gardient_Params* params_or_null)
 {
     Conjugate_Gardient_Convergence out = {0};
     Conjugate_Gardient_Params params = {0};
@@ -612,6 +747,8 @@ Conjugate_Gardient_Convergence cross_matrix_conjugate_gradient_solve(Cross_Matri
     Real* Ap = _Ap;
     cross_matrix_vector_pad(p, n, m);
 
+    Matrix_Mul_Func matrix_mul_ = (Matrix_Mul_Func) (void*) matrix_mul;
+
     CUDA_DEBUG_TEST(cudaMemset(x, 0, sizeof(Real)*N));
     CUDA_DEBUG_TEST(cudaMemcpy(r, b, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
     CUDA_DEBUG_TEST(cudaMemcpy(p, b, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
@@ -620,7 +757,7 @@ Conjugate_Gardient_Convergence cross_matrix_conjugate_gradient_solve(Cross_Matri
     int iter = 0;
     for(; iter < params.max_iters; iter++)
     {
-        cross_matrix_multiply_padded(Ap, A, p, n, m);
+        matrix_mul_(Ap, A, p, n, m);
         
         Real p_dot_Ap = vector_dot_product(p, Ap, N);
         Real alpha = r_dot_r / MAX(p_dot_Ap, params.epsilon);
@@ -667,30 +804,6 @@ void matrix_multiply(Real* output, const Real* A, const Real* B, int A_height, i
     }
 }
 
-
-extern "C" void semi_implicit_state_resize(Semi_Implicit_State* state, int n, int m)
-{
-    if(state->m != m || state->n != n)
-    {
-        for(int i = 0; i < ALLEN_CAHN_HISTORY; i++)
-        {
-            state->F[i] = cross_matrix_vector_realloc(state->F[i], n, m, state->n, state->m);
-            state->U[i] = cross_matrix_vector_realloc(state->U[i], n, m, state->n, state->m);
-            state->b_F[i] = cross_matrix_vector_realloc(state->b_F[i], n, m, state->n, state->m);
-            state->b_U[i] = cross_matrix_vector_realloc(state->b_U[i], n, m, state->n, state->m);
-        }
-
-        for(int i = 0; i < SEMI_AUX; i++)
-            state->aux[i] = cross_matrix_vector_realloc(state->aux[i], n, m, state->n, state->m);
-
-        state->m = n;
-        state->n = m;
-
-        if(n*m == 0)
-            memset(state, 0, sizeof(state));
-    }
-}
-
 Real vector_get_dist_norm(const Real* a, const Real* b, int N)
 {
     static Real* temp = NULL;
@@ -716,25 +829,47 @@ bool vector_is_near(const Real* a, const Real* b, Real epsilon, int N)
     return vector_get_dist_norm(a, b, N) < epsilon;
 }
 
-enum {
-    MAP_AfF = 6,
-    MAP_AuU = 7,
-    MAP_B_F = 2,
-    MAP_B_U = 3,
-
-    SEMI_AUX_AfF = 0,
-    SEMI_AUX_AuU = 1,
-    SEMI_AUX_TEMP = 2,
-};
-
-extern "C" void semi_implicit_solver_step(Semi_Implicit_State* state, Debug_State* debug_state_or_null, Allen_Cahn_Params params, size_t iter)
+int semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
 {
-    (void) debug_state_or_null;
-    Real dx = (Real) params.L0 / params.mesh_size_x;
-    Real dy = (Real) params.L0 / params.mesh_size_y;
+    if(solver->m != m || solver->n != n)
+    {
+        //Big evil programming practices because we are cool and we know
+        // what we are doing and dont care much about what others have to
+        // say
+        Real** debug_maps = (Real**) (void*) &solver->debug_maps;
+        for(int i = 0; i < sizeof(solver->debug_maps) / sizeof(Real); i++)
+            debug_maps[i] = cross_matrix_vector_realloc(debug_maps[i], n, m, solver->n, solver->m);
 
-    int m = state->m;
-    int n = state->n;
+        Real** maps = (Real**) (void*) &solver->maps;
+        for(int i = 0; i < sizeof(solver->maps) / sizeof(Real); i++)
+            maps[i] = cross_matrix_vector_realloc(maps[i], n, m, solver->n, solver->m);
+
+        solver->m = m;
+        solver->n = n;
+    }
+
+    return SEMI_IMPLICIT_SOLVER_REQUIRED_HISTORY;
+}
+
+void semi_implicit_state_resize(Semi_Implicit_State* state, int n, int m)
+{
+    if(state->m != m || state->n != n)
+    {
+        state->F = cross_matrix_vector_realloc(state->F, n, m, state->n, state->m);
+        state->U = cross_matrix_vector_realloc(state->U, n, m, state->n, state->m);
+
+        state->m = m;
+        state->n = n;
+    }
+}
+
+extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+{
+    Real dx = (Real) params.L0 / solver->m;
+    Real dy = (Real) params.L0 / solver->n;
+
+    int m = solver->m;
+    int n = solver->n;
     int N = m*n;
 
     Real mK = dx * dy;
@@ -746,110 +881,116 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_State* state, Debug_Stat
     Real Tm = params.Tm;
     Real L = params.L; 
     Real dt = params.dt;
-    // Real S = params.S; 
-    // Real m = params.m; 
-    // Real theta0 = params.theta0;
+    Real S = params.S; 
+    Real m0 = params.m0; 
+    Real theta0 = params.theta0;
     
-    Real* F_next = state->F[(iter + 1) % ALLEN_CAHN_HISTORY];
-    Real* U_next = state->U[(iter + 1) % ALLEN_CAHN_HISTORY];
+    Real* F_next = next_state.F;
+    Real* U_next = next_state.U;
+
+    Real* F = state.F;
+    Real* U = state.U;
     
-    Real* F = state->F[(iter) % ALLEN_CAHN_HISTORY];
-    Real* U = state->U[(iter) % ALLEN_CAHN_HISTORY];
+    Real* b_F = solver->maps.b_F;
+    Real* b_U = solver->maps.b_U;
 
-    Real* b_F = state->b_F[(iter + 1) % ALLEN_CAHN_HISTORY];
-    Real* b_U = state->b_U[(iter + 1) % ALLEN_CAHN_HISTORY];
+    Cross_Matrix_Anisotrophy A_F = {0};
+    A_F.scale = solver->maps.scale;
+    A_F.C_minus_one = 2*dt/(alpha*dx*dx) + 2*dt/(alpha*dy*dy);
+    A_F.X = -dt/(alpha*dx*dx);
+    A_F.Y = -dt/(alpha*dy*dy);
 
-    //Precalculate A_F, A_U
-    Cross_Matrix A_F = {0};
-    A_F.C = 1 + 2*dt/(alpha*dx*dx) + 2*dt/(alpha*dy*dy);
-    A_F.R = -dt/(alpha*dx*dx);
-    A_F.L = -dt/(alpha*dx*dx);
-    A_F.U = -dt/(alpha*dy*dy);
-    A_F.D = -dt/(alpha*dy*dy);
-
-    Cross_Matrix A_U = {0};
+    Cross_Matrix_Static A_U = {0};
     A_U.C = 1 + 2*dt/(dx*dx) + 2*dt/(dy*dy);
     A_U.R = -dt/(dx*dx);
     A_U.L = -dt/(dx*dx);
     A_U.U = -dt/(dy*dy);
     A_U.D = -dt/(dy*dy);
 
-    //Calculate b_F
     cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
         Real T = U[x + y*m];
         Real Phi = F[x + y*m];
 
-        Real Phi_U = *at_mod(F, x, y + 1, params);
-        Real Phi_D = *at_mod(F, x, y - 1, params);
-        Real Phi_R = *at_mod(F, x + 1, y, params);
-        Real Phi_L = *at_mod(F, x - 1, y, params);
+        Real Phi_U = *at_mod(F, x, y + 1, m, n);
+        Real Phi_D = *at_mod(F, x, y - 1, m, n);
+        Real Phi_R = *at_mod(F, x + 1, y, m, n);
+        Real Phi_L = *at_mod(F, x - 1, y, m, n);
 
         Real grad_Phi_x = dy*(Phi_R - Phi_L);
         Real grad_Phi_y = dx*(Phi_U - Phi_D);
         Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+ 
+        Real g_theta = 1;
+        {
+            Real theta = atan2(grad_Phi_y, grad_Phi_x);
+            g_theta = 1.0f - S*cosf(m0*theta + theta0);
+        }
 
-        Real f = a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
+        // g_theta = 1;
+
+        Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
+        A_F.scale[x+y*m] = g_theta;
         b_F[x + y*m] = Phi + dt/(xi*xi*alpha)*f;
     });
 
     Conjugate_Gardient_Params solver_params = {0};
-    solver_params.epsilon = (Real) 1.0e-7;
-    solver_params.tolerance = (Real) 1.0e-5;
+    solver_params.epsilon = (Real) 1.0e-10;
+    solver_params.tolerance = (Real) 1.0e-7;
     solver_params.max_iters = 100;
     solver_params.padded = true;
 
     //Solve A_F*F_next = b_F
-    Conjugate_Gardient_Convergence F_converged = cross_matrix_conjugate_gradient_solve(A_F, F_next, b_F, m, n, &solver_params);
+    Conjugate_Gardient_Convergence F_converged = cross_matrix_conjugate_gradient_solve(&A_F, F_next, b_F, m, n, (void*) cross_matrix_aniso_multiply_padded, &solver_params);
     printf("%lli F %s in %i iters with error %lf\n", (long long) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, F_converged.error);
+
+    //Clamp in valid range. This should reduce the error even more
+    // cuda_for(0, N, [=]SHARED(int i){
+    //     F_next[i] = MAX(MIN(F_next[i], 1), 0);
+    // });
 
     //Calculate b_U
     cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
-        Real T = *at_mod(U, x, y, params);
-        Real Phi = *at_mod(F, x, y, params);
-        Real Phi_next = *at_mod(F_next, x, y, params);
+        Real T = *at_mod(U, x, y, n, m);
+        Real Phi = *at_mod(F, x, y, n, m);
+        Real Phi_next = *at_mod(F_next, x, y, n, m);
 
         b_U[x + y*m] = T + L*(Phi_next - Phi);
     });
 
     //Solve A_U*U_next = b_U
-    Conjugate_Gardient_Convergence U_converged = cross_matrix_conjugate_gradient_solve(A_U, U_next, b_U, m, n, &solver_params);
+    Conjugate_Gardient_Convergence U_converged = cross_matrix_conjugate_gradient_solve(&A_U, U_next, b_U, m, n, (void*) cross_matrix_static_multiply_padded, &solver_params);
     printf("%lli U %s in %i iters with error %lf\n", (long long) iter, U_converged.converged ? "converged" : "diverged", U_converged.iters, U_converged.error);
 
-    if(debug_state_or_null)
+    if(do_debug)
     {
+        Real* AfF = solver->debug_maps.AfF;
+        Real* AuU = solver->debug_maps.AuU;
         //Back test
         if(1)
         {
-            Real* AfF = state->aux[SEMI_AUX_AfF];
-            Real* AuU = state->aux[SEMI_AUX_AuU];
-            cross_matrix_vector_pad(AfF, n, m);
-            cross_matrix_vector_pad(AuU, n, m);
-            cross_matrix_multiply_padded(AfF, A_F, F_next, n, m);
-            cross_matrix_multiply_padded(AuU, A_U, U_next, n, m);
+            cross_matrix_aniso_multiply_not_padded(AfF, &A_F, F_next, n, m);
+            cross_matrix_static_multiply_not_padded(AuU, &A_U, U_next, n, m);
 
             Real back_error_F = vector_get_dist_norm(AfF, b_F, N);
             Real back_error_U = vector_get_dist_norm(AuU, b_U, N);
             printf("F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F, back_error_U, solver_params.tolerance*2);
-
-            CUDA_DEBUG_TEST(cudaMemcpy(debug_state_or_null->maps[MAP_AfF], AfF, N*sizeof(Real), cudaMemcpyDeviceToDevice));
-            CUDA_DEBUG_TEST(cudaMemcpy(debug_state_or_null->maps[MAP_AuU], AuU, N*sizeof(Real), cudaMemcpyDeviceToDevice));
         }
 
-        Real* grad_F = debug_state_or_null->maps[MAP_GRAD_PHI];
-        Real* grad_U = debug_state_or_null->maps[MAP_GRAD_T];
+        Real* grad_F = solver->debug_maps.grad_phi;
+        Real* grad_U = solver->debug_maps.grad_T;
         cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
-            Real T = *at_mod(U, x, y, params);
-            Real Phi = *at_mod(F, x, y, params);
+            Real T = *at_mod(U, x, y, n, m);
+            Real Phi = *at_mod(F, x, y, n, m);
 
-            Real Phi_U = *at_mod(F, x, y + 1, params);
-            Real Phi_D = *at_mod(F, x, y - 1, params);
-            Real Phi_R = *at_mod(F, x + 1, y, params);
-            Real Phi_L = *at_mod(F, x - 1, y, params);
+            Real Phi_U = *at_mod(F, x, y + 1, n, m);
+            Real Phi_D = *at_mod(F, x, y - 1, n, m);
+            Real Phi_R = *at_mod(F, x + 1, y, n, m);
+            Real Phi_L = *at_mod(F, x - 1, y, n, m);
 
-            Real T_U = *at_mod(U, x, y + 1, params);
-            Real T_D = *at_mod(U, x, y - 1, params);
-            Real T_R = *at_mod(U, x + 1, y, params);
-            Real T_L = *at_mod(U, x - 1, y, params);
+            Real T_U = *at_mod(U, x, y + 1, n, m);
+            Real T_D = *at_mod(U, x, y - 1, n, m);
+            Real T_R = *at_mod(U, x + 1, y, n, m);
+            Real T_L = *at_mod(U, x - 1, y, n, m);
 
             Real grad_Phi_x = (Phi_R - Phi_L);
             Real grad_Phi_y = (Phi_U - Phi_D);
@@ -862,22 +1003,22 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_State* state, Debug_Stat
             grad_F[x + y*m] = grad_Phi_norm;
             grad_U[x + y*m] = grad_T_norm;
         });
-
-        CUDA_DEBUG_TEST(cudaMemcpy(debug_state_or_null->maps[MAP_B_F], b_F, N*sizeof(Real), cudaMemcpyDeviceToDevice));
-        CUDA_DEBUG_TEST(cudaMemcpy(debug_state_or_null->maps[MAP_B_U], b_U, N*sizeof(Real), cudaMemcpyDeviceToDevice));
-
-        memset(debug_state_or_null->names, 0, sizeof debug_state_or_null->names); 
-        #define ASSIGN_MAP_NAME(name) \
-            memcpy((debug_state_or_null)->names[(name)], #name, sizeof(#name));
-        ASSIGN_MAP_NAME(MAP_AfF);
-        ASSIGN_MAP_NAME(MAP_AuU);
-        ASSIGN_MAP_NAME(MAP_B_F);
-        ASSIGN_MAP_NAME(MAP_B_U);
-        ASSIGN_MAP_NAME(MAP_GRAD_PHI);
-        ASSIGN_MAP_NAME(MAP_GRAD_T);
-
-        #undef ASSIGN_MAP_NAME
     }
+}
+
+void semi_implicit_solver_get_maps(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Sim_Map* maps, int map_count)
+{
+    int __map_i = 0;
+    memset(maps, 0, sizeof maps[0] * map_count);
+    ASSIGN_MAP_NAMED(state.F, "Phi");            
+    ASSIGN_MAP_NAMED(state.U, "T");            
+    ASSIGN_MAP_NAMED(solver->maps.b_F, "b_F");           
+    ASSIGN_MAP_NAMED(solver->debug_maps.AfF, "AfF");           
+    ASSIGN_MAP_NAMED(solver->maps.b_U, "b_U");           
+    ASSIGN_MAP_NAMED(solver->debug_maps.AuU, "AuU");           
+    ASSIGN_MAP_NAMED(solver->debug_maps.grad_phi, "grad_phi");           
+    ASSIGN_MAP_NAMED(solver->debug_maps.grad_T, "grad_T");           
+    ASSIGN_MAP_NAMED(solver->maps.scale, "Anisotrophy");  
 }
 
 extern "C" void kernel_float_from_double(float* output, const double* input, size_t size)
@@ -893,26 +1034,7 @@ extern "C" void kernel_double_from_float(double* output, const float* input, siz
     });
 }
 
-extern "C" void explicit_state_resize(Explicit_State* state, int n, int m)
-{
-    size_t N = (size_t)m*(size_t)n;
-    size_t N_old = (size_t)state->m*(size_t)state->n;
-    if(state->m != m || state->n != n)
-    {
-        for(int i = 0; i < ALLEN_CAHN_HISTORY; i++)
-        {
-            cuda_realloc_in_place((void**) &state->F[i], N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
-            cuda_realloc_in_place((void**) &state->U[i], N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
-        }
-
-        state->m = m;
-        state->n = n;
-    }
-}
-
-extern "C" void semi_implicit_solver_modify(Semi_Implicit_State* state, double* F, double* U, int n, int m, Solver_Modify modify);
-
-extern "C" void device_modify(void* device_memory, void* host_memory, size_t size, Solver_Modify modify)
+extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify)
 {
     if(modify == MODIFY_UPLOAD)
         CUDA_DEBUG_TEST(cudaMemcpy(device_memory, host_memory, size, cudaMemcpyHostToDevice));
@@ -920,7 +1042,7 @@ extern "C" void device_modify(void* device_memory, void* host_memory, size_t siz
         CUDA_DEBUG_TEST(cudaMemcpy(host_memory, device_memory, size, cudaMemcpyDeviceToHost));
 }
 
-extern "C" void device_float_modify(Real* device_memory, float* host_memory, size_t size, Solver_Modify modify)
+extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify)
 {
     static float* static_device = NULL;
     static size_t static_size = 0;
@@ -955,19 +1077,172 @@ extern "C" void device_float_modify(Real* device_memory, float* host_memory, siz
     }
 }
 
-extern "C" void debug_state_resize(Debug_State* state, int n, int m)
+
+extern "C" int  sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m)
 {
-    size_t N = (size_t)m*(size_t)n;
-    size_t N_old = (size_t)state->m*(size_t)state->n;
-    if(state->m != m || state->n != n)
-    {
-        for(int i = 0; i < ALLEN_CAHN_DEBUG_MAPS; i++)
-            cuda_realloc_in_place((void**) &state->maps[i], N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
+    if(solver->type != type && solver->type != SOLVER_TYPE_NONE)
+        sim_solver_reinit(solver, solver->type, 0, 0);
 
-        state->m = n;
-        state->n = m;
+    int out = 0;
+    switch(type) {
+        case SOLVER_TYPE_NONE: {
+            n = 0;
+            m = 0;
+        } break;
 
-        if(n*m == 0)
-            memset(state, 0, sizeof(state));
-    }
+        case SOLVER_TYPE_EXPLICIT: {
+            out = explicit_solver_resize(&solver->expli, n, m);
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT: {
+            out = semi_implicit_solver_resize(&solver->impli, n, m);
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
+            assert(false);
+        } break;
+
+        default: {
+            assert(false);
+        }
+    };
+
+    solver->type = type;
+    solver->m = m;
+    solver->n = n;
+    return out;
+}
+
+void sim_state_reinit(Sim_State* states, Solver_Type type, int n, int m)
+{
+    if(states->type != type && states->type != SOLVER_TYPE_NONE)
+        sim_state_reinit(states, states->type, 0, 0);
+
+    switch(type) {
+        case SOLVER_TYPE_NONE: {
+            n = 0;
+            m = 0;
+        } break;
+
+        case SOLVER_TYPE_EXPLICIT: {
+            explicit_state_resize(&states->expli, n, m);
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT: {
+            semi_implicit_state_resize(&states->impli, n, m);
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
+            assert(false);
+        } break;
+
+        default: {
+            assert(false);
+        }
+    };
+
+    states->type = type;
+    states->m = m;
+    states->n = n;
+}
+
+extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m)
+{
+    for(int i = 0; i < state_count; i++)
+        sim_state_reinit(&states[i], type, n, m);
+}
+
+
+void _switch(Solver_Type type)
+{
+    switch(type) {
+        case SOLVER_TYPE_NONE: {
+
+        } break;
+
+        case SOLVER_TYPE_EXPLICIT: {
+            
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT: {
+
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
+
+        } break;
+
+        default: assert(false);
+    };
+}
+
+
+extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug)
+{
+
+    switch(solver->type) {
+        case SOLVER_TYPE_NONE: {
+            // nothing
+        } break;
+
+        case SOLVER_TYPE_EXPLICIT: {
+            if(states_count < EXPLICIT_SOLVER_REQUIRED_HISTORY)
+                printf("explicit solver requires bigger history\n");
+            else
+            {
+                Sim_State state = states[iter % states_count];
+                Sim_State next_state = states[(iter + 1) % states_count];
+                if(state.type != SOLVER_TYPE_EXPLICIT || next_state.type != SOLVER_TYPE_EXPLICIT)
+                    printf("not matching state provided to explicit solver\n");
+                else
+                    explicit_solver_step(&solver->expli, state.expli, next_state.expli, params, iter, do_debug);
+            }
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT: {
+            if(states_count < EXPLICIT_SOLVER_REQUIRED_HISTORY)
+                printf("explicit solver requires bigger history");
+            else
+            {
+                Sim_State state = states[iter % states_count];
+                Sim_State next_state = states[(iter + 1) % states_count];
+                if(state.type != SOLVER_TYPE_SEMI_IMPLICIT || next_state.type != SOLVER_TYPE_SEMI_IMPLICIT)
+                    printf("not matching state provided to semi implicit solver\n");
+                else
+                semi_implicit_solver_step(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
+            }
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
+            assert(false);
+        } break;
+
+        default: assert(false);
+    };
+}
+
+extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count)
+{
+    if(states_count <= 0 || map_count <= 0)
+        return;
+
+    switch(solver->type) {
+        case SOLVER_TYPE_NONE: {
+            //none
+        } break;
+
+        case SOLVER_TYPE_EXPLICIT: {
+            explicit_solver_get_maps(&solver->expli, states[iter % states_count].expli, maps, map_count);
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT: {
+            semi_implicit_solver_get_maps(&solver->impli, states[iter % states_count].impli, maps, map_count);
+        } break;
+
+        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
+            assert(false);
+        } break;
+
+        default: assert(false);
+    };
 }

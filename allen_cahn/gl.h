@@ -393,7 +393,7 @@ void draw_sci_cuda_memory(const char* name, int width, int height, float min, fl
     //cudaGraphicsGLRegisterImage kept failing with "unknown error" on MX450 on ubuntu. 
     // Because of this we do this incredibly inefficient copy to host memory and back to device through opengl call.
     Texture texture = textures[resource_index];
-    device_float_modify((Real*) cuda_memory, (float*) texture.cpu_memory, pixel_count, MODIFY_DOWNLOAD);
+    sim_modify_float((Real*) cuda_memory, (float*) texture.cpu_memory, pixel_count, MODIFY_DOWNLOAD);
 
     glBindTexture(GL_TEXTURE_2D, texture.handle);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED, GL_FLOAT, texture.cpu_memory);

@@ -17,11 +17,9 @@ const double FPS_DISPLAY_FREQ = 50000;
 const double RENDER_FREQ = 30;
 const double IDLE_RENDER_FREQ = 20;
 const double POLL_FREQ = 30;
-
 const double FREE_RUN_SYM_FPS = 200;
 
-#define WINDOW_TITLE        "sym"
-#define TARGET_FRAME_TIME	16.0 
+#define WINDOW_TITLE        "sim"
 #define DEF_WINDOW_WIDTH	800 
 #define DEF_WINDOW_HEIGHT	800
 #define DO_GRAPHICAL_BUILD  
@@ -36,60 +34,27 @@ typedef struct App_State {
     double remaining_steps;
     double step_by;
     double dt;
-    size_t iter;
+    int iter;
+    int snapshot_index;
+    time_t init_time;
 
     Allen_Cahn_Config   config;
-    Explicit_State      expli;
-    Debug_State         debug;
-    Semi_Implicit_State impli;
 
-    Real* initial_F;
-    Real* initial_U;
+    Sim_Solver solver;
+    Sim_State  states[SIM_HISTORY_MAX];
+    int used_states;
 } App_State;
 
-void allen_cahn_set_initial_conditions(Real* initial_phi_map, Real* initial_T_map, Allen_Cahn_Config config);
-
-#include <filesystem>
-void simulation_state_reload(App_State* state, Allen_Cahn_Config config)
-{
-    //@NOTE: I am failing to link to this TU from nvcc without using at least one cuda function
-    // so here goes something harmless.
-    cudaGetErrorString(cudaSuccess);
-    int n = config.params.mesh_size_y;
-    int m = config.params.mesh_size_x;
-
-    size_t bytes_size = (size_t) (n * m) * sizeof(Real);
-    state->initial_F = (Real*) realloc(state->initial_F, bytes_size);
-    state->initial_U = (Real*) realloc(state->initial_U, bytes_size);
-
-    semi_implicit_state_resize(&state->impli, n, m);
-    explicit_state_resize(&state->expli, n, m);
-    debug_state_resize(&state->debug, n, m);
-    allen_cahn_set_initial_conditions(state->initial_F, state->initial_U, config);
-
-    size_t i = state->iter % ALLEN_CAHN_HISTORY;
-    device_modify(state->impli.F[i], state->initial_F, bytes_size, MODIFY_UPLOAD);
-    device_modify(state->impli.U[i], state->initial_U, bytes_size, MODIFY_UPLOAD);
-    device_modify(state->expli.F[i], state->initial_F, bytes_size, MODIFY_UPLOAD);
-    device_modify(state->expli.U[i], state->initial_U, bytes_size, MODIFY_UPLOAD);
-    state->config = config;
-
-    if(config.snapshots.folder.size() > 0)
-        std::filesystem::create_directory(config.snapshots.folder);
-}
-
-void allen_cahn_custom_config(Allen_Cahn_Config* out_config);
-
-void allen_cahn_set_initial_conditions(Real* initial_phi_map, Real* initial_T_map, Allen_Cahn_Config config)
+void sim_make_initial_conditions(Real* initial_phi_map, Real* initial_T_map, Allen_Cahn_Config config)
 {
     Allen_Cahn_Params params = config.params;
     Allen_Cahn_Initial_Conditions initial = config.initial_conditions;
-    for(size_t y = 0; y < (size_t) params.mesh_size_y; y++)
+    for(size_t y = 0; y < (size_t) params.n; y++)
     {
-        for(size_t x = 0; x < (size_t) params.mesh_size_x; x++)
+        for(size_t x = 0; x < (size_t) params.m; x++)
         {
-            Vec2 pos = Vec2{((Real) (x+0.5)) / params.mesh_size_x * params.L0, ((Real) (y+0.5)) / params.mesh_size_y * params.L0}; 
-            size_t i = x + y*(size_t) params.mesh_size_x;
+            Vec2 pos = Vec2{((Real) (x+0.5)) / params.m * params.L0, ((Real) (y+0.5)) / params.n * params.L0}; 
+            size_t i = x + y*(size_t) params.m;
 
             Real center_dist = (Real) hypot(initial.circle_center.x - pos.x, initial.circle_center.y - pos.y);
 
@@ -111,17 +76,84 @@ void allen_cahn_set_initial_conditions(Real* initial_phi_map, Real* initial_T_ma
     }
 }
 
+#include <filesystem>
+
+
+template <typename Func>
+struct Defered
+{
+    Func func;
+    Defered(Func f) : func(f) {} 
+    ~Defered() { func(); }
+};
+
+#define CONCAT2(x, y) x ## y
+#define CONCAT(x, y) CONCAT2(x, y)
+#define UNIQUE(name) CONCAT(name, __LINE__)
+
+//This will only work with c++17 or later but whatever
+#define defer(statement) auto UNIQUE(_defered_) = Defered{[&]{ statement; }}
+
+int maps_find(const Sim_Map* maps, int map_count, const char* name)
+{
+    for(int i = 0; i < map_count; i++)
+    {
+        if(maps[i].name && name)
+        {
+            if(strcmp(maps[i].name, name) == 0)
+                return i;
+        }
+    }
+
+    return -1;
+}
+
+void simulation_state_reload(App_State* app, Allen_Cahn_Config config)
+{
+    //@NOTE: I am failing to link to this TU from nvcc without using at least one cuda function
+    // so here goes something harmless.
+    cudaGetErrorString(cudaSuccess);
+    
+    int n = config.params.n;
+    int m = config.params.m;
+
+    size_t bytes_size = (size_t) (n * m) * sizeof(Real);
+    Real* initial_F = (Real*) malloc(bytes_size);
+    Real* initial_U = (Real*) malloc(bytes_size);
+    defer(free(initial_F));
+    defer(free(initial_U));
+
+    app->used_states = sim_solver_reinit(&app->solver, config.solver, n, m);
+    sim_states_reinit(app->states, app->used_states, config.solver, n, m);
+    sim_make_initial_conditions(initial_F, initial_U, config);
+    
+    Sim_Map maps[SIM_MAPS_MAX] = {0};
+    sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
+    int Phi_i = maps_find(maps, SIM_MAPS_MAX, "Phi");
+    int T_i = maps_find(maps, SIM_MAPS_MAX, "T");
+
+    if(Phi_i != -1)
+        sim_modify(maps[Phi_i].data, initial_F, bytes_size, MODIFY_UPLOAD);
+
+    if(T_i != -1)
+        sim_modify(maps[T_i].data, initial_U, bytes_size, MODIFY_UPLOAD);
+
+    app->config = config;
+
+    app->init_time = time(NULL);   // get time now
+}
+
+
 #ifdef DO_GRAPHICAL_BUILD
 #include "gl.h"
-
 #include <GLFW/glfw3.h>
-// #include "extrenal/glfw/glfw3.h"
+// #include "external/glfw/glfw3.h"
 
 void glfw_resize_func(GLFWwindow* window, int width, int heigth);
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
 #endif
 
-void save_netcfd_file(App_State* app);
+bool save_netcfd_file(App_State* app);
 
 int main()
 {
@@ -137,12 +169,17 @@ int main()
     app->step_by = 1;
     
     simulation_state_reload(app, config);
+    
+    if(config.snapshots.snapshot_initial_conditions)
+        save_netcfd_file(app);
 
     #define LOG_INFO_CONFIG_REAL(var) LOG_INFO("config", #var " = " REAL_FMT_LOW_PREC, config.params.var);
     #define LOG_INFO_CONFIG_INT(var) LOG_INFO("config", #var " = %i", config.params.var);
 
-    LOG_INFO_CONFIG_INT(mesh_size_x);
-    LOG_INFO_CONFIG_INT(mesh_size_y);
+    LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.solver));
+
+    LOG_INFO_CONFIG_INT(m);
+    LOG_INFO_CONFIG_INT(n);
     LOG_INFO_CONFIG_REAL(L0);
 
     LOG_INFO_CONFIG_REAL(dt); 
@@ -202,19 +239,45 @@ int main()
         glfwSwapInterval(0);
         gl_init((void*) glfwGetProcAddress);
 
-        size_t frame_counter = 0;
-        double frame_time_sum = 0;
     
-        double time_display_last_time_sum = 0;
         double time_display_last_time = 0;
     
         double render_last_time = 0;
         double simulated_last_time = 0;
         double poll_last_time = 0;
 
+        double processing_time = 0;
+
+        int snapshot_every_i = 0;
+        int snapshot_times_i = 0;
+        bool end_reached = false;
+
 	    while (!glfwWindowShouldClose(window))
         {
             double frame_start_time = clock_s();
+
+            double curr_real_time = (double) app->iter * config.params.dt;
+            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshots.snapshot_every;
+            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.stop_after / config.snapshots.snapshot_times;
+
+            if(curr_real_time >= next_snapshot_every)
+            {
+                snapshot_every_i += 1;
+                save_netcfd_file(app);
+            }
+
+            if(curr_real_time >= next_snapshot_times && end_reached == false)
+            {
+                snapshot_times_i += 1;
+                save_netcfd_file(app);
+            }
+
+            if(curr_real_time >= config.stop_after && end_reached == false)
+            {
+                LOG_INFO("app", "reached stop time %lfs. Simulation paused.", config.stop_after);
+                app->is_in_step_mode = true;
+                end_reached = true;
+            }
 
             bool update_screen = frame_start_time - render_last_time > 1.0/RENDER_FREQ;
             bool update_frame_time_display = frame_start_time - time_display_last_time > 1.0/FPS_DISPLAY_FREQ;
@@ -224,34 +287,22 @@ int main()
             if(update_screen)
             {
                 render_last_time = frame_start_time;
+                int target = app->render_target;
 
-                Real* selected_map = NULL;
-                switch (app->render_target)
-                {
-                    case 0: selected_map = app->impli.F[frame_counter % ALLEN_CAHN_HISTORY]; break;
-                    case 1: selected_map = app->impli.U[frame_counter % ALLEN_CAHN_HISTORY]; break;
-                
-                    default: {
-                        if(0 <= app->render_target - 2 && app->render_target - 2 < ALLEN_CAHN_DEBUG_MAPS)
-                            selected_map = app->debug.maps[app->render_target - 2];
-                    } break;
-                }
+                Sim_Map maps[SIM_MAPS_MAX] = {0};
+                sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
+                Sim_Map selected_map = {0};
+                if(0 <= target && target < SIM_MAPS_MAX)
+                    selected_map = maps[target];
 
-                // printf("rendering map %i\n", (int) frame_counter);
-                if(selected_map)
-                    draw_sci_cuda_memory("main", app->config.params.mesh_size_x, app->config.params.mesh_size_y, (float) app->config.display_min, (float) app->config.display_max, config.linear_filtering, selected_map);
-
+                draw_sci_cuda_memory("main", selected_map.m, selected_map.n, (float) app->config.display_min, (float) app->config.display_max, config.linear_filtering, selected_map.data);
                 glfwSwapBuffers(window);
             }
 
             if(update_frame_time_display)
             {
-                double time_sum_delta = frame_time_sum - time_display_last_time_sum;
-                if(time_sum_delta != 0)
-                    glfwSetWindowTitle(window, std::to_string(time_sum_delta).c_str());
-
+                glfwSetWindowTitle(window, format_string("step: %3.3lfms | real: %8.6lfms", processing_time * 1000, curr_real_time*1000).c_str());
                 time_display_last_time = frame_start_time;
-                time_display_last_time_sum = frame_time_sum;
             }
 
             bool step_sym = false;
@@ -265,15 +316,12 @@ int main()
                 simulated_last_time = frame_start_time;
                 app->remaining_steps -= 1;
 
-                Debug_State* debug = app->is_in_debug_mode ? &app->debug : NULL;
-                // explicit_solver_step(&app->expli, debug, app->config.params, frame_counter);
-                semi_implicit_solver_step(&app->impli, debug, app->config.params, frame_counter);
+                double solver_start_time = clock_s();
+                sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
+                double solver_end_time = clock_s();
 
-                double end_start_time = clock_s();
-                double delta = end_start_time - frame_start_time;
-
-                frame_time_sum += delta;
-                frame_counter += 1;
+                processing_time = solver_end_time - solver_start_time;
+                app->iter += 1;
             }
 
             if(poll_events)
@@ -299,20 +347,20 @@ int main()
     }
     else
     {
-        size_t iters = (size_t) (config.snapshots.sym_time / config.params.dt);
+        int iters = (int) (config.stop_after / config.params.dt);
         
         double start_time = clock_s();
         double last_notif_time = 0;
-        for(size_t i = 0; i < iters; i++)
+        for(; app->iter < iters; app->iter++)
         {
             double now = clock_s();
             if(now - last_notif_time > 1)
             {
                 last_notif_time = now;
-                LOG_INFO("app", "... completed %i%%", (int) (i * 100 / iters));
+                LOG_INFO("app", "... completed %i%%", (int) (app->iter * 100 / iters));
             }
 
-            explicit_solver_step(&app->expli, NULL, app->config.params, i);
+            sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
@@ -379,7 +427,7 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
             }
         }
 
-        if(key == GLFW_KEY_S)
+        if(key == GLFW_KEY_P)
         {
             LOG_INFO("APP", "Input simulation speed modifier in form 'NUM'");
             double new_step_by = app->step_by;
@@ -409,94 +457,26 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
         
         if(new_render_target != (uint8_t) -1)
         {
-            app->render_target = new_render_target;
-            const char* render_target_name = "<EMPTY>";
-            switch (new_render_target)
+            Sim_Map maps[SIM_MAPS_MAX] = {0};
+            sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
+
+            if(0 <= new_render_target && new_render_target < SIM_MAPS_MAX)
             {
-                case 0: 
-                    render_target_name = "Phi"; 
-                    break;
-                case 1: 
-                    render_target_name = "T"; 
-                    break;
-            
-                default: {
-                    int index = new_render_target - 2; 
-                    if(0 <= index && index < ALLEN_CAHN_DEBUG_MAPS)
-                    {
-                        //Set this debug request
-                        const char* name = app->debug.names[index];
-                        if(strlen(name) != 0)
-                            render_target_name = name;
-                    }
-                } break;
+                if(maps[new_render_target].name == NULL)
+                    maps[new_render_target].name = "<EMPTY>";
+
+                printf("redering %s\n", maps[new_render_target].name);
+                app->render_target = new_render_target;
+            }
+            else
+            {
+                printf("current render target %i outside of the allowed range [0, %i)\n", new_render_target, SIM_MAPS_MAX);
             }
 
-            LOG_INFO("APP", "rendering: %s", render_target_name);
         }
-
     }
 }
 #endif
-/*
-void allen_cahn_custom_config(Allen_Cahn_Config* out_config)
-{
-    const int _SIZE_X = 1024;
-    const int _SIZE_Y = _SIZE_X;
-    const Real _dt = 1.0f/200;
-    const Real _alpha = 0.5;
-    const Real _L = 2;
-    const Real _xi = 0.00411f;
-    const Real _a = 2;
-    const Real _b = 1;
-    const Real _beta = 8;
-    const Real _Tm = 1;
-    const Real _Tini = 0;
-    const Real _L0 = 4;
-
-    Allen_Cahn_Scale scale = {0};
-    scale.L0 = _L0 / (Real) _SIZE_X;
-    scale.Tini = _Tini;
-    scale.Tm = _Tm;
-    scale.c = 1;
-    scale.rho = 1;
-    scale.lambda = 1;
-    
-    Allen_Cahn_Params params = {0};
-    params.L0 = _L0;
-    params.mesh_size_x = _SIZE_X;
-    params.mesh_size_y = _SIZE_Y;
-    params.L = allen_cahn_scale_latent_heat(_L, scale);
-    params.xi = allen_cahn_scale_xi(_xi, scale);
-    params.dt = _dt;
-    params.a = _a;
-    params.b = _b;
-    params.alpha = allen_cahn_scale_alpha(_alpha, scale);
-    params.beta = allen_cahn_scale_latent_heat(_beta, scale);
-    params.Tm = _Tm;
-    
-    Allen_Cahn_Initial_Conditions initial_conditions = {0};
-    initial_conditions.inside_phi = 1;
-    initial_conditions.inside_T = 0;
-    initial_conditions.outside_phi = 0;
-    initial_conditions.outside_T = 0;
-    initial_conditions.circle_center = Vec2{_L0 / 4, _L0 / 4};
-    initial_conditions.circle_radius = _L0 / 8;
-    initial_conditions.square_from = Vec2{_L0/2 - 0.3f, _L0/2 - 0.3f};
-    initial_conditions.square_to = Vec2{_L0/2 + 0.3f, _L0/2 + 0.3f};
-
-    Allen_Cahn_Snapshots snapshots = {0};
-    snapshots.folder = "snapshots";
-    snapshots.prefix = "v1";
-    snapshots.every = 0.1f;
-    snapshots.sym_time = -1;
-    
-    out_config->config_name = "from_code_config";
-    out_config->initial_conditions = initial_conditions;
-    out_config->params = params;
-    out_config->snapshots = snapshots;
-}
-*/
 
 #include <chrono>
 static double clock_s()
@@ -516,257 +496,136 @@ static void wait_s(double seconds)
     std::this_thread::sleep_until(sleep_til);
 }
 
-
-
-void save_netcfd_file(App_State* app)
+bool save_netcfd_file(App_State* app)
 {
-    (void) app;
-    #if 0
-		/* prepare the output NetCDF dataset */
-        int dataset_ID = 0;
-        const char* filename = "snapshot";
-        Allen_Cahn_Params params = app->config.params;
-        int real_type = sizeof(Real) == sizeof(double) ? NC_DOUBLE : NC_FLOAT;
+    enum {NDIMS = 2};
+    int dataset_ID = 0;
+    int dim_ids[NDIMS] = {0};
+    Allen_Cahn_Params params = app->config.params;
 
-        #define NC_ERROR_AND(code) (code) != NC_NOERR ? (code) :
+    int iter = (int) app->iter;
+    double real_time = (Real) app->iter * app->config.params.dt;
+    
+    if(app->config.snapshots.snapshot_initial_conditions == false)
+        app->snapshot_index += 1;
 
-        int dim_ids[2] = {0};
-		{
+    //creates a path in the form "path/to/snapshots/prefix_2024_03_01__10_22_43_postfix/0001.nc"
+    std::string composed_filename;
+    {
+        Allen_Cahn_Snapshots* snapshots = &app->config.snapshots;
+        tm* t = localtime(&app->init_time);
 
-			int nc_error = nc_create(filename, NC_CLOBBER, &dataset_ID);
-			if(nc_error != NC_NOERR) {
-				printf("NetCDF create error: %s.\n", nc_strerror(nc_error));
-                return;
-			}
+        std::filesystem::path composed_path = snapshots->folder;
 
-			/* define the solution grid dimensions */
-			nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "x", params.mesh_size_x, dim_ids + 0);
-			nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "y", params.mesh_size_y, dim_ids + 1);
-		
-			if(nc_error != NC_NOERR) {
-				printf("NetCDF define dim error: %s.\n", nc_strerror(nc_error));
-                return;
-			}
-		}
+        std::string folder = format_string("%s%04i-%02i-%02i__%02i-%02i-%02i%s", 
+            snapshots->prefix.data(), 
+            t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
+            snapshots->postfix.data()
+        );
+        std::error_code error = {};
+        if(composed_path.empty() == false)
+            std::filesystem::create_directory(composed_path, error);
 
-		/*
-		save computation parameters - these attributes may or may not be used by other postprocessing
-		software, by Intertack itself or they can be extracted by the ncdump command line utility
-		for informational purpose only.
-		*/
-		{
-            /*
-            typedef struct Allen_Cahn_Params{
-                int mesh_size_x;
-                int mesh_size_y;
-                Real L0; //simulation region size in real units
+        composed_path.append(folder.c_str());
+        std::filesystem::create_directory(composed_path, error);
 
-                Real dt; //time step
-                Real L;  //latent heat
-                Real xi; //boundary thickness
-                Real a;  //
-                Real b;
-                Real alpha;
-                Real beta;
-                Real Tm; //melting point
-                Real Tinit; //currenlty unsused
+        composed_path.append(format_string("%04i.nc", app->snapshot_index).c_str());
 
-                Real S; //anisotrophy strength
-                Real m; //anisotrophy frequency (?)
-                Real theta0; //anisotrophy orientation
-                bool do_anisotropy;
-            } Allen_Cahn_Params;
-            */
+        composed_filename = composed_path.c_str();
 
+        if(error)
+        {
+            LOG_INFO("app", "encoutered error '%s' while creating a folder on the final snapshot path '%s'",
+                error.message().c_str(), composed_filename.c_str()
+            );
 
-            int nc_error = NC_NOERR;
+            return false;
+        }
+    }
 
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_x", NC_INT, 1, &params.mesh_size_x);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_y", NC_INT, 1, &params.mesh_size_y);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "L0", NC_INT, 1, &params.L0);
+    if(app->config.snapshots.snapshot_initial_conditions == true)
+        app->snapshot_index += 1;
+        
+    const char* filename = composed_filename.data();
 
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "dt", real_type, 1, &params.dt);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "L", real_type, 1, &params.L);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "xi", real_type, 1, &params.xi);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "a", real_type, 1, &params.a);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "b", real_type, 1, &params.b);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "alpha", real_type, 1, &params.alpha);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "beta", real_type, 1, &params.beta);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tm", real_type, 1, &params.Tm);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tinit", real_type, 1, &params.Tinit);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "S", real_type, 1, &params.S);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "m", real_type, 1, &params.m);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "theta0", real_type, 1, &params.theta0);
-			nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "do_anisotropy", NC_BYTE, 1, &params.do_anisotropy);
+    #define NC_ERROR_AND(code) (code) != NC_NOERR ? (code) :
 
-			if(nc_error != NC_NOERR) {
-				printf("NetCDF error while outputing params: %s.\n", nc_strerror(nc_error));
-                return;
-			}
-		}
+    int nc_error = nc_create(filename, NC_NETCDF4, &dataset_ID);
+    printf("saving NetCDF file '%s'\n", filename);
+    if(nc_error != NC_NOERR) {
+        printf("NetCDF create error on file '%s': %s.\n", filename, nc_strerror(nc_error));
+        return false;
+    }
 
-		nc_enddef(dataset_ID);
+    nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "x", (size_t) params.m, dim_ids + 0);
+    nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "y", (size_t) params.n, dim_ids + 1);
+    if(nc_error != NC_NOERR) {
+        printf("NetCDF define dim error: %s.\n", nc_strerror(nc_error));
+        return false;
+    }
 
-        int Phi_ID = 0;
-        int T_ID = 0;
+    int real_type = sizeof(Real) == sizeof(double) ? NC_DOUBLE : NC_FLOAT;
 
-        int nc_error = NC_NOERR;
-        nc_error = NC_ERROR_AND(nc_error) nc_def_var(dataset_ID, "Phi", real_type, 2, dim_ids, &Phi_ID);
-        nc_error = NC_ERROR_AND(nc_error) nc_def_var(dataset_ID, "T", real_type, 2, dim_ids, &T_ID);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_x", NC_INT, 1, &params.m);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_y", NC_INT, 1, &params.n);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "L0", NC_INT, 1, &params.L0);
 
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "iter", NC_INT, 1, &iter);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "time", NC_INT, 1, &real_time);
 
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "dt", real_type, 1, &params.dt);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "L", real_type, 1, &params.L);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "xi", real_type, 1, &params.xi);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "a", real_type, 1, &params.a);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "b", real_type, 1, &params.b);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "alpha", real_type, 1, &params.alpha);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "beta", real_type, 1, &params.beta);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tm", real_type, 1, &params.Tm);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tinit", real_type, 1, &params.Tinit);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "S", real_type, 1, &params.S);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "m", real_type, 1, &params.m);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "theta0", real_type, 1, &params.theta0);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "do_anisotropy", NC_BYTE, 1, &params.do_anisotropy);
 
-		/*
-		save auxiliary coordinate arrays to the NetCDF dataset. These arrays contain the respective z,y,x
-		coordinates of the grid nodes. If saved as variables with the same names as the dimensions' names
-		n3,n2,n1 (ordered by importance), they are taken into account by the VisIt visualization software
-		in renderings of NetCDF arrays.
-		*/
-		{
-			double * x_grid_coords, * y_grid_coords, * z_grid_coords;
-			int n3_ = grid_IO_mode ? total_n3 : total_N3;
-			int n2_ = grid_IO_mode ? n2 : N2;
-			int n1_ = grid_IO_mode ? n1 : N1;
-			int bcond_thickness_ = grid_IO_mode ? 0 : bcond_thickness;
-			int i, j, k;
+    if(nc_error != NC_NOERR) {
+        printf("NetCDF error while outputing params: %s.\n", nc_strerror(nc_error));
+        return false;
+    }
 
-			/*
-			allocate the auxiliary arrays. For code structure improvement, all snapshot saving technicalities
-			are concentrated together. Of course, these arrays could be allocated and initialized somewhere above
-			only once per each batch mode iteration, but the additional work costs nothing anyway.
-			*/
-			alloc_error_code = 0;	/* this is in fact redundant as alloc_error_code should still be zero */
-			if( (z_grid_coords=(double *)malloc(n3_*sizeof(double))) == NULL ) alloc_error_code=1;
-			else if( (y_grid_coords=(double *)malloc(n2_*sizeof(double))) == NULL ) alloc_error_code=1;
-			else if( (x_grid_coords=(double *)malloc(n1_*sizeof(double))) == NULL ) alloc_error_code=1;
+    // nc_enddef(dataset_ID);
+    int Phi_ID = 0;
+    int T_ID = 0;
 
-			if(alloc_error_code) {
-				Mmprintf(logfile, "Error: Could not allocate the grid coordinate descriptor arrays.\nStop.\n");
-				nc_close(dataset_ID);
-				HaltAllRanks(1);
-			}
+    nc_error = NC_ERROR_AND(nc_error) nc_def_var(dataset_ID, "Phi", real_type, NDIMS, dim_ids, &Phi_ID);
+    nc_error = NC_ERROR_AND(nc_error) nc_def_var(dataset_ID, "T", real_type, NDIMS, dim_ids, &T_ID);
 
-			/* fill the arrays */
-			for(k=0;k<n3_;k++) z_grid_coords[k] = L3 * (0.5+k-bcond_thickness_)/total_n3;
-			for(j=0;j<n2_;j++) y_grid_coords[j] = L2 * (0.5+j-bcond_thickness_)/n2;
-			for(i=0;i<n1_;i++) x_grid_coords[i] = L1 * (0.5+i-bcond_thickness_)/n1;
+    size_t copy_size = (size_t) params.m * (size_t) params.n*sizeof(Real);
+    Real* F = (Real*) malloc(copy_size);
+    Real* U = (Real*) malloc(copy_size);
 
-			nc_put_var_double(dataset_ID, n3_var_ID, z_grid_coords);
-			nc_put_var_double(dataset_ID, n2_var_ID, y_grid_coords);
-			nc_put_var_double(dataset_ID, n1_var_ID, x_grid_coords);
+    defer(free(F));
+    defer(free(U));
 
-			/* delete the coordinate arrays */
-			free(x_grid_coords);
-			free(y_grid_coords);
-			free(z_grid_coords);
-		}
-		/*
-		dataset created successfully - gather the solution from all ranks
-		NOTE:	Up to this point, the other ranks don't even know that the master is preparing the snapshot.
-		*/
+    Sim_Map maps[SIM_MAPS_MAX] = {0};
+    sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
+    int Phi_i = maps_find(maps, SIM_MAPS_MAX, "Phi");
+    int T_i = maps_find(maps, SIM_MAPS_MAX, "T");
 
-		MPIcmd=MPICMD_SNAPSHOT;
-		MPI_Bcast(&MPIcmd, 1, MPI_INT, MPIrankmap[0], MPI_COMM_WORLD);
+    if(Phi_i != -1)
+        sim_modify(maps[Phi_i].data, F, copy_size, MODIFY_DOWNLOAD);
 
-		/* collect the data and save immediately. The auxiliary (boundary condition) nodes are saved if and only if grid_IO_mode==0. */
-		for(l=0;l<MPIprocs;l++) {
+    if(T_i != -1)
+        sim_modify(maps[T_i].data, U, copy_size, MODIFY_DOWNLOAD);
 
-			int snapshot_bnd_thickness = grid_IO_mode*bcond_thickness;	/* 0 if the whole grid should be output */
-			int n1_ = n1;
-			int n2_ = n2;
-			int n3_;
-			int first_row_;
+    nc_error = NC_ERROR_AND(nc_error) nc_put_var(dataset_ID, Phi_ID, F);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_var(dataset_ID, T_ID, U);
 
-			/*
-			calculate the n3, first_row variables as they are in rank l
-			(including the master itself if l==0)
-			*/
-  			n3_ = total_n3/MPIprocs;
-			first_row_ = l*n3_;
-			if(l < total_n3%MPIprocs) {
-				n3_++;
-				first_row_ += l;
-			} else
-				first_row_ += total_n3%MPIprocs;
+    nc_error = NC_ERROR_AND(nc_error) nc_close(dataset_ID);
 
-			/*
-			when saving the whole grid, we have to account for the number of ranks and the position of the
-			block corresponding to rank l in the grid. The communication arrays ('boundary condition' in the Z
-			direction) must not be saved to the output dataset.
+    if(nc_error != NC_NOERR) {
+        printf("NetCDF error while outputing data: %s.\n", nc_strerror(nc_error));
+        return false;
+    }
 
-			Here n3_ and first_row_ are modified so that they reflect the dimension of the block in the Y direction and
-			the position of its first block in the output dataset. If grid_IO_mode==1, then n3_ and first_row_
-			have the same value as the respective variables without the trailing underscore in rank l.
-			*/
-			if(!grid_IO_mode) {
-				n1_=N1; n2_=N2;
-				if(l==0) n3_ += bcond_thickness; else first_row_ += bcond_thickness;
-				if(l==MPIprocs-1) n3_ += bcond_thickness;
-			}
-
-			if(l) {
-				/* subgridsize in rank 0 may be several rows greater than the actual amount of data, but that doesn't matter */
-				MPI_Recv(u_cache, subgridsize, MPI_DOUBLE, MPIrankmap[l], MPIMSG_GRID_U, MPI_COMM_WORLD, &MPIstat);
-				MPI_Recv(p_cache, subgridsize, MPI_DOUBLE, MPIrankmap[l], MPIMSG_GRID_P, MPI_COMM_WORLD, &MPIstat);
-			} else {
-				int i, j, k;
-				double * cache_ptr;
-				FLOAT * ptr;
-
-				/*
-				update the boundary conditions in the event that the auxiliary nodes are required to be saved.
-				The bcond_setup() function is defined in the file equation.c
-				*/
-				if(!grid_IO_mode) bcond_setup(eqSystem.t, solution);
-
-				/*
-				Transcribe the solution to the cache before saving (for additional information, see the same
-				procedure in the initial conditions loading part. If grid_IO_mode==1, the boundary conditions
-				in the plane X-Y are skipped here (the boundary conditions in the direction of Z are skipped
-				automatically due to the memory organization of the solution).
-				*/
-
-				/* 1. transcribe the temperature field */
-				cache_ptr = u_cache;
-				for(k=0;k<n3_;k++)
-					for(j=0;j<n2_;j++) {
-						ptr = u + (k+snapshot_bnd_thickness) * rowsize + (j+snapshot_bnd_thickness) * N1 + snapshot_bnd_thickness;
-						for(i=0;i<n1_;i++) *(cache_ptr++)=*(ptr++);
-					}
-
-				/* 2. transcribe the phase field */
-				cache_ptr = p_cache;
-				for(k=0;k<n3_;k++)
-					for(j=0;j<n2_;j++) {
-						ptr = p + (k+snapshot_bnd_thickness) * rowsize + (j+snapshot_bnd_thickness) * N1 + snapshot_bnd_thickness;
-						for(i=0;i<n1_;i++) *(cache_ptr++)=*(ptr++);
-					}
-			}
-
-			/* save the block to the file */
-			{
-				/*
-				prepare the data subgrid starting corner and dimensions, as required for the call to
-				the nc_get_vara_double() function. For more information, see the NetCDF documentation.
-				*/
-				size_t nc_start[3] = { first_row_, 0, 0 };
-				size_t nc_count[3] = { n3_, n2_, n1_ };
-
-				nc_put_vara_double(dataset_ID, u_var_ID, nc_start, nc_count, u_cache);
-				nc_put_vara_double(dataset_ID, p_var_ID, nc_start, nc_count, p_cache);
-			}
-
-			/* move the progress meter (each star represents data collection from one process) */
-			Mmprintf(logfile, "*"); fflush(stdout);
-		}
-
-		nc_close(dataset_ID);
-		Mmprintf(logfile, "] Done in %s\n", format_time(MPI_Wtime()-AUX_time));
-
-		/* delete the snapshot trigger file */
-		if(is_on_demand_snapshot) unlink(snapshot_trigger_file);
-
-		commit_logfile(0);	/* update the log file on disk (non-forced update - see commit_logfile()) */
-	}
-    #endif
+    return true;
 }
