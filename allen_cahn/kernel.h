@@ -56,6 +56,8 @@ typedef struct Allen_Cahn_Params{
 typedef enum Solver_Type{
     SOLVER_TYPE_NONE = 0,
     SOLVER_TYPE_EXPLICIT,
+    SOLVER_TYPE_EXPLICIT_RK4,
+    SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE,
     SOLVER_TYPE_SEMI_IMPLICIT,
     SOLVER_TYPE_SEMI_IMPLICIT_COUPLED,
 } Solver_Type;
@@ -99,6 +101,26 @@ typedef struct Explicit_State{
 
 #define EXPLICIT_SOLVER_REQUIRED_HISTORY 2
 
+//Explicit
+
+#define RK4_SOLVER_INTERNAL_STEPS 4
+
+typedef struct Explicit_RK4_Solver {
+    struct {
+        Real* grad_phi;
+        Real* grad_T;
+        Real* reaction;
+        Real* aniso_factor;
+        Real* step_residual;
+    } debug_maps;
+
+    Explicit_State steps[RK4_SOLVER_INTERNAL_STEPS];
+    
+    int m;
+    int n;
+} Explicit_RK4_Solver;
+
+
 //Semi implicit
 typedef struct Semi_Implicit_State{
     Real* F;
@@ -130,6 +152,26 @@ typedef struct Semi_Implicit_Solver {
 
 #define SEMI_IMPLICIT_SOLVER_REQUIRED_HISTORY 2
 
+//Semi implicit coupled
+typedef struct Semi_Implicit_Coupled_State{
+    Real* C;
+
+    int m;
+    int n;
+} Semi_Implicit_Coupled_State;
+
+typedef struct Semi_Implicit_Coupled_Solver {
+    Real* b_C; //size 2N
+
+    Real* aniso; //size N
+    Real* B_U; //size N
+
+    int m;
+    int n;
+} Semi_Implicit_Coupled_Solver;
+
+#define SEMI_IMPLICIT_COUPLED_SOLVER_REQUIRED_HISTORY 2
+
 //Polymorphic
 typedef struct Sim_State {
     int m;
@@ -139,6 +181,7 @@ typedef struct Sim_State {
     union {
         Explicit_State expli;
         Semi_Implicit_State impli;
+        Semi_Implicit_Coupled_State impli_coupled;
     };
 } Sim_State;
 
@@ -150,6 +193,7 @@ typedef struct Sim_Solver  {
     union {
         Explicit_Solver expli;
         Semi_Implicit_Solver impli;
+        Semi_Implicit_Coupled_Solver impli_coupled;
     };
 } Sim_Solver;
 

@@ -155,6 +155,7 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
 
 bool save_netcfd_file(App_State* app);
 
+
 int main()
 {
     //Read config
@@ -517,19 +518,20 @@ bool save_netcfd_file(App_State* app)
 
         std::filesystem::path composed_path = snapshots->folder;
 
-        std::string folder = format_string("%s%04i-%02i-%02i__%02i-%02i-%02i%s", 
+        std::string folder = format_string("%s%04i-%02i-%02i__%02i-%02i-%02i_%s%s", 
             snapshots->prefix.data(), 
             t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
+            solver_type_to_cstring(app->config.solver),
             snapshots->postfix.data()
         );
         std::error_code error = {};
         if(composed_path.empty() == false)
             std::filesystem::create_directory(composed_path, error);
 
-        composed_path.append(folder.c_str());
+        composed_path.append(folder.c_str()); 
         std::filesystem::create_directory(composed_path, error);
 
-        composed_path.append(format_string("%04i.nc", app->snapshot_index).c_str());
+        composed_path.append(format_string("%s_%04i.nc", solver_type_to_cstring(app->config.solver), app->snapshot_index).c_str());
 
         composed_filename = composed_path.c_str();
 
