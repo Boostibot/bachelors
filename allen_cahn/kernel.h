@@ -60,6 +60,8 @@ typedef enum Solver_Type{
     SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE,
     SOLVER_TYPE_SEMI_IMPLICIT,
     SOLVER_TYPE_SEMI_IMPLICIT_COUPLED,
+
+    SOLVER_TYPE_ENUM_COUNT,
 } Solver_Type;
 
 static const char* solver_type_to_cstring(Solver_Type type)
@@ -69,8 +71,24 @@ static const char* solver_type_to_cstring(Solver_Type type)
         default: return "unknown";
         case SOLVER_TYPE_NONE: return "none";
         case SOLVER_TYPE_EXPLICIT: return "explicit";
+        case SOLVER_TYPE_EXPLICIT_RK4: return "explicit-rk4";
+        case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: return "explicit-rk4-adaptive";
         case SOLVER_TYPE_SEMI_IMPLICIT: return "semi-implicit";
         case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: return "semi-implicit-coupled"; 
+    }
+}
+
+static int solver_type_required_history(Solver_Type type) 
+{
+    switch(type)
+    {
+        default:
+        case SOLVER_TYPE_NONE: return 0;
+        case SOLVER_TYPE_EXPLICIT: return 2;
+        case SOLVER_TYPE_EXPLICIT_RK4: return 2;
+        case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: return 2;
+        case SOLVER_TYPE_SEMI_IMPLICIT: return 2;
+        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: return 2;
     }
 }
 
@@ -99,42 +117,17 @@ typedef struct Explicit_State{
     int n;
 } Explicit_State;
 
-#define EXPLICIT_SOLVER_REQUIRED_HISTORY 2
-
-//Explicit
-
-#define RK4_SOLVER_INTERNAL_STEPS 4
-
-typedef struct Explicit_RK4_Solver {
-    struct {
-        Real* grad_phi;
-        Real* grad_T;
-        Real* reaction;
-        Real* aniso_factor;
-        Real* step_residual;
-    } debug_maps;
-
-    Explicit_State steps[RK4_SOLVER_INTERNAL_STEPS];
-    
-    int m;
-    int n;
-} Explicit_RK4_Solver;
-
+typedef Explicit_State Explicit_RK4_Solver;
+typedef Explicit_State Explicit_RK4_Adaptive_Solver;
 
 //Semi implicit
-typedef struct Semi_Implicit_State{
-    Real* F;
-    Real* U;
-
-    int m;
-    int n;
-} Semi_Implicit_State;
+typedef Explicit_State Semi_Implicit_State;
 
 typedef struct Semi_Implicit_Solver {
     struct {
         Real* b_F;
         Real* b_U;
-        Real* scale;
+        Real* anisotrophy;
     } maps;
 
     struct {
@@ -149,8 +142,6 @@ typedef struct Semi_Implicit_Solver {
     int m;
     int n;
 } Semi_Implicit_Solver;
-
-#define SEMI_IMPLICIT_SOLVER_REQUIRED_HISTORY 2
 
 //Semi implicit coupled
 typedef struct Semi_Implicit_Coupled_State{
@@ -169,8 +160,6 @@ typedef struct Semi_Implicit_Coupled_Solver {
     int m;
     int n;
 } Semi_Implicit_Coupled_Solver;
-
-#define SEMI_IMPLICIT_COUPLED_SOLVER_REQUIRED_HISTORY 2
 
 //Polymorphic
 typedef struct Sim_State {
@@ -205,7 +194,7 @@ typedef struct Sim_Map {
     int n;
 } Sim_Map;
 
-extern "C" int  sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m);
+extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m);
 extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m);
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count);
 extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug);
@@ -238,12 +227,15 @@ static void sim_example()
     int m = 20;
     int n = 20;
     bool do_debug = false;
+    Solver_Type type = SOLVER_TYPE_EXPLICIT; 
+    (void) type; //for some reason we get unreferenced variable warning here even though it clearly is used (?)
     
     //Init solver. It returns the MINIMAL number of states it requires
     // to work properly.
-    int state_count = sim_solver_reinit(&solver, SOLVER_TYPE_EXPLICIT, m, n);
+    sim_solver_reinit(&solver, type, m, n);
+    int state_count = solver_type_required_history(type);
     //Init the states 
-    sim_states_reinit(states, state_count, SOLVER_TYPE_EXPLICIT, m, n);
+    sim_states_reinit(states, state_count, type, m, n);
 
     //Loop simulation
     for(int i = 0; i < 1000; i++)

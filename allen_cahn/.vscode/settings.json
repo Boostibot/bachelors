@@ -78,6 +78,11 @@
         "__functional_base_03": "cpp",
         "__tuple": "cpp",
         "__functional_03": "cpp",
-        "target": "cpp"
+        "target": "cpp",
+        "__string": "cpp",
+        "__bit_reference": "cpp",
+        "__node_handle": "cpp",
+        "__memory": "cpp",
+        "locale": "cpp"
     }
 }

@@ -39,6 +39,8 @@ typedef struct Allen_Cahn_Config{
     Allen_Cahn_Snapshots snapshots;
     Allen_Cahn_Initial_Conditions initial_conditions;
 
+    std::string entire_config_file;
+
     double stop_after;
     bool interactive_mode;
     bool linear_filtering;
@@ -75,9 +77,9 @@ size_t skip_set_reverse(size_t from, size_t to, std::string_view source, std::st
         char c = source[i];
         bool is_in_set = char_set.find(c, 0) != std::string::npos;
         if(is_in_set && options == SKIP_INVERSE)
-            return i;
+            return i + 1;
         if(is_in_set == false && options == SKIP_NORMAL)
-            return i;
+            return i + 1;
     }
 
     return to;
@@ -115,8 +117,16 @@ bool file_read_entire(const char* path, std::string* into)
     return !t.bad();
 }
 
+bool file_write_entire(const char* path, std::string_view content)
+{
+    std::ofstream t;
+    t.open(path);
+    t << content;
+    return !t.bad();
+}
+
 #define WHITESPACE " \t\n\r\v\f"
-#define MARKERS    "=:,"
+#define MARKERS    "=:"
 
 enum Key_Value_Type {
     KEY_VALUE_BLANK,
@@ -126,7 +136,7 @@ enum Key_Value_Type {
     KEY_VALUE_ERROR,
 };
 
-Key_Value_Type match_key_value_pair(std::string_view line, std::string* key, std::string* value)
+Key_Value_Type match_key_value_pair(std::string_view line, std::string* key, std::string* value, std::string* section)
 {
     size_t key_from = skip_set(0, line, WHITESPACE);
     size_t key_to = skip_set(key_from, line, WHITESPACE MARKERS, SKIP_INVERSE);
@@ -138,19 +148,40 @@ Key_Value_Type match_key_value_pair(std::string_view line, std::string* key, std
     size_t marker_to = skip_set(marker_from, line, MARKERS);
 
     size_t value_from = skip_set(marker_to, line, WHITESPACE);
-    size_t value_to = skip_set_reverse(line.size(), value_from, line, WHITESPACE) + 1;
+    size_t value_to = skip_set_reverse(line.size(), value_from, line, WHITESPACE);
 
     std::string_view found_key = line.substr(key_from, key_to - key_from);
     std::string_view found_marker = line.substr(marker_from, marker_to - marker_from);
     std::string_view found_value = line.substr(value_from, value_to - value_from);
 
+    //If is comment
     if(found_key.size() > 0 && (found_key[0] == '#' || found_key[0] == ';'))
         return KEY_VALUE_COMMENT;
 
+    //If is section
+    if(found_key.size() > 0 && found_key.front() == '[' && found_key.back() == ']')
+    {
+        *section = found_key.substr(1, found_key.size() - 2);
+        return KEY_VALUE_SECTION;
+    }
+
     if(found_marker == "=" || found_marker == ":" || found_marker == ",")
     {
+        //Remove comment from value
+        size_t comment_index1 = found_value.rfind(';');
+        size_t comment_index2 = found_value.rfind('#');
+        if(comment_index1 == (size_t) -1)
+            comment_index1 = found_value.size();
+        if(comment_index2 == (size_t) -1)
+            comment_index2 = found_value.size();
+
+        size_t comment_index = comment_index1 < comment_index2 ? comment_index1 : comment_index2;
+        size_t comment_removed_value_to = skip_set_reverse(comment_index, 0, found_value, WHITESPACE);
+
+        std::string_view comment_removed_value = found_value.substr(0, comment_removed_value_to);
+
         *key = found_key;
-        *value = found_value;
+        *value = comment_removed_value;
         return KEY_VALUE_ENTRY;
     }
     else
@@ -159,34 +190,45 @@ Key_Value_Type match_key_value_pair(std::string_view line, std::string* key, std
     }
 }
 
+#define SECTION_MARKER "~!~!~!~" //A very unlikely set of characters
+
 using Key_Value = std::unordered_map<std::string, std::string>;
 
 Key_Value to_key_value(std::string_view source)
 {
     Key_Value key_value;
     int line_number = 1;
+    std::string key;
+    std::string value;
+    std::string current_section;
     for(size_t i = 0; i < source.size(); line_number++)
     {
         std::string_view line = get_line(&i, source);
-        std::string key;
-        std::string value;
+        key.clear();
+        value.clear();
         
-        Key_Value_Type type = match_key_value_pair(line, &key, &value);
+        Key_Value_Type type = match_key_value_pair(line, &key, &value, &current_section);
         if(type == KEY_VALUE_ERROR)
             LOG_ERROR("to_key_value", "invalid syntax on line %i '%s'. Ignoring.", line_number, std::string(line).c_str());
         else if(type == KEY_VALUE_ENTRY)
-            key_value[key] = value;
+            key_value[current_section + SECTION_MARKER + key] = value;
     }
 
     return key_value;
 }
 
-bool key_value_get_any(const Key_Value& map, void* out, const char* str, const char* type_fmt, const char* type)
+std::string key_value_key(const char* section, const char* str)
 {
-    auto found = map.find(str);
+    return std::string(section) + SECTION_MARKER + str;
+}
+
+bool key_value_get_any(const Key_Value& map, void* out, const char* section, const char* str, const char* type_fmt, const char* type)
+{
+    std::string key = key_value_key(section, str);
+    auto found = map.find(key);
     bool state = found != map.end();
     if(state == false)
-        LOG_ERROR("config", "couldnt find %s '%s'", type, str);
+        LOG_ERROR("config", "couldnt find %s '%s' in section [%s]", type, str, section);
     else
     {
         const char* val = found->second.c_str();  
@@ -197,12 +239,13 @@ bool key_value_get_any(const Key_Value& map, void* out, const char* str, const c
     return state;
 }
 
-bool key_value_get_vec2(const Key_Value& map, Vec2* out, const char* str)
+bool key_value_get_vec2(const Key_Value& map, Vec2* out, const char* section, const char* str)
 {
-    auto found = map.find(str);
+    std::string key = key_value_key(section, str);
+    auto found = map.find(key);
     bool state = found != map.end();
     if(state == false)
-        LOG_ERROR("config", "couldnt find Vec2 '%s'", str);
+        LOG_ERROR("config", "couldnt find Vec2 '%s' in section [%s]", str, section);
     else
     {
         const char* val = found->second.c_str();  
@@ -213,42 +256,46 @@ bool key_value_get_vec2(const Key_Value& map, Vec2* out, const char* str)
     return state;
 }
 
-bool key_value_get_int(const Key_Value& map, int* out, const char* str)
+bool key_value_get_int(const Key_Value& map, int* out, const char* section, const char* str)
 {
-    return key_value_get_any(map, out, str, "%i", "int");
+    return key_value_get_any(map, out, section, str, "%i", "int");
 }
 
-bool key_value_get_real(const Key_Value& map, Real* out, const char* str)
+bool key_value_get_real(const Key_Value& map, Real* out, const char* section, const char* str)
 {
-    return key_value_get_any(map, out, str, REAL_FMT, "Real");
+    return key_value_get_any(map, out, section, str, REAL_FMT, "Real");
 }
 
-bool key_value_get_float(const Key_Value& map, float* out, const char* str)
+bool key_value_get_float(const Key_Value& map, float* out, const char* section, const char* str)
 {
-    return key_value_get_any(map, out, str, "%f", "float");
+    return key_value_get_any(map, out, section, str, "%f", "float");
 }
 
-bool key_value_get_double(const Key_Value& map, double* out, const char* str)
+bool key_value_get_double(const Key_Value& map, double* out, const char* section, const char* str)
 {
-    return key_value_get_any(map, out, str, "%lf", "double");
+    return key_value_get_any(map, out, section, str, "%lf", "double");
 }
 
-bool key_value_get_string(const Key_Value& map, std::string* out, const char* str)
+bool key_value_get_string(const Key_Value& map, std::string* out, const char* section, const char* str)
 {
-    auto found = map.find(str);
+    std::string key = key_value_key(section, str);
+    auto found = map.find(key);
     bool state = found != map.end();
     if(state)
         *out = found->second;
     else
-        LOG_ERROR("config", "couldnt find or match string '%s'", str);
+        LOG_ERROR("config", "couldnt find or match string '%s' in section [%s]", str, section);
     return state;
 }
 
-bool key_value_get_bool(const Key_Value& map, bool* out, const char* str)
+bool key_value_get_bool(const Key_Value& map, bool* out, const char* section, const char* str)
 {
-    auto found = map.find(str);
+    std::string key = key_value_key(section, str);
+    auto found = map.find(key);
     bool state = found != map.end();
-    if(state)
+    if(state == false)
+        LOG_ERROR("config", "couldnt find bool '%s' in section [%s]", str, section);
+    else
     {
         if(found->second == "true" || found->second == "1")
             *out = true;
@@ -256,14 +303,42 @@ bool key_value_get_bool(const Key_Value& map, bool* out, const char* str)
             *out = false;
         else
         {
-            LOG_ERROR("config", "couldnt find or match bool '%s = %s' ", str, found->second.c_str());
+            LOG_ERROR("config", "couldnt match bool '%s = %s' ", str, found->second.c_str());
             state = false;
         }
     }
-    else
-        LOG_ERROR("config", "couldnt find bool '%s'", str);
 
     return state;
+}
+
+bool key_value_get_solver_type(const Key_Value& map, Solver_Type* out, const char* section, const char* str)
+{
+    Solver_Type solver_type = SOLVER_TYPE_NONE;
+    std::string solver_string;
+    bool matched_solver = key_value_get_string(map, &solver_string, section, str);
+    if(matched_solver)
+    {
+        for(size_t i = 0; i < SOLVER_TYPE_ENUM_COUNT; i++)
+        {
+            Solver_Type type = (Solver_Type) i;
+            const char* name = solver_type_to_cstring(type);
+            if(solver_string == name)
+                solver_type = type;
+        }
+
+        if(solver_type == SOLVER_TYPE_NONE)
+        {
+            LOG_ERROR("config", "invalid value '%s' for solver! Expecting one of:", solver_string.data());
+            for(size_t i = SOLVER_TYPE_NONE + 1; i < SOLVER_TYPE_ENUM_COUNT; i++)
+                LOG_ERROR(">config", "[%i] %s", i, solver_type_to_cstring((Solver_Type) i));
+
+            matched_solver = false;
+        }
+        else
+            *out = solver_type;
+    }
+
+    return matched_solver;
 }
 
 #include <stdarg.h>
@@ -295,85 +370,57 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
     Allen_Cahn_Snapshots* snaps = &config->snapshots;
     Allen_Cahn_Params* params = &config->params;
 
-    std::string source;
-    bool state = file_read_entire(path, &source);
+    bool state = file_read_entire(path, &config->entire_config_file);
     if(state == false)
         LOG_ERROR("config", "coudlnt read config file '%s'. Current working directory '%s'", path, std::filesystem::current_path().string().c_str());
     else
     {
-        Key_Value pairs = to_key_value(source);
+        Key_Value pairs = to_key_value(config->entire_config_file);
 
         uint8_t matched_initial = true
-            & (uint8_t) key_value_get_real(pairs, &initial->inside_phi, "inside_phi")
-            & (uint8_t) key_value_get_real(pairs, &initial->inside_T, "inside_T")
-            & (uint8_t) key_value_get_real(pairs, &initial->outside_phi, "outside_phi")
-            & (uint8_t) key_value_get_real(pairs, &initial->outside_T, "outside_T")
-            & (uint8_t) key_value_get_vec2(pairs, &initial->circle_center, "circle_center")
-            & (uint8_t) key_value_get_real(pairs, &initial->circle_inner_radius, "circle_inner_radius")
-            & (uint8_t) key_value_get_real(pairs, &initial->circle_outer_radius, "circle_outer_radius")
-            & (uint8_t) key_value_get_vec2(pairs, &initial->square_from, "square_from")
-            & (uint8_t) key_value_get_vec2(pairs, &initial->square_to, "square_to");
+            & (uint8_t) key_value_get_real(pairs, &initial->inside_phi, "initial", "inside_phi")
+            & (uint8_t) key_value_get_real(pairs, &initial->inside_T, "initial", "inside_T")
+            & (uint8_t) key_value_get_real(pairs, &initial->outside_phi, "initial", "outside_phi")
+            & (uint8_t) key_value_get_real(pairs, &initial->outside_T, "initial", "outside_T")
+            & (uint8_t) key_value_get_vec2(pairs, &initial->circle_center, "initial", "circle_center")
+            & (uint8_t) key_value_get_real(pairs, &initial->circle_inner_radius, "initial", "circle_inner_radius")
+            & (uint8_t) key_value_get_real(pairs, &initial->circle_outer_radius, "initial", "circle_outer_radius")
+            & (uint8_t) key_value_get_vec2(pairs, &initial->square_from, "initial", "square_from")
+            & (uint8_t) key_value_get_vec2(pairs, &initial->square_to, "initial", "square_to");
 
         uint8_t matched_snaps = true
-            & (uint8_t) key_value_get_double(pairs, &snaps->snapshot_every, "every")
-            & (uint8_t) key_value_get_int(pairs, &snaps->snapshot_times, "times")
-            & (uint8_t) key_value_get_bool(pairs, &snaps->snapshot_initial_conditions, "snapshot_initial_conditions")
-            & (uint8_t) key_value_get_string(pairs, &snaps->folder, "folder")
-            & (uint8_t) key_value_get_string(pairs, &snaps->prefix, "prefix")
-            & (uint8_t) key_value_get_string(pairs, &snaps->postfix, "postfix");
-            
-
-        const char* solver_strings[] = {"explicit", "semi-implicit", "semi-implicit-coupled"};
-        Solver_Type solver_types[] = {SOLVER_TYPE_EXPLICIT, SOLVER_TYPE_SEMI_IMPLICIT, SOLVER_TYPE_SEMI_IMPLICIT_COUPLED};
-
-        Solver_Type solver_type = SOLVER_TYPE_NONE;
-        std::string solver_string;
-        bool matched_solver = key_value_get_string(pairs, &solver_string, "solver");
-        if(matched_solver)
-        {
-            for(size_t i = 0; i < sizeof(solver_strings) / sizeof(*solver_strings); i++)
-            {
-                if(solver_string == solver_strings[i])
-                    solver_type = solver_types[i];
-            }
-
-            if(solver_type == SOLVER_TYPE_NONE)
-            {
-                LOG_ERROR("config", "invalid value '%s' for solver! Expecting one of:", solver_string.data());
-                for(size_t i = 0; i < sizeof(solver_strings) / sizeof(*solver_strings); i++)
-                    LOG_ERROR("config", "> %s", solver_strings[i]);
-
-                matched_solver = false;
-            }
-            else
-                config->solver = solver_type;
-        }
+            & (uint8_t) key_value_get_double(pairs, &snaps->snapshot_every, "snapshot", "every")
+            & (uint8_t) key_value_get_int(pairs, &snaps->snapshot_times, "snapshot", "times")
+            & (uint8_t) key_value_get_bool(pairs, &snaps->snapshot_initial_conditions, "snapshot", "snapshot_initial_conditions")
+            & (uint8_t) key_value_get_string(pairs, &snaps->folder, "snapshot", "folder")
+            & (uint8_t) key_value_get_string(pairs, &snaps->prefix, "snapshot", "prefix")
+            & (uint8_t) key_value_get_string(pairs, &snaps->postfix, "snapshot", "postfix");
 
         uint8_t matched_program = true
-            & (uint8_t) matched_solver
-            & (uint8_t) key_value_get_double(pairs, &config->stop_after, "stop_after")
-            & (uint8_t) key_value_get_bool(pairs, &config->interactive_mode, "interactive")
-            & (uint8_t) key_value_get_bool(pairs, &config->linear_filtering, "linear_filtering")
-            & (uint8_t) key_value_get_real(pairs, &config->display_min, "display_min")
-            & (uint8_t) key_value_get_real(pairs, &config->display_max, "display_max");
+            & (uint8_t) key_value_get_solver_type(pairs, &config->solver, "program", "solver")
+            & (uint8_t) key_value_get_double(pairs, &config->stop_after, "program", "stop_after")
+            & (uint8_t) key_value_get_bool(pairs, &config->interactive_mode, "program", "interactive")
+            & (uint8_t) key_value_get_bool(pairs, &config->linear_filtering, "program", "linear_filtering")
+            & (uint8_t) key_value_get_real(pairs, &config->display_min, "program", "display_min")
+            & (uint8_t) key_value_get_real(pairs, &config->display_max, "program", "display_max");
             
         uint8_t matched_params = true
-            & (uint8_t) key_value_get_int(pairs, &params->m, "mesh_size_x")
-            & (uint8_t) key_value_get_int(pairs, &params->n, "mesh_size_y")
-            & (uint8_t) key_value_get_real(pairs, &params->L0, "L0")
-            & (uint8_t) key_value_get_real(pairs, &params->dt, "dt")
-            & (uint8_t) key_value_get_real(pairs, &params->L, "L")
-            & (uint8_t) key_value_get_real(pairs, &params->xi, "xi")
-            & (uint8_t) key_value_get_real(pairs, &params->a, "a")
-            & (uint8_t) key_value_get_real(pairs, &params->b, "b")
-            & (uint8_t) key_value_get_real(pairs, &params->alpha, "alpha")
-            & (uint8_t) key_value_get_real(pairs, &params->beta, "beta")
-            & (uint8_t) key_value_get_real(pairs, &params->Tm, "Tm")
-            & (uint8_t) key_value_get_real(pairs, &params->Tinit, "Tini")
-            & (uint8_t) key_value_get_real(pairs, &params->S, "S")
-            & (uint8_t) key_value_get_real(pairs, &params->m0, "m")
-            & (uint8_t) key_value_get_real(pairs, &params->theta0, "theta0")
-            & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "do_anisotropy")
+            & (uint8_t) key_value_get_int(pairs, &params->m, "simulation", "mesh_size_x")
+            & (uint8_t) key_value_get_int(pairs, &params->n, "simulation", "mesh_size_y")
+            & (uint8_t) key_value_get_real(pairs, &params->L0, "simulation", "L0")
+            & (uint8_t) key_value_get_real(pairs, &params->dt, "simulation", "dt")
+            & (uint8_t) key_value_get_real(pairs, &params->L, "simulation", "L")
+            & (uint8_t) key_value_get_real(pairs, &params->xi, "simulation", "xi")
+            & (uint8_t) key_value_get_real(pairs, &params->a, "simulation", "a")
+            & (uint8_t) key_value_get_real(pairs, &params->b, "simulation", "b")
+            & (uint8_t) key_value_get_real(pairs, &params->alpha, "simulation", "alpha")
+            & (uint8_t) key_value_get_real(pairs, &params->beta, "simulation", "beta")
+            & (uint8_t) key_value_get_real(pairs, &params->Tm, "simulation", "Tm")
+            & (uint8_t) key_value_get_real(pairs, &params->Tinit, "simulation", "Tini")
+            & (uint8_t) key_value_get_real(pairs, &params->S, "simulation", "S")
+            & (uint8_t) key_value_get_real(pairs, &params->m0, "simulation", "m")
+            & (uint8_t) key_value_get_real(pairs, &params->theta0, "simulation", "theta0")
+            & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "simulation", "do_anisotropy")
             ;
 
         state = matched_initial && matched_snaps && matched_params && matched_program;

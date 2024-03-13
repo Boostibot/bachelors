@@ -405,7 +405,7 @@ void draw_sci_cuda_memory(const char* name, int width, int height, float min, fl
 void gl_init(void* load_function)
 {
     int version = gladLoadGL((GLADloadfunc) load_function);
-    TEST_MSG(version != 0, "Failed to load opengl with glad");
+    TEST(version != 0, "Failed to load opengl with glad");
     LOG_INFO("opengl", "initialized opengl");
     
     gl_debug_output_enable();

@@ -5,20 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifndef LOG_CUSTOM_SETTINGS
-    #define DO_LOG          /* Disables all log types */   
-    #define DO_LOG_INFO
-    #define DO_LOG_SUCCESS
-    #define DO_LOG_WARN 
-    #define DO_LOG_ERROR
-    #define DO_LOG_FATAL
-
-    #ifndef NDEBUG
-    #define DO_LOG_DEBUG
-    #define DO_LOG_TRACE
-    #endif
-#endif
-
 enum {
     LOG_ENUM_MAX = 63,  //This is the maximum value log types are allowed to have without being ignored.
     LOG_FLUSH = 63,     //only flushes the log but doesnt log anything
@@ -30,11 +16,6 @@ enum {
     LOG_DEBUG = 5,      //Used to log for debug purposes. Is only logged in debug builds
     LOG_TRACE = 6,      //Used to log for step debug purposes (prinf("HERE") and such). Is only logged in step debug builds
 };
-
-#ifndef _MSC_VER
-    #define __FUNCTION__ __func__
-#endif
-
 
 typedef int Log_Type;
 typedef struct Logger Logger;
@@ -49,9 +30,9 @@ Logger* log_system_get_logger();
 //Sets the default used logger. Returns a pointer to the previous logger so it can be restored later.
 Logger* log_system_set_logger(Logger* logger);
 
-void  log_group_push();   //Increases indentation of subsequent log messages
-void  log_group_pop();    //Decreases indentation of subsequent log messages
-size_t log_group_depth(); //Returns the current indentation of messages
+void    log_group();   //Increases indentation of subsequent log messages
+void    log_ungroup();    //Decreases indentation of subsequent log messages
+size_t* log_group_depth(); //Returns the current indentation of messages
 
 void log_message(const char* module, Log_Type type, int line, const char* file, const char* function, const char* format, ...);
 void vlog_message(const char* module, Log_Type type, int line, const char* file, const char* function, const char* format, va_list args);
@@ -59,50 +40,30 @@ void log_flush();
 
 const char* log_type_to_string(Log_Type type);
 Logger def_logger_make();
-void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args);
-
-//Default logging facility. Logs a message into the provided module cstring with log_type type (info, warn, error...)
-#define LOG(module, log_type, format, ...)      PP_IF(DO_LOG, LOG_ALWAYS)(module, log_type, format, ##__VA_ARGS__)
-#define VLOG(module, log_type, format, args)    PP_IF(DO_LOG, LOG_ALWAYS)(module, log_type, format, args)
-
-//Logs a message type into the provided module cstring.
-#define LOG_INFO(module, format, ...)           PP_IF(DO_LOG_INFO, LOG)(module, LOG_INFO, format, ##__VA_ARGS__)
-#define LOG_SUCCESS(module, format, ...)        PP_IF(DO_LOG_SUCCESS, LOG)(module, LOG_SUCCESS, format, ##__VA_ARGS__)
-#define LOG_WARN(module, format, ...)           PP_IF(DO_LOG_WARN, LOG)(module, LOG_WARN, format, ##__VA_ARGS__)
-#define LOG_ERROR(module, format, ...)          PP_IF(DO_LOG_ERROR, LOG)(module, LOG_ERROR, format, ##__VA_ARGS__)
-#define LOG_FATAL(module, format, ...)          PP_IF(DO_LOG_FATAL, LOG)(module, LOG_FATAL, format, ##__VA_ARGS__)
-#define LOG_DEBUG(module, format, ...)          PP_IF(DO_LOG_DEBUG, LOG)(module, LOG_DEBUG, format, ##__VA_ARGS__)
-#define LOG_TRACE(module, format, ...)          PP_IF(DO_LOG_TRACE, LOG)(module, LOG_TRACE, format, ##__VA_ARGS__)
 
 //Logs a message. Does not get dissabled.
-#define LOG_ALWAYS(module, log_type, format, ...)   log_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, ##__VA_ARGS__)
-#define VLOG_ALWAYS(module, log_type, format, args) vlog_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, args)
-//Does not do anything (failed condition) but type checks the arguments
-#define LOG_NEVER(module, log_type, format, ...)  ((module && false) ? log_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, ##__VA_ARGS__) : (void) 0)
+#define LOG(module, log_type, format, ...)   log_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, ##__VA_ARGS__)
+#define VLOG(module, log_type, format, args) vlog_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, args)
 
-//Some of the ansi colors that can be used within logs. 
-//However their usage is not recommended since these will be written to log files and thus make their parsing more difficult.
-#define ANSI_COLOR_NORMAL       "\x1B[0m"
-#define ANSI_COLOR_RED          "\x1B[31m"
-#define ANSI_COLOR_BRIGHT_RED   "\x1B[91m"
-#define ANSI_COLOR_GREEN        "\x1B[32m"
-#define ANSI_COLOR_YELLOW       "\x1B[33m"
-#define ANSI_COLOR_BLUE         "\x1B[34m"
-#define ANSI_COLOR_MAGENTA      "\x1B[35m"
-#define ANSI_COLOR_CYAN         "\x1B[36m"
-#define ANSI_COLOR_WHITE        "\x1B[37m"
-#define ANSI_COLOR_GRAY         "\x1B[90m"
+//Logs a message type into the provided module cstring.
+#define LOG_INFO(module, format, ...)  LOG(module, LOG_INFO,  format, ##__VA_ARGS__)
+#define LOG_OKAY(module, format, ...)  LOG(module, LOG_OKAY,  format, ##__VA_ARGS__)
+#define LOG_WARN(module, format, ...)  LOG(module, LOG_WARN,  format, ##__VA_ARGS__)
+#define LOG_ERROR(module, format, ...) LOG(module, LOG_ERROR, format, ##__VA_ARGS__)
+#define LOG_FATAL(module, format, ...) LOG(module, LOG_FATAL, format, ##__VA_ARGS__)
+#define LOG_DEBUG(module, format, ...) LOG(module, LOG_DEBUG, format, ##__VA_ARGS__)
+#define LOG_TRACE(module, format, ...) LOG(module, LOG_TRACE, format, ##__VA_ARGS__)
 
-//Gets expanded when the particular type is dissabled.
-#define _IF_NOT_DO_LOG(ignore)              LOG_NEVER
-#define _IF_NOT_DO_LOG_INFO(ignore)         LOG_NEVER
-#define _IF_NOT_DO_LOG_SUCCESS(ignore)      LOG_NEVER
-#define _IF_NOT_DO_LOG_WARN(ignore)         LOG_NEVER
-#define _IF_NOT_DO_LOG_ERROR(ignore)        LOG_NEVER
-#define _IF_NOT_DO_LOG_FATAL(ignore)        LOG_NEVER
-#define _IF_NOT_DO_LOG_DEBUG(ignore)        LOG_NEVER
-#define _IF_NOT_DO_LOG_TRACE(ignore)        LOG_NEVER
+typedef struct Memory_Format {
+    const char* unit;
+    size_t unit_value;
+    double fraction;
 
+    int whole;
+    int remainder;
+} Memory_Format;
+
+Memory_Format get_memory_format(size_t bytes);
 
 #define TIME_FMT "%02i:%02i:%02i %03i"
 #define TIME_PRINT(c) (int)(c).hour, (int)(c).minute, (int)(c).second, (int)(c).millisecond
@@ -110,29 +71,16 @@ void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t i
 #define STRING_FMT "%.*s"
 #define STRING_PRINT(string) (int) (string).size, (string).data
 
-#define SOURCE_INFO_FMT "( %s : %i )"
-#define SOURCE_INFO_PRINT(source_info) (source_info).file, (int) (source_info).line
+#define MEMORY_FMT "%.2lf%s"
+#define MEMORY_PRINT(bytes) get_memory_format((bytes)).fraction, get_memory_format((bytes)).unit
 
-//Pre-Processor (PP) utils
-#define PP_STRINGIFY_(x)        #x
-#define PP_CONCAT2(a, b)        a ## b
-#define PP_CONCAT3(a, b, c)     PP_CONCAT2(PP_CONCAT2(a, b), c)
-#define PP_CONCAT4(a, b, c, d)  PP_CONCAT2(PP_CONCAT3(a, b, c), d)
-#define PP_CONCAT(a, b)         PP_CONCAT2(a, b)
-#define PP_STRINGIFY(...)       PP_STRINGIFY_(__VA_ARGS__)
-#define PP_ID(x)                x
-
-//if CONDITION_DEFINE is defined: expands to x, 
-//else: expands to _IF_NOT_##CONDITION_DEFINE(x). See above how to use this.
-//The reason for its use is that simply all other things I have tried either didnt
-// work or failed to compose for obscure reasons
-#define PP_IF(CONDITION_DEFINE, x)         PP_CONCAT(_IF_NOT_, CONDITION_DEFINE)(x)
-#define _IF_NOT_(x) x
-
+#define DO_LOG
 #endif
 
 #if (defined(JOT_ALL_IMPL) || defined(JOT_LOG_IMPL)) && !defined(JOT_LOG_HAS_IMPL)
 #define JOT_LOG_HAS_IMPL
+
+static void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args);
 
 static Logger _global_def_logger = {def_logger_func};
 static Logger* _global_logger = &_global_def_logger;
@@ -150,17 +98,17 @@ Logger* log_system_set_logger(Logger* logger)
     return before;
 }
 
-void log_group_push()
+void log_group()
 {
     _global_log_group_depth ++;
 }
-void log_group_pop()
+void log_ungroup()
 {
     _global_log_group_depth --;
 }
-size_t log_group_depth()
+size_t* log_group_depth()
 {
-    return _global_log_group_depth;
+    return &_global_log_group_depth;
 }
 
 void vlog_message(const char* module, Log_Type type, int line, const char* file, const char* function, const char* format, va_list args)
@@ -215,8 +163,21 @@ Logger def_logger_make()
 }
 
 #include <ctime>
-void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args)
+static void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args)
 {
+    //Some of the ansi colors that can be used within logs. 
+    //However their usage is not recommended since these will be written to log files and thus make their parsing more difficult.
+    #define ANSI_COLOR_NORMAL       "\x1B[0m"
+    #define ANSI_COLOR_RED          "\x1B[31m"
+    #define ANSI_COLOR_BRIGHT_RED   "\x1B[91m"
+    #define ANSI_COLOR_GREEN        "\x1B[32m"
+    #define ANSI_COLOR_YELLOW       "\x1B[33m"
+    #define ANSI_COLOR_BLUE         "\x1B[34m"
+    #define ANSI_COLOR_MAGENTA      "\x1B[35m"
+    #define ANSI_COLOR_CYAN         "\x1B[36m"
+    #define ANSI_COLOR_WHITE        "\x1B[37m"
+    #define ANSI_COLOR_GRAY         "\x1B[90m"
+
     (void) logger;
     (void) line;
     (void) file;
@@ -262,4 +223,64 @@ void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t i
         printf(ANSI_COLOR_NORMAL);
         
 }
+
+void assertion_report(const char* expression, int line, const char* file, const char* function, const char* message, ...)
+{
+    log_message("assert", LOG_FATAL, line, file, function, "TEST(%s) TEST/ASSERT failed! (%s %s: %lli) ", expression, file, function, line);
+    if(message != NULL && strlen(message) != 0)
+    {
+        va_list args;               
+        va_start(args, message);     
+        vlog_message(">assert", LOG_FATAL, line, file, function, message, args);
+        va_end(args);  
+    }
+
+    log_flush();
+}
+
+Memory_Format get_memory_format(size_t bytes)
+{
+    size_t B  = (size_t) 1;
+    size_t KB = (size_t) 1024;
+    size_t MB = (size_t) 1024*1024;
+    size_t GB = (size_t) 1024*1024*1024;
+    size_t TB = (size_t) 1024*1024*1024*1024;
+
+    Memory_Format out = {0};
+    out.unit = "";
+    out.unit_value = 1;
+    if(bytes >= TB)
+    {
+        out.unit = "TB";
+        out.unit_value = TB;
+    }
+    else if(bytes >= GB)
+    {
+        out.unit = "GB";
+        out.unit_value = GB;
+    }
+    else if(bytes >= MB)
+    {
+        out.unit = "MB";
+        out.unit_value = MB;
+    }
+    else if(bytes >= KB)
+    {
+        out.unit = "KB";
+        out.unit_value = KB;
+    }
+    else
+    {
+        out.unit = "B";
+        out.unit_value = B;
+    }
+
+    out.fraction = (double) bytes / (double) out.unit_value;
+    out.whole = (int) (bytes / out.unit_value);
+    out.remainder = (int) (bytes / out.unit_value);
+
+    return out;
+}
+
+
 #endif

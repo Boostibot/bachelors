@@ -1,166 +1,9 @@
-#define SHARED __host__ __device__
-
-#include <device_launch_parameters.h>
 #include "kernel.h"
-#include <cmath>
-#include <stdio.h>
-#include <assert.h>
-#include <stdint.h>
-#include <cuda_runtime.h>
+#include "cuda_util.cuh"
 
-
-#define MOD(x, mod) (((x) % (mod) + (mod)) % (mod))
-#define MAX(a, b)   ((a) > (b) ? (a) : (b))
-#define MIN(a, b)   ((a) < (b) ? (a) : (b))
 #define PI          ((Real) 3.14159265359)
 #define TAU         (2*PI)
-#define CUDA_ERR_AND(err) (err) != cudaSuccess ? (err) :
 #define ECHOF(x)    printf(#x ": " REAL_FMT "\n", (x))
-
-#include <cuda_runtime.h>
-#include <stdarg.h>
-static bool _test_cuda_(cudaError_t error, const char* expression, int line, const char* file, const char* format, ...)
-{
-    if(error != cudaSuccess)
-    {
-        printf("CUDA_TEST(%s) failed with %s! %s:%i\n", expression, cudaGetErrorString(error), file, line);
-        if(format != NULL && strlen(format) != 0)
-        {
-            va_list args;
-            va_start(args, format);
-            vprintf(format, args);
-            va_end(args);
-            printf("\n");
-        }
-    }
-    fflush(stdout);
-    return error == cudaSuccess;
-}
-
-static void _test(const char* expression, int line, const char* file, const char* format, ...)
-{
-    if(format != NULL && strlen(format) != 0)
-    {
-        va_list args;
-        va_start(args, format);
-        vprintf(format, args);
-        va_end(args);
-        printf("\n");
-    }
-    else
-    {
-        printf("TEST(%s) failed! %s:%i\n", expression, file, line);
-    }
-
-    fflush(stdout);
-}
-
-#define CUDA_TEST(status, ...) (_test_cuda_((status), #status,  __LINE__, __FILE__, "" __VA_ARGS__) ? (void) 0 : abort())
-#define TEST(x, ...)           ((x) ? (void) 0 : (_test(#x,  __LINE__, __FILE__, "" __VA_ARGS__), abort()))
-
-#undef NDEBUG
-
-#ifdef NDEBUG
-    #define CUDA_DEBUG_TEST(status, ...) (0 ? printf("" __VA_ARGS__) : (status))
-#else
-    #define CUDA_DEBUG_TEST(status, ...) CUDA_TEST(status, __VA_ARGS__)
-#endif
-
-struct Cuda_Info {
-    int device_id;
-    cudaDeviceProp prop;
-};
-
-Cuda_Info cuda_one_time_setup()
-{
-    static bool was_setup = false;
-    static Cuda_Info info = {0};
-
-    if(was_setup == false)
-    {
-        enum {MAX_DEVICES = 100};
-        cudaDeviceProp devices[MAX_DEVICES] = {0};
-        double scores[MAX_DEVICES] = {0};
-        double peak_memory[MAX_DEVICES] = {0};
-        
-        int nDevices = 0;
-        CUDA_TEST(cudaGetDeviceCount(&nDevices));
-        if(nDevices > MAX_DEVICES)
-        {
-            assert(false && "wow this should probably not happen!");
-            nDevices = MAX_DEVICES;
-        }
-        TEST(nDevices > 0, "Didnt find any CUDA capable devices. Stopping.");
-
-        for (int i = 0; i < nDevices; i++) 
-            CUDA_DEBUG_TEST(cudaGetDeviceProperties(&devices[i], i));
-
-        //compute maximum in each tracked category to
-        // be able to properly select the best device for
-        // the job!
-        cudaDeviceProp max_prop = {0};
-        double max_peak_memory = 0;
-        for (int i = 0; i < nDevices; i++) 
-        {
-            cudaDeviceProp prop = devices[i];
-            max_prop.warpSize = MAX(max_prop.warpSize, prop.warpSize);
-            max_prop.multiProcessorCount = MAX(max_prop.multiProcessorCount, prop.multiProcessorCount);
-            max_prop.concurrentKernels = MAX(max_prop.concurrentKernels, prop.concurrentKernels);
-            max_prop.memoryClockRate = MAX(max_prop.memoryClockRate, prop.memoryClockRate);
-            max_prop.memoryBusWidth = MAX(max_prop.memoryBusWidth, prop.memoryBusWidth);
-            max_prop.totalGlobalMem = MAX(max_prop.totalGlobalMem, prop.totalGlobalMem);
-            max_prop.sharedMemPerBlock = MAX(max_prop.sharedMemPerBlock, prop.sharedMemPerBlock);
-            peak_memory[i] = 2.0*prop.memoryClockRate*(prop.memoryBusWidth/8)/1.0e6;
-
-            max_peak_memory = MAX(max_peak_memory, peak_memory[i]);
-        }
-
-        double max_score = 0;
-        int max_score_i = 0;
-        for (int i = 0; i < nDevices; i++) 
-        {
-            cudaDeviceProp prop = devices[i];
-            double score = 0
-                + 0.40 * prop.warpSize/max_prop.warpSize
-                + 0.40 * prop.multiProcessorCount/max_prop.multiProcessorCount
-                + 0.05 * prop.concurrentKernels/max_prop.concurrentKernels
-                + 0.05 * peak_memory[i]/max_peak_memory
-                + 0.05 * prop.totalGlobalMem/max_prop.totalGlobalMem
-                + 0.05 * prop.sharedMemPerBlock/max_prop.sharedMemPerBlock
-                ;
-
-            scores[i] = score;
-            if(max_score < score)
-            {
-                max_score = score;
-                max_score_i = i;
-            }
-        }
-        cudaDeviceProp selected = devices[max_score_i];
-        info.prop = selected;
-        info.device_id = max_score_i;
-        was_setup = true;
-        CUDA_TEST(cudaSetDevice(info.device_id));
-
-        printf("Listing devices below (%d):\n", nDevices);
-        for (int i = 0; i < nDevices; i++)
-            printf("%i > %s (score: %lf) %s\n", i, devices[i].name, scores[i], i == max_score_i ? "[selected]" : "");
-
-        printf("Selected %s:\n", selected.name);
-        printf("  Multi Processor count: %i\n", selected.multiProcessorCount);
-        printf("  Warp-size: %d\n", selected.warpSize);
-        printf("  Memory Clock Rate (MHz): %d\n", selected.memoryClockRate/1024);
-        printf("  Memory Bus Width (bits): %d\n", selected.memoryBusWidth);
-        printf("  Peak Memory Bandwidth (GB/s): %.1f\n", peak_memory[max_score_i]);
-        printf("  Total global memory (Gbytes) %.1f\n",(float)(selected.totalGlobalMem)/1024.0/1024.0/1024.0);
-        printf("  Shared memory per block (Kbytes) %.1f\n",(float)(selected.sharedMemPerBlock)/1024.0);
-        printf("  minor-major: %d-%d\n", selected.minor, selected.major);
-        printf("  Concurrent kernels: %s\n", selected.concurrentKernels ? "yes" : "no");
-        printf("  Concurrent computation/communication: %s\n\n",selected.deviceOverlap ? "yes" : "no");
-    }
-
-    return info;
-}
 
 enum Cuda_For_Flags {
     CUDA_FOR_NONE = 0,
@@ -208,130 +51,39 @@ void cuda_for_2D(int from_x, int from_y, int to_x, int to_y, Function func, int 
         CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
 
-enum {
-    REALLOC_COPY = 1,
-    REALLOC_ZERO = 2,
-};
-
-typedef struct Memory_Format {
-    const char* unit;
-    size_t unit_value;
-    double fraction;
-
-    int whole;
-    int remainder;
-} Memory_Format;
-
-Memory_Format get_memory_format(size_t bytes)
-{
-    size_t B  = (size_t) 1;
-    size_t KB = (size_t) 1024;
-    size_t MB = (size_t) 1024*1024;
-    size_t GB = (size_t) 1024*1024*1024;
-    size_t TB = (size_t) 1024*1024*1024*1024;
-
-    Memory_Format out = {0};
-    out.unit = "";
-    out.unit_value = 1;
-    if(bytes >= TB)
-    {
-        out.unit = "TB";
-        out.unit_value = TB;
-    }
-    else if(bytes >= GB)
-    {
-        out.unit = "GB";
-        out.unit_value = GB;
-    }
-    else if(bytes >= MB)
-    {
-        out.unit = "MB";
-        out.unit_value = MB;
-    }
-    else if(bytes >= KB)
-    {
-        out.unit = "KB";
-        out.unit_value = KB;
-    }
-    else
-    {
-        out.unit = "B";
-        out.unit_value = B;
-    }
-
-    out.fraction = (double) bytes / (double) out.unit_value;
-    out.whole = (int) (bytes / out.unit_value);
-    out.remainder = (int) (bytes / out.unit_value);
-
-    return out;
-}
-
-#define MEMORY_FMT "%.2lf%s"
-#define MEMORY_PRINT(bytes) get_memory_format((bytes)).fraction, get_memory_format((bytes)).unit
-
-void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int flags, const char* file, int line)
-{
-    printf("CUDA realloc " MEMORY_FMT "-> " MEMORY_FMT " %s:%i\n",
-            MEMORY_PRINT(old_size), 
-            MEMORY_PRINT(new_size),
-            file, line);
-
-    static int64_t used_bytes = 0;
-    void* new_ptr = NULL;
-    if(new_size != 0)
-    {
-        Cuda_Info info = cuda_one_time_setup();
-        CUDA_TEST(cudaMalloc(&new_ptr, new_size), 
-            "Out of CUDA memory! Requested " MEMORY_FMT ". Using " MEMORY_FMT " / " MEMORY_FMT ". %s:%i", 
-            MEMORY_PRINT(new_size), 
-            MEMORY_PRINT(used_bytes), 
-            MEMORY_PRINT(info.prop.totalGlobalMem),
-            file, line);
-
-        size_t min_size = MIN(old_size, new_size);
-        if((flags & REALLOC_ZERO) && !(flags & REALLOC_COPY))
-            CUDA_DEBUG_TEST(cudaMemset(new_ptr, 0, new_size));
-        else
-        {
-            if(flags & REALLOC_COPY)
-                CUDA_DEBUG_TEST(cudaMemcpy(new_ptr, old_ptr, min_size, cudaMemcpyDeviceToDevice));
-            if(flags & REALLOC_ZERO)
-                CUDA_DEBUG_TEST(cudaMemset((uint8_t*) new_ptr + min_size, 0, new_size - min_size));
-        }
-    }
-
-
-    CUDA_DEBUG_TEST(cudaFree(old_ptr), 
-        "Invalid pointer passed to cuda_realloc! %s:%i", file, line);
-
-    used_bytes += (int64_t) new_size - (int64_t) old_size;
-    assert(used_bytes >= 0);
-    return new_ptr;
-}
-
-void _cuda_realloc_in_place(void** ptr_ptr, size_t new_size, size_t old_size, int flags, const char* file, int line)
-{
-    *ptr_ptr = _cuda_realloc(*ptr_ptr, new_size, old_size, flags, file, line);
-}
-
-#define cuda_realloc(old_ptr, new_size, old_size, flags)          _cuda_realloc(old_ptr, new_size, old_size, flags, __FILE__, __LINE__)
-#define cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags) _cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags, __FILE__, __LINE__)
-
 SHARED Real* at_mod(Real* map, int x, int y, int n, int m)
 {
-    int x_mod = MOD(x, m);
-    int y_mod = MOD(y, n);
+    #define AT_MOD_MODE 1
+    #if AT_MOD_MODE == 0
+        //95 ms
+        int x_mod = MOD(x, m);
+        int y_mod = MOD(y, n);
+    #elif AT_MOD_MODE == 1
+        //63 ms
+        //@NOTE: this onluy works for x, y maximaly m, n respectively otuside of their proper range.
+        // In our application this is enough.
+        //@NOTE: this seems to be the fastest mode
+        int x_mod = x;
+        if(x_mod < 0)
+            x_mod += m;
+        else if(x_mod >= m)
+            x_mod -= m;
 
+        int y_mod = y;
+        if(y_mod < 0)
+            y_mod += n;
+        else if(y_mod >= n)
+            y_mod -= n;
+
+    #elif AT_MOD_MODE == 2
+        //85 ms
+        int x_mod = (x + m) % m;
+        int y_mod = (y + n) % n;
+    #endif
     return &map[x_mod + y_mod*m];
 }
 
-SHARED Real f0(Real phi)
-{
-	return phi*(1 - phi)*(phi - 1.0f/2);
-}
-
-
-int explicit_solver_resize(Explicit_Solver* solver, int n, int m)
+void explicit_solver_resize(Explicit_Solver* solver, int n, int m)
 {
     size_t N = (size_t)m*(size_t)n;
     size_t N_old = (size_t)solver->m*(size_t)solver->n;
@@ -347,8 +99,6 @@ int explicit_solver_resize(Explicit_Solver* solver, int n, int m)
         solver->m = m;
         solver->n = n;
     }
-
-    return EXPLICIT_SOLVER_REQUIRED_HISTORY;
 }
 
 void explicit_state_resize(Explicit_State* state, int n, int m)
@@ -392,6 +142,11 @@ struct Explicit_Solve_Debug {
     Real theta;
     Real reaction_term;
 };
+
+SHARED Real f0(Real phi)
+{
+	return phi*(1 - phi)*(phi - 1.0f/2);
+}
 
 SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_In input, Allen_Cahn_Params params, Explicit_Solve_Debug* debug_or_null)
 {
@@ -561,34 +316,27 @@ void explicit_solver_rk4_dt(Explicit_State* out, Explicit_State base_state, Real
     }
 }
 
-#if 0
-static double runge_kutta4(double t_ini, double x_ini, double T, double tau, RK4_Func f, void* context)
-{
-    double x = x_ini;
-    for (double t = t_ini; t <= T; t += tau)
-    {
-        double k1 = tau*f(t, x, context);
-        double k2 = tau*f(t + 0.5f*tau, x + 0.5f*k1, context);
-        double k3 = tau*f(t + 0.5f*tau, x + 0.5f*k2, context);
-        double k4 = tau*f(t + tau, x + k3, context);
-  
-        double x_next = x + (k1 + 2*k2 + 2*k3 + k4)/6;
-        x = x_next;  
-    }
-  
-    return x;
-}
-#endif
-
 extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
+    Cache_Tag tag = cache_tag_make();
     Explicit_State empty = {0};
-    static Explicit_State steps[4] = {0};
-    if(steps[0].m != params.m || steps[0].n != params.n)
+    int N = params.n * params.m;
+
+    Explicit_State steps[4] = {0};
+    for(int i = 0; i < STATIC_ARRAY_SIZE(steps); i++)
     {
-        for(int i = 0; i < 4; i++)
-            explicit_state_resize(&steps[i], params.n, params.n);
+        steps[i].F = cache_alloc(Real, N, &tag);
+        steps[i].U = cache_alloc(Real, N, &tag);
+        steps[i].m = params.m;
+        steps[i].n = params.n;
     }
+
+    // static Explicit_State steps[4] = {0};
+    // if(steps[0].m != params.m || steps[0].n != params.n)
+    // {
+    //     for(int i = 0; i < STATIC_ARRAY_SIZE(steps); i++)
+    //         explicit_state_resize(&steps[i], params.n, params.n);
+    // }
 
     Explicit_State k1 = steps[0];
     Explicit_State k2 = steps[1];
@@ -601,15 +349,56 @@ extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State
     explicit_solver_rk4_dt(&k3, state, dt * 0.5, k2, params);
     explicit_solver_rk4_dt(&k4, state, dt * 1, k3, params);
 
-    //@TODO: async and explicit sync.
     Real* out_F = next_state->F;
     Real* out_U = next_state->U;
     cuda_for(0, params.n*params.m, [=]SHARED(int i){
-        // out_F[i] =  state.F[i] + k1.F[i]*dt;
-        // out_U[i] =  state.U[i] + k1.F[i]*dt;
         out_F[i] =  state.F[i] + dt/6*(k1.F[i] + 2*k2.F[i] + 2*k3.F[i] + k4.F[i]);
         out_U[i] =  state.U[i] + dt/6*(k1.U[i] + 2*k2.U[i] + 2*k3.U[i] + k4.U[i]);
-    });
+    }, CUDA_FOR_ASYNC);
+
+    if(do_debug)
+    {
+        int m = params.m;
+        int n = params.n;
+        Real* F = state.F;
+        Real* U = state.U;
+        Real* grad_F = solver->debug_maps.grad_phi;
+        Real* grad_U = solver->debug_maps.grad_T;
+        Real* aniso = solver->debug_maps.aniso_factor;
+        cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
+            Real T = *at_mod(U, x, y, n, m);
+            Real Phi = *at_mod(F, x, y, n, m);
+
+            Real Phi_U = *at_mod(F, x, y + 1, n, m);
+            Real Phi_D = *at_mod(F, x, y - 1, n, m);
+            Real Phi_R = *at_mod(F, x + 1, y, n, m);
+            Real Phi_L = *at_mod(F, x - 1, y, n, m);
+
+            Real T_U = *at_mod(U, x, y + 1, n, m);
+            Real T_D = *at_mod(U, x, y - 1, n, m);
+            Real T_R = *at_mod(U, x + 1, y, n, m);
+            Real T_L = *at_mod(U, x - 1, y, n, m);
+
+            Real grad_Phi_x = (Phi_R - Phi_L);
+            Real grad_Phi_y = (Phi_U - Phi_D);
+            Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+
+            Real grad_T_x = (T_R - T_L);
+            Real grad_T_y = (T_U - T_D);
+            Real grad_T_norm = hypotf(grad_T_x, grad_T_y);
+            
+            Real theta = atan2(grad_Phi_y, grad_Phi_x);
+            Real g_theta = 1.0f - params.S*cosf(params.m0*theta + params.theta0);
+
+            grad_F[x + y*m] = grad_Phi_norm;
+            grad_U[x + y*m] = grad_T_norm;
+            aniso[x + y*m] = g_theta;
+        });
+
+    }
+
+    cache_free(&tag);
+    CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
 
 void explicit_solver_get_maps(Explicit_Solver* solver, Explicit_State state, Sim_Map* maps, int map_count)
@@ -654,6 +443,12 @@ Real vector_dot_product(const Real *a, const Real *b, int n)
   return thrust::inner_product(d_a, d_a + n, d_b, 0.0);
 }
 
+Real vector_max(const Real *a, int N)
+{
+    thrust::device_ptr<const Real> d_a(a);
+    return *(thrust::max_element(d_a, d_a + N));
+}
+
 struct Cross_Matrix_Static {
     Real C;
     Real U;
@@ -677,7 +472,7 @@ struct Cross_Matrix {
 };
 
 struct Anisotrophy_Matrix {
-    Real* scale;
+    Real* anisotrophy;
     Real X;
     Real Y;
     Real C_minus_one;
@@ -686,38 +481,7 @@ struct Anisotrophy_Matrix {
     int n;
 };
 
-void* cross_matrix_vector_alloced(Real* vector, int n, int m)
-{
-    if(vector == NULL)
-        return NULL;
-    (void) n;
-    return vector - m;
-}
-
-Real* cross_matrix_vector_padded(void* alloced, int n, int m)
-{
-    if(alloced == NULL)
-        return (Real*) NULL;
-    (void) n;
-    return (Real*) alloced + m;
-}
-
-void cross_matrix_vector_pad(Real* vector, int n, int m)
-{
-    CUDA_DEBUG_TEST(cudaMemset(vector - m, 0, sizeof(Real)*m));
-    CUDA_DEBUG_TEST(cudaMemset(vector + n*m, 0, sizeof(Real)*m));
-}
-
-Real* cross_matrix_vector_realloc(Real* vector, int n, int m, int old_n, int old_m)
-{
-    int new_size = 2*m + n*m;
-    int old_size = 2*old_m + old_n*old_m;
-    void* old = cross_matrix_vector_alloced(vector, n, m);
-    void* new_ = cuda_realloc(old, (size_t) new_size * sizeof(Real), (size_t) old_size * sizeof(Real), REALLOC_ZERO);
-    return cross_matrix_vector_padded(new_, n, m);
-}
-
-
+#if 0
 void cross_matrix_static_multiply(Real* out, const void* _A, const Real* x, int N)
 {
     Cross_Matrix_Static A = *(Cross_Matrix_Static*)_A;
@@ -733,6 +497,23 @@ void cross_matrix_static_multiply(Real* out, const void* _A, const Real* x, int 
         out[i] = val;
     });
 }
+#else
+void cross_matrix_static_multiply(Real* out, const void* _A, const Real* vec, int N)
+{
+    Cross_Matrix_Static A = *(Cross_Matrix_Static*)_A;
+    int m = A.m;
+    int n = A.n;
+    cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
+        int i = x + y*m;
+        Real val = vec[i]*A.C;
+        val += *at_mod((Real*) vec, x+1, y, n, m)*A.R;
+        val += *at_mod((Real*) vec, x-1, y, n, m)*A.L;
+        val += *at_mod((Real*) vec, x, y+1, n, m)*A.U;
+        val += *at_mod((Real*) vec, x, y-1, n, m)*A.D;
+        out[i] = val;
+    });
+}
+#endif
 
 void cross_matrix_multiply(Real* out, const void* _A, const Real* x, int N)
 {
@@ -750,12 +531,13 @@ void cross_matrix_multiply(Real* out, const void* _A, const Real* x, int N)
     });
 }
 
+#if 0
 void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* x, int N)
 {
     Anisotrophy_Matrix A = * (Anisotrophy_Matrix*)_A;
     int m = A.m;
     cuda_for(0, N, [=]SHARED(int i){
-        Real s = A.scale[i];
+        Real s = A.anisotrophy[i];
         Real X = A.X*s;
         Real Y = A.Y*s;
         Real C = 1 + A.C_minus_one*s;
@@ -771,6 +553,28 @@ void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* x, int N
     });
 }
 
+#else
+void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* vec, int N)
+{
+    Anisotrophy_Matrix A = * (Anisotrophy_Matrix*)_A;
+    int m = A.m;
+    int n = A.n;
+    cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
+        int i = x + y*m;
+        Real s = A.anisotrophy[i];
+        Real X = A.X*s;
+        Real Y = A.Y*s;
+        Real C = 1 + A.C_minus_one*s;
+
+        Real val = vec[i]*C;
+        val += *at_mod((Real*) vec, x+1, y, n, m)*X;
+        val += *at_mod((Real*) vec, x-1, y, n, m)*X;
+        val += *at_mod((Real*) vec, x, y+1, n, m)*Y;
+        val += *at_mod((Real*) vec, x, y-1, n, m)*Y;
+        out[i] = val;
+    });
+}
+#endif
 
 typedef struct Conjugate_Gardient_Params {
     Real epsilon;
@@ -797,71 +601,78 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
     if(params_or_null)
         params = *params_or_null;
 
-    //@NOTE: Evil programmer doing evil programming practices
-    static int static_N = 0;
-    static Real* _r = NULL;
-    static Real* _p = NULL;
-    static Real* _Ap = NULL;
-    if(static_N < N)
+    Cache_Tag tag = cache_tag_make();
+
+    Real scaled_squared_tolerance = params.tolerance*params.tolerance*N;
+    Real* r = cache_alloc(Real, N, &tag);
+    Real* p = cache_alloc(Real, N, &tag);
+    Real* Ap = cache_alloc(Real, N, &tag);
+    Real r_dot_r = 0;
+
+    if(params.initial_value_or_null)
     {
-        cuda_realloc_in_place((void**) &_r, N*sizeof(Real), static_N*sizeof(Real), 0);
-        cuda_realloc_in_place((void**) &_p, N*sizeof(Real), static_N*sizeof(Real), 0);
-        cuda_realloc_in_place((void**) &_Ap, N*sizeof(Real), static_N*sizeof(Real), 0);
-        static_N = N;
+        CUDA_DEBUG_TEST(cudaMemcpyAsync(x, params.initial_value_or_null, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
+        matrix_mul_func(Ap, A, params.initial_value_or_null, N);
+        cuda_for(0, N, [=]SHARED(int i){
+            r[i] = b[i] - Ap[i];
+            p[i] = r[i];
+        });
+
+        r_dot_r = vector_dot_product(r, r, N);
     }
-   
-    //NVCC seams to struggle with statics in device code
-    // (is probably passing them by global reference or something)
-    Real* r = _r;
-    Real* p = _p;
-    Real* Ap = _Ap;
-
-    //@TODO: async + explicit sync
-    //@TODO: This is broken since r assumes x to be zero the first iter. Make it not.
-    // if(params.initial_value_or_null)
-        // CUDA_DEBUG_TEST(cudaMemcpy(x, params.initial_value_or_null, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
-    // else
-        CUDA_DEBUG_TEST(cudaMemset(x, 0, sizeof(Real)*N));
-    CUDA_DEBUG_TEST(cudaMemcpy(r, b, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
-    CUDA_DEBUG_TEST(cudaMemcpy(p, b, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
-
-    Real r_dot_r = vector_dot_product(r, r, N);
-    int iter = 0;
-    for(; iter < params.max_iters; iter++)
+    else
     {
-        matrix_mul_func(Ap, A, p, N);
-        
-        Real p_dot_Ap = vector_dot_product(p, Ap, N);
-        Real alpha = r_dot_r / MAX(p_dot_Ap, params.epsilon);
-        
-        //@TODO: split into two separate kernels and do async
-        //@TODO: add option for capping the values for x in a given range.
-        //       this can potentially increase convergence and make the reuslts more
-        //       accurate (if the range is correct) 
-        cuda_for(0, N, [=]SHARED(int i){
-            x[i] = x[i] + alpha*p[i];
-            r[i] = r[i] - alpha*Ap[i];
-        });
+        CUDA_DEBUG_TEST(cudaMemsetAsync(x, 0, sizeof(Real)*N));
+        CUDA_DEBUG_TEST(cudaMemcpyAsync(r, b, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
+        CUDA_DEBUG_TEST(cudaMemcpyAsync(p, b, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
 
-        Real r_dot_r_new = vector_dot_product(r, r, N);
-        if(r_dot_r_new/N < params.tolerance*params.tolerance)
+        r_dot_r = vector_dot_product(b, b, N);
+        CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+    }
+
+    if(0)
+    {
+        Real max_diff = vector_max(r, N);
+        printf("First error MAX: " REAL_FMT " AVG: " REAL_FMT "\n", max_diff, sqrt(r_dot_r/N));
+    }
+
+    int iter = 0;
+    if(r_dot_r >= scaled_squared_tolerance)
+    {
+        for(; iter < params.max_iters; iter++)
         {
+            matrix_mul_func(Ap, A, p, N);
+            
+            Real p_dot_Ap = vector_dot_product(p, Ap, N);
+            Real alpha = r_dot_r / MAX(p_dot_Ap, params.epsilon);
+            
+            cuda_for(0, N, [=]SHARED(int i){
+                x[i] = x[i] + alpha*p[i];
+                r[i] = r[i] - alpha*Ap[i];
+            });
+
+            Real r_dot_r_new = vector_dot_product(r, r, N);
+            if(r_dot_r_new < scaled_squared_tolerance)
+            {
+                r_dot_r = r_dot_r_new;
+                break;
+            }
+
+            Real beta = r_dot_r_new / MAX(r_dot_r, params.epsilon);
+            cuda_for(0, N, [=]SHARED(int i){
+                p[i] = r[i] + beta*p[i]; 
+            });
+
             r_dot_r = r_dot_r_new;
-            break;
         }
-
-        Real beta = r_dot_r_new / MAX(r_dot_r, params.epsilon);
-        cuda_for(0, N, [=]SHARED(int i){
-            p[i] = r[i] + beta*p[i]; 
-        });
-
-        r_dot_r = r_dot_r_new;
     }
 
     Conjugate_Gardient_Convergence out = {0};
     out.iters = iter;
     out.converged = iter != params.max_iters;
     out.error = sqrt(r_dot_r/N);
+
+    cache_free(&tag);
     return out;
 } 
 
@@ -880,68 +691,62 @@ void matrix_multiply(Real* output, const Real* A, const Real* B, int A_height, i
         }
     }
 }
-
-Real vector_get_dist_norm(const Real* a, const Real* b, int N)
+Real vector_get_avg_dist(const Real* a, const Real* b, int N)
 {
-    static Real* temp = NULL;
-    static int temp_size = 0;
-    if(temp_size < N)
-    {
-        cuda_realloc_in_place((void**) &temp, N*sizeof(Real), temp_size*sizeof(Real), 0);
-        temp_size = N;
-    }
-
-    Real* t = temp; //Needed for lambda to work (they capture statics differently)
+    Cache_Tag tag = cache_tag_make();
+    Real* temp = cache_alloc(Real, N, &tag);
     cuda_for(0, N, [=]SHARED(int i){
-        t[i] = a[i] - b[i];
+        temp[i] = a[i] - b[i];
     });
 
     Real temp_dot_temp = vector_dot_product(temp, temp, N);
     Real error = sqrt(temp_dot_temp/N);
+    cache_free(&tag);
     return error;
 }
 
-bool vector_is_near(const Real* a, const Real* b, Real epsilon, int N)
+Real vector_get_max_dist(const Real* a, const Real* b, int N)
 {
-    return vector_get_dist_norm(a, b, N) < epsilon;
+    Cache_Tag tag = cache_tag_make();
+    Real* temp = cache_alloc(Real, N, &tag);
+    cuda_for(0, N, [=]SHARED(int i){
+        temp[i] = a[i] - b[i];
+    });
+
+    Real temp_dot_temp = vector_max(temp, N);
+    Real error = sqrt(temp_dot_temp/N);
+    cache_free(&tag);
+    return error;
 }
 
-int semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
+void semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
 {
     if(solver->m != m || solver->n != n)
     {
         //Big evil programming practices because we are cool and we know
         // what we are doing and dont care much about what others have to
         // say
-        Real** debug_maps = (Real**) (void*) &solver->debug_maps;
-        for(int i = 0; i < sizeof(solver->debug_maps) / sizeof(Real); i++)
-            debug_maps[i] = cross_matrix_vector_realloc(debug_maps[i], n, m, solver->n, solver->m);
+        //@TODO: make this on demand load
+        int N = n*m;
+        int N_old = solver->n*solver->m;
 
-        Real** maps = (Real**) (void*) &solver->maps;
+        Real* maps = (Real*) (void*) &solver->maps;
         for(int i = 0; i < sizeof(solver->maps) / sizeof(Real); i++)
-            maps[i] = cross_matrix_vector_realloc(maps[i], n, m, solver->n, solver->m);
+            cuda_realloc_in_place((void**) &maps[i], N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
+
+        Real* debug_maps = (Real*) (void*) &solver->debug_maps;
+        for(int i = 0; i < sizeof(solver->debug_maps) / sizeof(Real); i++)
+            cuda_realloc_in_place((void**) &debug_maps[i], N*sizeof(Real), N_old*sizeof(Real), REALLOC_ZERO);
 
         solver->m = m;
         solver->n = n;
-    }
-
-    return SEMI_IMPLICIT_SOLVER_REQUIRED_HISTORY;
-}
-
-void semi_implicit_state_resize(Semi_Implicit_State* state, int n, int m)
-{
-    if(state->m != m || state->n != n)
-    {
-        state->F = cross_matrix_vector_realloc(state->F, n, m, state->n, state->m);
-        state->U = cross_matrix_vector_realloc(state->U, n, m, state->n, state->m);
-
-        state->m = m;
-        state->n = n;
     }
 }
 
 extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
+    //79 with old explicit caching
+
     Real dx = (Real) params.L0 / solver->m;
     Real dy = (Real) params.L0 / solver->n;
 
@@ -972,7 +777,7 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Imp
     Real* b_U = solver->maps.b_U;
 
     Anisotrophy_Matrix A_F = {0};
-    A_F.scale = solver->maps.scale;
+    A_F.anisotrophy = solver->maps.anisotrophy;
     A_F.C_minus_one = 2*dt/(alpha*dx*dx) + 2*dt/(alpha*dy*dy);
     A_F.X = -dt/(alpha*dx*dx);
     A_F.Y = -dt/(alpha*dy*dy);
@@ -1010,24 +815,19 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Imp
         // g_theta = 1;
 
         Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
-        A_F.scale[x+y*m] = g_theta;
+        A_F.anisotrophy[x+y*m] = g_theta;
         b_F[x + y*m] = Phi + dt/(xi*xi*alpha)*f;
     });
 
     Conjugate_Gardient_Params solver_params = {0};
     solver_params.epsilon = (Real) 1.0e-12;
-    solver_params.tolerance = (Real) 1.0e-9;
-    solver_params.max_iters = 100;
+    solver_params.tolerance = (Real) 1.0e-7;
+    solver_params.max_iters = 20;
     solver_params.initial_value_or_null = F;
 
     //Solve A_F*F_next = b_F
     Conjugate_Gardient_Convergence F_converged = conjugate_gradient_solve(&A_F, F_next, b_F, N, anisotrophy_matrix_multiply, &solver_params);
     printf("%lli F %s in %i iters with error %lf\n", (long long) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, F_converged.error);
-
-    //Clamp in valid range. This should reduce the error even more
-    // cuda_for(0, N, [=]SHARED(int i){
-    //     F_next[i] = MAX(MIN(F_next[i], 1), 0);
-    // });
 
     //Calculate b_U
     cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
@@ -1054,9 +854,14 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Imp
             anisotrophy_matrix_multiply(AfF, &A_F, F_next, N);
             cross_matrix_static_multiply(AuU, &A_U, U_next, N);
 
-            Real back_error_F = vector_get_dist_norm(AfF, b_F, N);
-            Real back_error_U = vector_get_dist_norm(AuU, b_U, N);
-            printf("F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F, back_error_U, solver_params.tolerance*2);
+            Real back_error_F = vector_get_avg_dist(AfF, b_F, N);
+            Real back_error_U = vector_get_avg_dist(AuU, b_U, N);
+
+            Real back_error_F_max = vector_get_max_dist(AfF, b_F, N);
+            Real back_error_U_max = vector_get_max_dist(AuU, b_U, N);
+
+            printf("AVG | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F, back_error_U, solver_params.tolerance*2);
+            printf("MAX | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F_max, back_error_U_max, solver_params.tolerance*2);
         }
 
         Real* grad_F = solver->debug_maps.grad_phi;
@@ -1101,7 +906,7 @@ void semi_implicit_solver_get_maps(Semi_Implicit_Solver* solver, Semi_Implicit_S
     ASSIGN_MAP_NAMED(solver->debug_maps.AuU, "AuU");           
     ASSIGN_MAP_NAMED(solver->debug_maps.grad_phi, "grad_phi");           
     ASSIGN_MAP_NAMED(solver->debug_maps.grad_T, "grad_T");           
-    ASSIGN_MAP_NAMED(solver->maps.scale, "Anisotrophy");  
+    ASSIGN_MAP_NAMED(solver->maps.anisotrophy, "Anisotrophy");  
 }
 
 struct Semi_Implicit_Coupled_Cross_Matrix {
@@ -1115,7 +920,7 @@ struct Semi_Implicit_Coupled_Cross_Matrix {
     int n;
 };
 
-int semi_implicit_coupled_solver_resize(Semi_Implicit_Coupled_Solver* solver, int n, int m)
+void semi_implicit_coupled_solver_resize(Semi_Implicit_Coupled_Solver* solver, int n, int m)
 {
     if(solver->m != m || solver->n != n)
     {
@@ -1128,8 +933,6 @@ int semi_implicit_coupled_solver_resize(Semi_Implicit_Coupled_Solver* solver, in
         solver->m = m;
         solver->n = n;
     }
-
-    return SEMI_IMPLICIT_SOLVER_REQUIRED_HISTORY;
 }
 
 void semi_implicit_coupled_state_resize(Semi_Implicit_Coupled_State* state, int n, int m)
@@ -1158,12 +961,10 @@ void semi_implicit_coupled_matrix_multiply(Real* out, const void* A_, const Real
     Real* out_F = out;
     Real* out_U = out + N;
 
-    //@TODO: async + explicit sync
-
     //F equation
     cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
         int i = x + y*m;
-        Real s = A.A_F.scale[i];
+        Real s = A.A_F.anisotrophy[i];
         Real X = A.A_F.X*s;
         Real Y = A.A_F.Y*s;
         Real C = 1 + A.A_F.C_minus_one*s;
@@ -1256,7 +1057,7 @@ void semi_implicit_coupled_solver_step(Semi_Implicit_Coupled_Solver* solver, Sem
     });
 
     Anisotrophy_Matrix A_F = {0};
-    A_F.scale = aniso;
+    A_F.anisotrophy = aniso;
     A_F.C_minus_one = 2*dt/(alpha*dx*dx) + 2*dt/(alpha*dy*dy);
     A_F.X = -dt/(alpha*dx*dx);
     A_F.Y = -dt/(alpha*dy*dy);
@@ -1364,28 +1165,29 @@ extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t
 }
 
 
-extern "C" int  sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m)
+extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m)
 {
     if(solver->type != type && solver->type != SOLVER_TYPE_NONE)
         sim_solver_reinit(solver, solver->type, 0, 0);
 
-    int out = 0;
     switch(type) {
         case SOLVER_TYPE_NONE: {
             n = 0;
             m = 0;
         } break;
 
-        case SOLVER_TYPE_EXPLICIT: {
-            out = explicit_solver_resize(&solver->expli, n, m);
+        case SOLVER_TYPE_EXPLICIT: 
+        case SOLVER_TYPE_EXPLICIT_RK4:
+        case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: {
+            explicit_solver_resize(&solver->expli, n, m);
         } break;
 
         case SOLVER_TYPE_SEMI_IMPLICIT: {
-            out = semi_implicit_solver_resize(&solver->impli, n, m);
+            semi_implicit_solver_resize(&solver->impli, n, m);
         } break;
 
         case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
-            out = semi_implicit_coupled_solver_resize(&solver->impli_coupled, n, m);
+            semi_implicit_coupled_solver_resize(&solver->impli_coupled, n, m);
         } break;
 
         default: {
@@ -1396,7 +1198,6 @@ extern "C" int  sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, i
     solver->type = type;
     solver->m = m;
     solver->n = n;
-    return out;
 }
 
 void sim_state_reinit(Sim_State* states, Solver_Type type, int n, int m)
@@ -1410,12 +1211,15 @@ void sim_state_reinit(Sim_State* states, Solver_Type type, int n, int m)
             m = 0;
         } break;
 
-        case SOLVER_TYPE_EXPLICIT: {
+        case SOLVER_TYPE_EXPLICIT: 
+        case SOLVER_TYPE_EXPLICIT_RK4:
+        case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: {
             explicit_state_resize(&states->expli, n, m);
         } break;
 
         case SOLVER_TYPE_SEMI_IMPLICIT: {
-            semi_implicit_state_resize(&states->impli, n, m);
+            //For the moemnt these are the same
+            explicit_state_resize(&states->impli, n, m);
         } break;
 
         case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
@@ -1438,87 +1242,63 @@ extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Typ
         sim_state_reinit(&states[i], type, n, m);
 }
 
-
-void _switch(Solver_Type type)
-{
-    switch(type) {
-        case SOLVER_TYPE_NONE: {
-
-        } break;
-
-        case SOLVER_TYPE_EXPLICIT: {
-            
-        } break;
-
-        case SOLVER_TYPE_SEMI_IMPLICIT: {
-
-        } break;
-
-        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
-
-        } break;
-
-        default: assert(false);
-    };
-}
-
-
 extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug)
 {
-
-    switch(solver->type) {
-        case SOLVER_TYPE_NONE: {
-            // nothing
-        } break;
-
-        case SOLVER_TYPE_EXPLICIT: {
-            if(states_count < EXPLICIT_SOLVER_REQUIRED_HISTORY)
-                printf("explicit solver requires bigger history\n");
-            else
+    int required_history = solver_type_required_history(solver->type);
+    const char* solver_name = solver_type_to_cstring(solver->type);
+    
+    bool okay = true;
+    if(states_count < required_history)
+    {
+        okay = false;
+        LOG_INFO("SOLVER", "Step: Not enough history for solver %s! Required %i. Got %i", solver_name, states_count, required_history);
+    }
+    else
+    {
+        for(int i = 0; i < states_count; i++)
+        {
+            if(states[i].type != solver->type)
             {
-                Sim_State state = states[iter % states_count];
-                Sim_State next_state = states[(iter + 1) % states_count];
-                if(state.type != SOLVER_TYPE_EXPLICIT || next_state.type != SOLVER_TYPE_EXPLICIT)
-                    printf("not matching state provided to explicit solver\n");
-                else
-                {
-                    explicit_solver_rk4_step(&solver->expli, state.expli, &next_state.expli, params, iter, do_debug);
-                    // explicit_solver_newton_step(&solver->expli, state.expli, next_state.expli, params, iter, do_debug);
-                }
+                LOG_INFO("SOLVER", "Step: state[%i] is of bad type %s. Expected %s", solver_type_to_cstring(states[i].type), solver_name);
+                okay = false;
             }
-        } break;
+        }
+    }
+    
+    if(okay)
+    {
+        ASSERT(states_count > 0);
+        Sim_State state = states[MOD(iter, states_count)];
+        Sim_State next_state = states[MOD(iter + 1, states_count)];
+        switch(solver->type) {
+            case SOLVER_TYPE_NONE: {
+                LOG_INFO("SOLVER", "Step: stepping as solver type none has no effect");
+                // nothing
+            } break;
 
-        case SOLVER_TYPE_SEMI_IMPLICIT: {
-            if(states_count < EXPLICIT_SOLVER_REQUIRED_HISTORY)
-                printf("explicit solver requires bigger history");
-            else
-            {
-                Sim_State state = states[iter % states_count];
-                Sim_State next_state = states[(iter + 1) % states_count];
-                if(state.type != SOLVER_TYPE_SEMI_IMPLICIT || next_state.type != SOLVER_TYPE_SEMI_IMPLICIT)
-                    printf("not matching state provided to semi implicit solver\n");
-                else
-                    semi_implicit_solver_step(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
-            }
-        } break;
+            case SOLVER_TYPE_EXPLICIT: {
+                explicit_solver_newton_step(&solver->expli, state.expli, next_state.expli, params, iter, do_debug);
+            } break;
 
+            case SOLVER_TYPE_EXPLICIT_RK4: {
+                explicit_solver_rk4_step(&solver->expli, state.expli, &next_state.expli, params, iter, do_debug);
+            } break;
 
-        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
-            if(states_count < EXPLICIT_SOLVER_REQUIRED_HISTORY)
-                printf("explicit solver requires bigger history");
-            else
-            {
-                Sim_State state = states[iter % states_count];
-                Sim_State next_state = states[(iter + 1) % states_count];
-                if(state.type != SOLVER_TYPE_SEMI_IMPLICIT_COUPLED || next_state.type != SOLVER_TYPE_SEMI_IMPLICIT_COUPLED)
-                    printf("not matching state provided to semi implicit solver\n");
-                else
-                    semi_implicit_coupled_solver_step(&solver->impli_coupled, state.impli_coupled, next_state.impli_coupled, params, iter, do_debug);
-            }
-        } break;
+            case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: {
+                explicit_solver_rk4_step(&solver->expli, state.expli, &next_state.expli, params, iter, do_debug);
+            } break;
 
-        default: assert(false);
-    };
+            case SOLVER_TYPE_SEMI_IMPLICIT: {
+                semi_implicit_solver_step(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
+            } break;
+
+            case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
+                semi_implicit_coupled_solver_step(&solver->impli_coupled, state.impli_coupled, next_state.impli_coupled, params, iter, do_debug);
+            } break;
+
+            default: assert(false);
+        };
+    }
 }
 
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count)
@@ -1532,7 +1312,9 @@ extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int s
             //none
         } break;
 
-        case SOLVER_TYPE_EXPLICIT: {
+        case SOLVER_TYPE_EXPLICIT: 
+        case SOLVER_TYPE_EXPLICIT_RK4:
+        case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: {
             explicit_solver_get_maps(&solver->expli, state.expli, maps, map_count);
         } break;
 

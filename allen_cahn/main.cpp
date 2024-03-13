@@ -123,7 +123,8 @@ void simulation_state_reload(App_State* app, Allen_Cahn_Config config)
     defer(free(initial_F));
     defer(free(initial_U));
 
-    app->used_states = sim_solver_reinit(&app->solver, config.solver, n, m);
+    app->used_states = solver_type_required_history(config.solver);
+    sim_solver_reinit(&app->solver, config.solver, n, m);
     sim_states_reinit(app->states, app->used_states, config.solver, n, m);
     sim_make_initial_conditions(initial_F, initial_U, config);
     
@@ -210,8 +211,7 @@ int main()
     if(config.interactive_mode)
     {   
         #ifdef DO_GRAPHICAL_BUILD
-        app->is_in_debug_mode = true;
-        TEST_MSG(glfwInit(), "Failed to init glfw");
+        TEST(glfwInit(), "Failed to init glfw");
 
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
@@ -230,7 +230,7 @@ int main()
         }
  
         GLFWwindow* window = glfwCreateWindow(DEF_WINDOW_WIDTH, DEF_WINDOW_HEIGHT, WINDOW_TITLE, NULL, NULL);
-        TEST_MSG(window != NULL, "Failed to make glfw window");
+        TEST(window != NULL, "Failed to make glfw window");
 
         //glfwSetWindowUserPointer(window, &app);
         glfwMakeContextCurrent(window);
@@ -302,7 +302,7 @@ int main()
 
             if(update_frame_time_display)
             {
-                glfwSetWindowTitle(window, format_string("step: %3.3lfms | real: %8.6lfms", processing_time * 1000, curr_real_time*1000).c_str());
+                glfwSetWindowTitle(window, format_string("%s step: %3.3lfms | real: %8.6lfms", solver_type_to_cstring(app->config.solver), processing_time * 1000, curr_real_time*1000).c_str());
                 time_display_last_time = frame_start_time;
             }
 
@@ -348,17 +348,41 @@ int main()
     }
     else
     {
+        app->is_in_debug_mode = false;
         int iters = (int) (config.stop_after / config.params.dt);
-        
+        int snapshot_every_i = 0;
+        int snapshot_times_i = 0;
+        bool end_reached = false;
         double start_time = clock_s();
         double last_notif_time = 0;
-        for(; app->iter < iters; app->iter++)
+        for(; app->iter <= iters; app->iter++)
         {
             double now = clock_s();
-            if(now - last_notif_time > 1)
+            
+            double curr_real_time = (double) app->iter * config.params.dt;
+            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshots.snapshot_every;
+            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.stop_after / config.snapshots.snapshot_times;
+
+            if(curr_real_time >= next_snapshot_every)
+            {
+                snapshot_every_i += 1;
+                save_netcfd_file(app);
+            }
+
+            if(curr_real_time >= next_snapshot_times && end_reached == false)
+            {
+                snapshot_times_i += 1;
+                save_netcfd_file(app);
+            }
+
+            //make sure we say 0% and 100%
+            if(now - last_notif_time > 1 || app->iter == iters || app->iter == 0)
             {
                 last_notif_time = now;
-                LOG_INFO("app", "... completed %i%%", (int) (app->iter * 100 / iters));
+                LOG_INFO("app", "... completed %lf%%", (int) (app->iter * 100 / iters));
+
+                if(app->iter == iters)
+                    break;
             }
 
             sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
@@ -366,8 +390,8 @@ int main()
         double end_time = clock_s();
         double runtime = end_time - start_time;
 
-        LOG_INFO("app", "Finished");
-        LOG_INFO("app", "runtime: %.2lfs | iters: %lli | average step time: %.2lf ms", runtime, (long long) iters, runtime / (double) iters * 1000 * 1000);
+        LOG_INFO("app", "Finished!");
+        LOG_INFO("app", "runtime: %.2lfs | iters: %lli | average step time: %.2lf ms", runtime, (long long) iters, runtime / (double) iters * 1000);
     }
 
     return 0;    
@@ -466,14 +490,13 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
                 if(maps[new_render_target].name == NULL)
                     maps[new_render_target].name = "<EMPTY>";
 
-                printf("redering %s\n", maps[new_render_target].name);
+                LOG_INFO("APP", "redering %s", maps[new_render_target].name);
                 app->render_target = new_render_target;
             }
             else
             {
-                printf("current render target %i outside of the allowed range [0, %i)\n", new_render_target, SIM_MAPS_MAX);
+                LOG_INFO("APP", "current render target %i outside of the allowed range [0, %i)", new_render_target, SIM_MAPS_MAX);
             }
-
         }
     }
 }
@@ -518,7 +541,7 @@ bool save_netcfd_file(App_State* app)
 
         std::filesystem::path composed_path = snapshots->folder;
 
-        std::string folder = format_string("%s%04i-%02i-%02i__%02i-%02i-%02i_%s%s", 
+        std::string folder = format_string("%s%04i-%02i-%02i__%02i-%02i-%02i__%s%s", 
             snapshots->prefix.data(), 
             t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
             solver_type_to_cstring(app->config.solver),
@@ -528,8 +551,18 @@ bool save_netcfd_file(App_State* app)
         if(composed_path.empty() == false)
             std::filesystem::create_directory(composed_path, error);
 
+        
+
         composed_path.append(folder.c_str()); 
         std::filesystem::create_directory(composed_path, error);
+
+        if(app->snapshot_index <= 1)
+        {
+            std::filesystem::path config_path = composed_path; 
+            config_path.append("config.ini");
+
+            file_write_entire(config_path.c_str(), app->config.entire_config_file);
+        }
 
         composed_path.append(format_string("%s_%04i.nc", solver_type_to_cstring(app->config.solver), app->snapshot_index).c_str());
 
@@ -553,16 +586,16 @@ bool save_netcfd_file(App_State* app)
     #define NC_ERROR_AND(code) (code) != NC_NOERR ? (code) :
 
     int nc_error = nc_create(filename, NC_NETCDF4, &dataset_ID);
-    printf("saving NetCDF file '%s'\n", filename);
+    LOG_INFO("APP", "saving NetCDF file '%s'", filename);
     if(nc_error != NC_NOERR) {
-        printf("NetCDF create error on file '%s': %s.\n", filename, nc_strerror(nc_error));
+        LOG_INFO("APP", "NetCDF create error on file '%s': %s.", filename, nc_strerror(nc_error));
         return false;
     }
 
     nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "x", (size_t) params.m, dim_ids + 0);
     nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "y", (size_t) params.n, dim_ids + 1);
     if(nc_error != NC_NOERR) {
-        printf("NetCDF define dim error: %s.\n", nc_strerror(nc_error));
+        LOG_INFO("APP", "NetCDF define dim error: %s.", nc_strerror(nc_error));
         return false;
     }
 
@@ -590,7 +623,7 @@ bool save_netcfd_file(App_State* app)
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "do_anisotropy", NC_BYTE, 1, &params.do_anisotropy);
 
     if(nc_error != NC_NOERR) {
-        printf("NetCDF error while outputing params: %s.\n", nc_strerror(nc_error));
+        LOG_INFO("APP", "NetCDF error while outputing params: %s.", nc_strerror(nc_error));
         return false;
     }
 
@@ -625,7 +658,7 @@ bool save_netcfd_file(App_State* app)
     nc_error = NC_ERROR_AND(nc_error) nc_close(dataset_ID);
 
     if(nc_error != NC_NOERR) {
-        printf("NetCDF error while outputing data: %s.\n", nc_strerror(nc_error));
+        LOG_INFO("APP", "NetCDF error while outputing data: %s.", nc_strerror(nc_error));
         return false;
     }
 
