@@ -30,6 +30,7 @@ void cuda_for(int from, int to, Function func, int flags = 0)
         CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
 
+
 template <typename Function>
 __global__ void _kernel_cuda_for_each_2D(int from_x, int x_size, int from_y, int y_size, Function func)
 {
@@ -743,7 +744,7 @@ void semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
     }
 }
 
-extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solver, Real* F, Real* U, Real* U_base, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
     //79 with old explicit caching
 
@@ -769,9 +770,6 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Imp
     
     Real* F_next = next_state.F;
     Real* U_next = next_state.U;
-
-    Real* F = state.F;
-    Real* U = state.U;
     
     Real* b_F = solver->maps.b_F;
     Real* b_U = solver->maps.b_U;
@@ -831,14 +829,14 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Imp
 
     //Calculate b_U
     cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
-        Real T = *at_mod(U, x, y, n, m);
+        Real T = *at_mod(U_base, x, y, n, m);
         Real Phi = *at_mod(F, x, y, n, m);
         Real Phi_next = *at_mod(F_next, x, y, n, m);
 
         b_U[x + y*m] = T + L*(Phi_next - Phi);
     });
 
-    solver_params.initial_value_or_null = U;
+    solver_params.initial_value_or_null = U_base;
 
     //Solve A_U*U_next = b_U
     Conjugate_Gardient_Convergence U_converged = conjugate_gradient_solve(&A_U, U_next, b_U, N, cross_matrix_static_multiply, &solver_params);
@@ -894,19 +892,84 @@ extern "C" void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Imp
     }
 }
 
+void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+{
+    semi_implicit_solver_step_based_sunglasses_emoji(solver, state.F, state.U, state.U, next_state, params, iter, do_debug);
+}
+
+Real vector_euclid_norm(Real* vector, int N)
+{
+    Real dot = vector_dot_product(vector, vector, N);
+    return sqrt(dot / N);
+}
+
+void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+{
+    Cache_Tag tag = cache_tag_make();
+
+    int max_correctors = 8;
+    int N = params.n * params.m;
+
+    enum {STEPS = 2};
+    Explicit_State steps[STEPS] = {0};
+    for(int i = 0; i < STEPS; i++)
+    {
+        steps[i].F = cache_alloc(Real, N, &tag);
+        steps[i].U = cache_alloc(Real, N, &tag);
+        steps[i].m = params.m;
+        steps[i].n = params.n;
+    }
+    Real* step_resiudal = cache_alloc(Real, N, &tag);
+    
+    semi_implicit_solver_step(solver, state, steps[0], params, iter, false);
+    int k = 0;
+    for(; k < max_correctors; k++)
+    {
+        Explicit_State step_curr = steps[MOD(k, STEPS)];
+        Explicit_State step_next = steps[MOD(k + 1, STEPS)];
+        semi_implicit_solver_step_based_sunglasses_emoji(solver, state.F, step_curr.U, state.U, step_next, params, iter, false);
+
+        cuda_for(0, N, [=]SHARED(int i){
+            //fabs is broken and linking the wrong function which results in
+            // illegal memory access ?!
+            Real diff = step_curr.F[i] - step_next.F[i]; 
+            step_resiudal[i] = diff >= 0 ? diff : -diff;
+        });
+
+        //@NOTE: no explicit sync!
+        if(k < STATIC_ARRAY_SIZE(solver->debug_maps.step_residuals))
+            CUDA_DEBUG_TEST(cudaMemcpyAsync(solver->debug_maps.step_residuals[k], step_resiudal, N*sizeof(Real), cudaMemcpyDeviceToDevice));
+
+        Real step_residual_avg_error = vector_euclid_norm(step_resiudal, N);
+        Real step_residual_max_error = vector_max(step_resiudal, N);
+        LOG_INFO("SOLVER", "step residual avg: %.10lf | max: %.10lf", step_residual_avg_error, step_residual_max_error);
+    }
+    
+    //@TODO: we can make this in such a way where this step is unnecessary at least 50% of the time!
+    int final_i = MOD(k + 1, STEPS);
+    CUDA_DEBUG_TEST(cudaMemcpyAsync(next_state.F, steps[final_i].F, N*sizeof(Real), cudaMemcpyDeviceToDevice));
+    CUDA_DEBUG_TEST(cudaMemcpyAsync(next_state.U, steps[final_i].U, N*sizeof(Real), cudaMemcpyDeviceToDevice));
+    cache_free(&tag);
+}
+
 void semi_implicit_solver_get_maps(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Sim_Map* maps, int map_count)
 {
     int __map_i = 0;
     memset(maps, 0, sizeof maps[0] * map_count);
     ASSIGN_MAP_NAMED(state.F, "Phi");            
     ASSIGN_MAP_NAMED(state.U, "T");            
-    ASSIGN_MAP_NAMED(solver->maps.b_F, "b_F");           
-    ASSIGN_MAP_NAMED(solver->debug_maps.AfF, "AfF");           
-    ASSIGN_MAP_NAMED(solver->maps.b_U, "b_U");           
-    ASSIGN_MAP_NAMED(solver->debug_maps.AuU, "AuU");           
+    // ASSIGN_MAP_NAMED(solver->maps.b_F, "b_F");           
+    // ASSIGN_MAP_NAMED(solver->debug_maps.AfF, "AfF");           
+    // ASSIGN_MAP_NAMED(solver->maps.b_U, "b_U");           
+    // ASSIGN_MAP_NAMED(solver->debug_maps.AuU, "AuU");           
     ASSIGN_MAP_NAMED(solver->debug_maps.grad_phi, "grad_phi");           
     ASSIGN_MAP_NAMED(solver->debug_maps.grad_T, "grad_T");           
-    ASSIGN_MAP_NAMED(solver->maps.anisotrophy, "Anisotrophy");  
+    ASSIGN_MAP_NAMED(solver->maps.anisotrophy, "Anisotrophy");
+
+    CHECK_BOUNDS(2, STATIC_ARRAY_SIZE(solver->debug_maps.step_residuals)); 
+    ASSIGN_MAP_NAMED(solver->debug_maps.step_residuals[0], "step_residual1");          
+    ASSIGN_MAP_NAMED(solver->debug_maps.step_residuals[1], "step_residual2");           
+    ASSIGN_MAP_NAMED(solver->debug_maps.step_residuals[2], "step_residual3");           
 }
 
 struct Semi_Implicit_Coupled_Cross_Matrix {
@@ -1289,7 +1352,7 @@ extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int state
             } break;
 
             case SOLVER_TYPE_SEMI_IMPLICIT: {
-                semi_implicit_solver_step(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
+                semi_implicit_solver_step_corrector(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
             } break;
 
             case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {

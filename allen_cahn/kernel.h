@@ -51,6 +51,13 @@ typedef struct Allen_Cahn_Params{
     Real m0; //anisotrophy frequency (?)
     Real theta0; //anisotrophy orientation
     bool do_anisotropy;
+
+    Real T_tolerance;
+    Real Phi_tolerance;
+    Real corrector_tolerance;
+    int T_max_iters;
+    int Phi_max_iters;
+    int corrector_max_iters;
 } Allen_Cahn_Params;
 
 typedef enum Solver_Type{
@@ -134,9 +141,9 @@ typedef struct Semi_Implicit_Solver {
         Real* grad_phi;
         Real* grad_T;
         Real* aniso_factor;
-        Real* step_residual;
         Real* AfF;
         Real* AuU;
+        Real* step_residuals[3];
     } debug_maps;
 
     int m;

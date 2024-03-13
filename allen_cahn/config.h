@@ -168,8 +168,8 @@ Key_Value_Type match_key_value_pair(std::string_view line, std::string* key, std
     if(found_marker == "=" || found_marker == ":" || found_marker == ",")
     {
         //Remove comment from value
-        size_t comment_index1 = found_value.rfind(';');
-        size_t comment_index2 = found_value.rfind('#');
+        size_t comment_index1 = found_value.find(';');
+        size_t comment_index2 = found_value.find('#');
         if(comment_index1 == (size_t) -1)
             comment_index1 = found_value.size();
         if(comment_index2 == (size_t) -1)
@@ -377,6 +377,32 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
     {
         Key_Value pairs = to_key_value(config->entire_config_file);
 
+        uint8_t matched_params = true
+            & (uint8_t) key_value_get_real(pairs, &params->L0, "params", "L0")
+            & (uint8_t) key_value_get_real(pairs, &params->L, "params", "L")
+            & (uint8_t) key_value_get_real(pairs, &params->xi, "params", "xi")
+            & (uint8_t) key_value_get_real(pairs, &params->a, "params", "a")
+            & (uint8_t) key_value_get_real(pairs, &params->b, "params", "b")
+            & (uint8_t) key_value_get_real(pairs, &params->alpha, "params", "alpha")
+            & (uint8_t) key_value_get_real(pairs, &params->beta, "params", "beta")
+            & (uint8_t) key_value_get_real(pairs, &params->Tm, "params", "Tm")
+            & (uint8_t) key_value_get_real(pairs, &params->Tinit, "params", "Tini")
+            & (uint8_t) key_value_get_real(pairs, &params->S, "params", "S")
+            & (uint8_t) key_value_get_real(pairs, &params->m0, "params", "m")
+            & (uint8_t) key_value_get_real(pairs, &params->theta0, "params", "theta0")
+            & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "params", "do_anisotropy");
+            
+        uint8_t matched_simulation = true
+            & (uint8_t) key_value_get_int(pairs, &params->m, "simulation", "mesh_size_x")
+            & (uint8_t) key_value_get_int(pairs, &params->n, "simulation", "mesh_size_y")
+            & (uint8_t) key_value_get_real(pairs, &params->T_tolerance, "simulation", "T_tolerance")
+            & (uint8_t) key_value_get_real(pairs, &params->Phi_tolerance, "simulation", "Phi_tolerance")
+            & (uint8_t) key_value_get_real(pairs, &params->corrector_tolerance, "simulation", "corrector_tolerance")
+            & (uint8_t) key_value_get_int(pairs, &params->T_max_iters, "simulation", "T_max_iters")
+            & (uint8_t) key_value_get_int(pairs, &params->Phi_max_iters, "simulation", "Phi_max_iters")
+            & (uint8_t) key_value_get_int(pairs, &params->corrector_max_iters, "simulation", "corrector_max_iters")
+            & (uint8_t) key_value_get_real(pairs, &params->dt, "simulation", "dt");
+            
         uint8_t matched_initial = true
             & (uint8_t) key_value_get_real(pairs, &initial->inside_phi, "initial", "inside_phi")
             & (uint8_t) key_value_get_real(pairs, &initial->inside_T, "initial", "inside_T")
@@ -404,26 +430,9 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_real(pairs, &config->display_min, "program", "display_min")
             & (uint8_t) key_value_get_real(pairs, &config->display_max, "program", "display_max");
             
-        uint8_t matched_params = true
-            & (uint8_t) key_value_get_int(pairs, &params->m, "simulation", "mesh_size_x")
-            & (uint8_t) key_value_get_int(pairs, &params->n, "simulation", "mesh_size_y")
-            & (uint8_t) key_value_get_real(pairs, &params->L0, "simulation", "L0")
-            & (uint8_t) key_value_get_real(pairs, &params->dt, "simulation", "dt")
-            & (uint8_t) key_value_get_real(pairs, &params->L, "simulation", "L")
-            & (uint8_t) key_value_get_real(pairs, &params->xi, "simulation", "xi")
-            & (uint8_t) key_value_get_real(pairs, &params->a, "simulation", "a")
-            & (uint8_t) key_value_get_real(pairs, &params->b, "simulation", "b")
-            & (uint8_t) key_value_get_real(pairs, &params->alpha, "simulation", "alpha")
-            & (uint8_t) key_value_get_real(pairs, &params->beta, "simulation", "beta")
-            & (uint8_t) key_value_get_real(pairs, &params->Tm, "simulation", "Tm")
-            & (uint8_t) key_value_get_real(pairs, &params->Tinit, "simulation", "Tini")
-            & (uint8_t) key_value_get_real(pairs, &params->S, "simulation", "S")
-            & (uint8_t) key_value_get_real(pairs, &params->m0, "simulation", "m")
-            & (uint8_t) key_value_get_real(pairs, &params->theta0, "simulation", "theta0")
-            & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "simulation", "do_anisotropy")
-            ;
 
-        state = matched_initial && matched_snaps && matched_params && matched_program;
+
+        state = matched_initial && matched_snaps && matched_simulation && matched_params && matched_program;
         if(state == false)
             LOG_ERROR("config", "couldnt find or parse some config entries. Config is only partially loaded!");
     }

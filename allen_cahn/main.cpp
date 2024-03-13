@@ -433,7 +433,11 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
             app->is_in_debug_mode = !app->is_in_debug_mode;
             LOG_INFO("APP", "Debug %s", app->is_in_debug_mode ? "true" : "false");
         }
-
+        if(key == GLFW_KEY_L)
+        {
+            app->config.linear_filtering = !app->config.linear_filtering;
+            LOG_INFO("APP", "Linear FIltering %s", app->config.linear_filtering ? "true" : "false");
+        }
         if(key == GLFW_KEY_R)
         {
             LOG_INFO("APP", "Input range to display in form 'MIN space MAX'");
