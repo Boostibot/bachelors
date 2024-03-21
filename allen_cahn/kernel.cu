@@ -52,6 +52,26 @@ void cuda_for_2D(int from_x, int from_y, int to_x, int to_y, Function func, int 
         CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
 
+//Will hand write my own version later. For now we trust in thrust *cymbal*
+#include <thrust/inner_product.h>
+#include <thrust/device_ptr.h>
+
+Real vector_dot_product(const Real *a, const Real *b, int n)
+{
+  // wrap raw pointers to device memory with device_ptr
+  thrust::device_ptr<const Real> d_a(a);
+  thrust::device_ptr<const Real> d_b(b);
+
+  // inner_product implements a mathematical dot product
+  return thrust::inner_product(d_a, d_a + n, d_b, 0.0);
+}
+
+Real vector_max(const Real *a, int N)
+{
+    thrust::device_ptr<const Real> d_a(a);
+    return *(thrust::max_element(d_a, d_a + N));
+}
+
 SHARED Real* at_mod(Real* map, int x, int y, int n, int m)
 {
     #define AT_MOD_MODE 1
@@ -116,7 +136,7 @@ void explicit_state_resize(Explicit_State* state, int n, int m)
     }
 }
 
-union Explicit_Solve_In {
+union Explicit_Solve_Stencil {
     struct {
         Real Phi;
         Real Phi_U;
@@ -149,11 +169,10 @@ SHARED Real f0(Real phi)
 	return phi*(1 - phi)*(phi - 1.0f/2);
 }
 
-SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_In input, Allen_Cahn_Params params, Explicit_Solve_Debug* debug_or_null)
+SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil input, Allen_Cahn_Params params, Explicit_Solve_Debug* debug_or_null)
 {
     Real dx = (Real) params.L0 / params.m;
     Real dy = (Real) params.L0 / params.n;
-    Real mK = dx * dy;
 
     //@NOTE: dont you wish we had odin lang using in C?
     Real a = params.a;
@@ -163,7 +182,7 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_In input, 
     Real xi = params.xi;
     Real Tm = params.Tm;
     Real L = params.L; //Latent heat, not L0 (sym size) ! 
-    // Real dt = params.dt;
+    Real dt = params.dt;
     Real S = params.S; //anisotrophy strength
     Real m0 = params.m0; //anisotrophy frequency (?)
     Real theta0 = params.theta0;
@@ -173,57 +192,53 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_In input, 
     Real Phi_D = input.Phi_D;
     Real Phi_L = input.Phi_L;
     Real Phi_R = input.Phi_R;
+
     Real T = input.T;
     Real T_U = input.T_U;
     Real T_D = input.T_D;
     Real T_L = input.T_L;
     Real T_R = input.T_R;
 
-    Real grad_T_x = dy*(T_R - T_L);
-    Real grad_T_y = dx*(T_U - T_D);
+    Real grad_Phi_x = (Phi_R - Phi_L)/(2*dx);
+    Real grad_Phi_y = (Phi_U - Phi_D)/(2*dy);
 
-    Real grad_Phi_x = dy*(Phi_R - Phi_L);
-    Real grad_Phi_y = dx*(Phi_U - Phi_D);
+    Real theta = atan2(grad_Phi_y, grad_Phi_x);;
+    Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
 
-    Real grad_T_norm = hypotf(grad_T_x, grad_T_y);
-    Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+    Real laplace_T = (T_L - 2*T + T_R)/(dx*dx) + (T_D - 2*T + T_U)/(dy*dy);
+    Real laplace_Phi = (Phi_L - 2*Phi + Phi_R)/(dx*dx) + (Phi_D - 2*Phi + Phi_U)/(dy*dy);
 
-    Real g_theta = 1;
-    Real theta = 0;
-    //prevent nans
-    // if(grad_Phi_norm > 0.0001)
-    {
+    Real f0_tilda = g_theta*a/(xi*xi * alpha)*f0(Phi);
+    Real f1_tilda = b*beta/alpha*hypotf(grad_Phi_x, grad_Phi_y);
+    Real f2_tilda = g_theta/alpha;
+    Real d_tilda = 1 + f1_tilda*dt*L;
 
-        theta = atan2(grad_Phi_y, grad_Phi_x);
-        g_theta = 1.0f - S*cosf(m0*theta + theta0);
-    }
-
-    Real int_K_laplace_T   = dy/dx*(T_L - 2*T + T_R)       + dx/dy*(T_D - 2*T + T_U);
-    Real int_K_laplace_Phi = dy/dx*(Phi_L - 2*Phi + Phi_R) + dx/dy*(Phi_D - 2*Phi + Phi_U);
-    Real int_K_f = g_theta*a*mK*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/2;
-
-    Real int_K_dt_Phi = g_theta/alpha*int_K_laplace_Phi + 1/(xi*xi * alpha)*int_K_f;
-    Real int_K_dt_T = int_K_laplace_T + L*int_K_dt_Phi;
-
-    Real dt_Phi = 1/mK*int_K_dt_Phi;
-    Real dt_T = 1/mK*int_K_dt_T;
+    Real dt_Phi = 0;
+    if(params.do_corrector_guess)
+        dt_Phi = (f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm + dt*laplace_T))/d_tilda;
+    else
+        dt_Phi = f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm);
+    Real dt_T = laplace_T + L*dt_Phi; 
 
     if(debug_or_null)
     {
         debug_or_null->grad_Phi = hypotf(Phi_R - Phi_L, Phi_U - Phi_D);
         debug_or_null->grad_T = hypotf(T_R - T_L, T_U - T_D);
-        debug_or_null->reaction_term = int_K_f / mK;
+        if(params.do_corrector_guess)
+            debug_or_null->reaction_term = (f0_tilda + f1_tilda*(T - Tm + dt*laplace_T)) / d_tilda;
+        else
+            debug_or_null->reaction_term = f0_tilda - f1_tilda*(T - Tm);
         debug_or_null->g_theta = g_theta;
-        debug_or_null->theta = g_theta;
+        debug_or_null->theta = theta;
     }
 
     Explicit_Solve_Result out = {dt_Phi, dt_T};
     return out;
 }
 
-SHARED Explicit_Solve_In explicit_solve_in_mod(const Real* Phi, const Real* T, int x, int y, int n, int m)
+SHARED Explicit_Solve_Stencil explicit_solve_stencil_mod(const Real* Phi, const Real* T, int x, int y, int n, int m)
 {
-    Explicit_Solve_In solve = {0};
+    Explicit_Solve_Stencil solve = {0};
     solve.T = T[x + y*m];
     solve.Phi = Phi[x + y*m];
 
@@ -255,7 +270,7 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
     {
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
             Explicit_Solve_Debug debug = {0};
-            Explicit_Solve_In input = explicit_solve_in_mod(Phi, T, x, y, n, m);
+            Explicit_Solve_Stencil input = explicit_solve_stencil_mod(Phi, T, x, y, n, m);
             Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, params, &debug);
 
             //Newton update
@@ -271,7 +286,7 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
     else
     {
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
-            Explicit_Solve_In input = explicit_solve_in_mod(Phi, T, x, y, n, m);
+            Explicit_Solve_Stencil input = explicit_solve_stencil_mod(Phi, T, x, y, n, m);
             Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, params, NULL);
 
             Phi_next[x + y*m] = input.Phi + solved.dt_Phi*params.dt;
@@ -279,7 +294,6 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
         });
     }
 }
-
 
 void explicit_solver_rk4_dt(Explicit_State* out, Explicit_State base_state, Real blend_factor, Explicit_State half_state, Allen_Cahn_Params params)
 {
@@ -292,7 +306,7 @@ void explicit_solver_rk4_dt(Explicit_State* out, Explicit_State base_state, Real
     if(blend_factor == 0)
     {
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
-            Explicit_Solve_In input_base = explicit_solve_in_mod(base_state.F, base_state.U, x, y, n, m);
+            Explicit_Solve_Stencil input_base = explicit_solve_stencil_mod(base_state.F, base_state.U, x, y, n, m);
             Explicit_Solve_Result solved = allen_cahn_explicit_solve(input_base, params, NULL);
 
             out_F[x + y*m] = solved.dt_Phi;
@@ -302,9 +316,9 @@ void explicit_solver_rk4_dt(Explicit_State* out, Explicit_State base_state, Real
     else
     {
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
-            Explicit_Solve_In input_base = explicit_solve_in_mod(base_state.F, base_state.U, x, y, n, m);
-            Explicit_Solve_In input_half = explicit_solve_in_mod(half_state.F, half_state.U, x, y, n, m);
-            Explicit_Solve_In input_blend = {0};
+            Explicit_Solve_Stencil input_base = explicit_solve_stencil_mod(base_state.F, base_state.U, x, y, n, m);
+            Explicit_Solve_Stencil input_half = explicit_solve_stencil_mod(half_state.F, half_state.U, x, y, n, m);
+            Explicit_Solve_Stencil input_blend = {0};
 
             for(int i = 0; i < sizeof(input_blend.vals) / sizeof(input_blend.vals[0]); i++)
                 input_blend.vals[i] = input_base.vals[i] + blend_factor*input_half.vals[i];
@@ -315,6 +329,79 @@ void explicit_solver_rk4_dt(Explicit_State* out, Explicit_State base_state, Real
             out_U[x + y*m] = solved.dt_T;
         });
     }
+}
+
+struct Explicit_Blend_State {
+    Real weight;
+    Explicit_State state;
+};
+
+template<typename ... States>
+void explicit_solver_solve_lin_combination(Explicit_State* out, Allen_Cahn_Params params, States... state_args)
+{
+    int m = params.m;
+    int n = params.n;
+    Real* out_F = out->F;
+    Real* out_U = out->U;
+
+    constexpr int state_count = sizeof...(state_args);
+    Explicit_Blend_State states[state_count] = {state_args...};
+
+    cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
+        Explicit_Solve_Stencil blend = {0};
+        for(int i = 0; i < state_count; i++)
+        {
+            Explicit_Solve_Stencil input = explicit_solve_stencil_mod(states[i].state.F, states[i].state.U, x, y, n, m);
+            Real weight = states[i].weight;
+            for(int i = 0; i < STATIC_ARRAY_SIZE(blend.vals); i++)
+                blend.vals[i] += weight*input.vals[i];
+        }
+
+        Explicit_Solve_Result solved = allen_cahn_explicit_solve(blend, params, NULL);
+
+        out_F[x + y*m] = solved.dt_Phi;
+        out_U[x + y*m] = solved.dt_T;
+    });
+}
+void explicit_solver_debug_step(Explicit_Solver* solver, Explicit_State state, Allen_Cahn_Params params)
+{
+    int m = params.m;
+    int n = params.n;
+    Real* F = state.F;
+    Real* U = state.U;
+    Real* grad_F = solver->debug_maps.grad_phi;
+    Real* grad_U = solver->debug_maps.grad_T;
+    Real* aniso = solver->debug_maps.aniso_factor;
+    cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
+        Real T = *at_mod(U, x, y, n, m);
+        Real Phi = *at_mod(F, x, y, n, m);
+
+        Real Phi_U = *at_mod(F, x, y + 1, n, m);
+        Real Phi_D = *at_mod(F, x, y - 1, n, m);
+        Real Phi_R = *at_mod(F, x + 1, y, n, m);
+        Real Phi_L = *at_mod(F, x - 1, y, n, m);
+
+        Real T_U = *at_mod(U, x, y + 1, n, m);
+        Real T_D = *at_mod(U, x, y - 1, n, m);
+        Real T_R = *at_mod(U, x + 1, y, n, m);
+        Real T_L = *at_mod(U, x - 1, y, n, m);
+
+        Real grad_Phi_x = (Phi_R - Phi_L);
+        Real grad_Phi_y = (Phi_U - Phi_D);
+        Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+
+        Real grad_T_x = (T_R - T_L);
+        Real grad_T_y = (T_U - T_D);
+        Real grad_T_norm = hypotf(grad_T_x, grad_T_y);
+        
+        Real theta = atan2(grad_Phi_y, grad_Phi_x);
+        Real g_theta = 1.0f - params.S*cosf(params.m0*theta + params.theta0);
+
+        grad_F[x + y*m] = grad_Phi_norm;
+        grad_U[x + y*m] = grad_T_norm;
+        aniso[x + y*m] = g_theta;
+    });
+
 }
 
 extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
@@ -345,10 +432,22 @@ extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State
     Explicit_State k4 = steps[3];
 
     Real dt = params.dt;
-    explicit_solver_rk4_dt(&k1, state, dt * 0, empty, params);
-    explicit_solver_rk4_dt(&k2, state, dt * 0.5, k1, params);
-    explicit_solver_rk4_dt(&k3, state, dt * 0.5, k2, params);
-    explicit_solver_rk4_dt(&k4, state, dt * 1, k3, params);
+    if(0)
+    {
+        explicit_solver_rk4_dt(&k1, state, dt * 0, empty, params);
+        explicit_solver_rk4_dt(&k2, state, dt * 0.5, k1, params);
+        explicit_solver_rk4_dt(&k3, state, dt * 0.5, k2, params);
+        explicit_solver_rk4_dt(&k4, state, dt * 1, k3, params);
+    }
+    else
+    {
+        using W = Explicit_Blend_State;
+        explicit_solver_solve_lin_combination(&k1, params, W{1, state});
+        explicit_solver_solve_lin_combination(&k2, params, W{1, state}, W{dt * 0.5, k1});
+        explicit_solver_solve_lin_combination(&k3, params, W{1, state}, W{dt * 0.5, k2});
+        explicit_solver_solve_lin_combination(&k4, params, W{1, state}, W{dt * 1, k3});
+    }
+    
 
     Real* out_F = next_state->F;
     Real* out_U = next_state->U;
@@ -358,48 +457,161 @@ extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State
     }, CUDA_FOR_ASYNC);
 
     if(do_debug)
-    {
-        int m = params.m;
-        int n = params.n;
-        Real* F = state.F;
-        Real* U = state.U;
-        Real* grad_F = solver->debug_maps.grad_phi;
-        Real* grad_U = solver->debug_maps.grad_T;
-        Real* aniso = solver->debug_maps.aniso_factor;
-        cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
-            Real T = *at_mod(U, x, y, n, m);
-            Real Phi = *at_mod(F, x, y, n, m);
-
-            Real Phi_U = *at_mod(F, x, y + 1, n, m);
-            Real Phi_D = *at_mod(F, x, y - 1, n, m);
-            Real Phi_R = *at_mod(F, x + 1, y, n, m);
-            Real Phi_L = *at_mod(F, x - 1, y, n, m);
-
-            Real T_U = *at_mod(U, x, y + 1, n, m);
-            Real T_D = *at_mod(U, x, y - 1, n, m);
-            Real T_R = *at_mod(U, x + 1, y, n, m);
-            Real T_L = *at_mod(U, x - 1, y, n, m);
-
-            Real grad_Phi_x = (Phi_R - Phi_L);
-            Real grad_Phi_y = (Phi_U - Phi_D);
-            Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
-
-            Real grad_T_x = (T_R - T_L);
-            Real grad_T_y = (T_U - T_D);
-            Real grad_T_norm = hypotf(grad_T_x, grad_T_y);
-            
-            Real theta = atan2(grad_Phi_y, grad_Phi_x);
-            Real g_theta = 1.0f - params.S*cosf(params.m0*theta + params.theta0);
-
-            grad_F[x + y*m] = grad_Phi_norm;
-            grad_U[x + y*m] = grad_T_norm;
-            aniso[x + y*m] = g_theta;
-        });
-
-    }
+        explicit_solver_debug_step(solver, state, params);
 
     cache_free(&tag);
     CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+}
+
+#if 1
+typedef double (*RK4_Func)(double t, const double x, void* context);
+
+static double runge_kutta4_var(double t_ini, double x_ini, double T, double tau_ini, double delta, RK4_Func f, void* context)
+{
+    (void) delta;
+    double t = t_ini;
+    double tau = tau_ini;
+    double x = x_ini;
+
+    double n = 1;
+    for(;;)
+    {
+        bool last = false;
+        if(fabs(T - t) < fabs(tau))
+        {
+            tau = T - t;
+            last = true;
+        }
+        else
+        {
+            last = false;
+        }
+
+        double k1 = f(t, x, context);
+        double k2 = f(t + tau/3, x + tau/3*k1, context);
+        double k3 = f(t + tau/3, x + tau/6*(k1 + k2), context);
+        double k4 = f(t + tau/2, x + tau/8*(k1 + 3*k3), context);
+        double k5 = f(t + tau/1, x + tau*(0.5f*k1 - 1.5f*k3 + 2*k4), context);
+        
+        double epsilon = 0;
+        for(double i = 0; i < n; i++)
+        {
+            double curr = fabs(0.2f*k1 - 0.9f*k3 + 0.8f*k4 - 0.1f*k5);
+            epsilon = std::max(epsilon, curr);
+        }
+
+        //if(epsilon < delta)
+        {
+            x = x + tau*(1.0f/6*(k1 + k5) + 2.0f/3*k4);
+            t = t + tau;
+
+            if(last)
+                break;
+
+            if(epsilon == 0)
+                continue;
+        }
+
+        //tau = powf(delta / epsilon, 0.2f)* 4.0f/5*tau;
+    }
+
+    return x;
+}
+#endif
+
+double explicit_solver_rk4_adaptive_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+{
+    Cache_Tag tag = cache_tag_make();
+    int N = params.n * params.m;
+
+    static Real _initial_step = 0;
+    if(iter == 0)
+        _initial_step = params.dt;
+
+    Real tau = _initial_step;
+    Explicit_State steps[5] = {0};
+    for(int i = 0; i < STATIC_ARRAY_SIZE(steps); i++)
+    {
+        steps[i].F = cache_alloc(Real, N, &tag);
+        steps[i].U = cache_alloc(Real, N, &tag);
+        steps[i].m = params.m;
+        steps[i].n = params.n;
+    }
+
+    Real* Epsilon_F = cache_alloc(Real, N, &tag);
+    Real* Epsilon_U = cache_alloc(Real, N, &tag);
+    Real epsilon_F = 0;
+    Real epsilon_U = 0;
+
+    Explicit_State k1 = steps[0];
+    Explicit_State k2 = steps[1];
+    Explicit_State k3 = steps[2];
+    Explicit_State k4 = steps[3];
+    Explicit_State k5 = steps[4];
+
+    using W = Explicit_Blend_State;
+    explicit_solver_solve_lin_combination(&k1, params, W{1, state});
+
+    bool converged = false;
+    int i = 0;
+    int max_iters = MAX(MAX(params.T_max_iters, params.Phi_max_iters), 1);
+    Real used_tau = tau;
+    for(; i < max_iters && converged == false; i++)
+    {
+        // k1 = f(t, x);
+        // k2 = f(t + tau/3, x + tau/3*k1);
+        // k3 = f(t + tau/3, x + tau/6*(k1 + k2));
+        // k4 = f(t + tau/2, x + tau/8*(k1 + 3*k3));
+        // k5 = f(t + tau/1, x + tau*(0.5f*k1 - 1.5f*k3 + 2*k4));
+
+
+        // k1 = f(x);
+        // k2 = f(x + tau/3*k1);
+        // k3 = f(x + tau/6*k1 + tau/6*k2);
+        // k4 = f(x + tau/8*k1 + tau*3/8*k3));
+        // k5 = f(x + tau/2*k1 - tau*3/2*k3 + tau*2*k4));
+        
+        explicit_solver_solve_lin_combination(&k2, params, W{1, state}, W{tau/3, k1});
+        explicit_solver_solve_lin_combination(&k3, params, W{1, state}, W{tau/6, k1}, W{tau/6, k2});
+        explicit_solver_solve_lin_combination(&k4, params, W{1, state}, W{tau/8, k1}, W{tau*3/8, k3});
+        explicit_solver_solve_lin_combination(&k5, params, W{1, state}, W{tau/2, k1}, W{-tau*3/2, k3}, W{tau*2, k4});
+
+        cuda_for(0, params.n*params.m, [=]SHARED(int i){
+            Real F = 0.2*k1.F[i] - 0.9*k3.F[i] + 0.8*k4.F[i] - 0.1*k5.F[i];
+            Real U = 0.2*k1.U[i] - 0.9*k3.U[i] + 0.8*k4.U[i] - 0.1*k5.U[i];
+
+            Epsilon_F[i] = F >= 0 ? F : -F;
+            Epsilon_U[i] = U >= 0 ? U : -U;
+        });
+
+        epsilon_F = vector_max(Epsilon_F, N);
+        epsilon_U = vector_max(Epsilon_U, N);
+
+        if(epsilon_F < params.Phi_tolerance && epsilon_U < params.T_tolerance)
+            converged = true;
+
+        Real epsilon = MAX(epsilon_F + epsilon_U, 1e-8);
+        Real delta = MAX(params.Phi_tolerance + params.T_tolerance, 1e-8);
+        used_tau = tau;
+        tau = pow(delta / epsilon, 0.2)*4/5*tau;
+    }
+
+    Real* next_F = next_state->F;
+    Real* next_U = next_state->U;
+    cuda_for(0, params.n*params.m, [=]SHARED(int i){
+        next_F[i] = state.F[i] + used_tau*(1.0/6*(k1.F[i] + k5.F[i]) + 2.0/3*k4.F[i]);
+        next_U[i] = state.U[i] + used_tau*(1.0/6*(k1.U[i] + k5.U[i]) + 2.0/3*k4.U[i]);
+    });
+
+    LOG("SOLVER", converged ? LOG_DEBUG : LOG_WARN, "rk4-adaptive %s in %i iters with error F:%lf | U:%lf | tau:%le", converged ? "converged" : "diverged", i, epsilon_F, epsilon_U, used_tau);
+    _initial_step = tau;
+
+    if(do_debug)
+        explicit_solver_debug_step(solver, state, params);
+
+    cache_free(&tag);
+    CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+    return (double) used_tau;
 }
 
 void explicit_solver_get_maps(Explicit_Solver* solver, Explicit_State state, Sim_Map* maps, int map_count)
@@ -426,28 +638,6 @@ void explicit_solver_get_maps(Explicit_Solver* solver, Explicit_State state, Sim
     ASSIGN_MAP_NAMED(solver->debug_maps.aniso_factor, "aniso_factor");
     ASSIGN_MAP_NAMED(solver->debug_maps.reaction, "reaction");
     ASSIGN_MAP_NAMED(solver->debug_maps.step_residual, "step_residual");
-}
-
-
-
-//Will hand write my own version later. For now we trust in thrust *cymbal*
-#include <thrust/inner_product.h>
-#include <thrust/device_ptr.h>
-
-Real vector_dot_product(const Real *a, const Real *b, int n)
-{
-  // wrap raw pointers to device memory with device_ptr
-  thrust::device_ptr<const Real> d_a(a);
-  thrust::device_ptr<const Real> d_b(b);
-
-  // inner_product implements a mathematical dot product
-  return thrust::inner_product(d_a, d_a + n, d_b, 0.0);
-}
-
-Real vector_max(const Real *a, int N)
-{
-    thrust::device_ptr<const Real> d_a(a);
-    return *(thrust::max_element(d_a, d_a + N));
 }
 
 struct Cross_Matrix_Static {
@@ -692,6 +882,7 @@ void matrix_multiply(Real* output, const Real* A, const Real* B, int A_height, i
         }
     }
 }
+
 Real vector_get_avg_dist(const Real* a, const Real* b, int N)
 {
     Cache_Tag tag = cache_tag_make();
@@ -744,7 +935,7 @@ void semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
     }
 }
 
-void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solver, Real* F, Real* U, Real* U_base, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real* U, Real* U_base, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
     //79 with old explicit caching
 
@@ -754,6 +945,7 @@ void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solv
     int m = solver->m;
     int n = solver->n;
     int N = m*n;
+    Real gamma = 1;
 
     Real mK = dx * dy;
     Real a = params.a;
@@ -776,9 +968,9 @@ void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solv
 
     Anisotrophy_Matrix A_F = {0};
     A_F.anisotrophy = solver->maps.anisotrophy;
-    A_F.C_minus_one = 2*dt/(alpha*dx*dx) + 2*dt/(alpha*dy*dy);
-    A_F.X = -dt/(alpha*dx*dx);
-    A_F.Y = -dt/(alpha*dy*dy);
+    A_F.C_minus_one = 2*dt/(dx*dx) + 2*dt/(dy*dy);
+    A_F.X = -dt/(dx*dx);
+    A_F.Y = -dt/(dy*dy);
     A_F.m = m;
     A_F.n = n;
 
@@ -791,41 +983,82 @@ void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solv
     A_U.m = m;
     A_U.n = n;
 
-    cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
-        Real T = U[x + y*m];
-        Real Phi = F[x + y*m];
+    if(params.do_corrector_guess == false)
+    {
+        cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
+            Real T = U[x + y*m];
+            Real Phi = F[x + y*m];
 
-        Real Phi_U = *at_mod(F, x, y + 1, m, n);
-        Real Phi_D = *at_mod(F, x, y - 1, m, n);
-        Real Phi_R = *at_mod(F, x + 1, y, m, n);
-        Real Phi_L = *at_mod(F, x - 1, y, m, n);
+            Real Phi_U = *at_mod(F, x, y + 1, m, n);
+            Real Phi_D = *at_mod(F, x, y - 1, m, n);
+            Real Phi_R = *at_mod(F, x + 1, y, m, n);
+            Real Phi_L = *at_mod(F, x - 1, y, m, n);
 
-        Real grad_Phi_x = dy*(Phi_R - Phi_L);
-        Real grad_Phi_y = dx*(Phi_U - Phi_D);
-        Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
- 
-        Real g_theta = 1;
-        {
+            Real grad_Phi_x = dy*(Phi_R - Phi_L);
+            Real grad_Phi_y = dx*(Phi_U - Phi_D);
+            Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+    
             Real theta = atan2(grad_Phi_y, grad_Phi_x);
-            g_theta = 1.0f - S*cosf(m0*theta + theta0);
-        }
+            Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
 
-        // g_theta = 1;
+            // g_theta = 1;
 
-        Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
-        A_F.anisotrophy[x+y*m] = g_theta;
-        b_F[x + y*m] = Phi + dt/(xi*xi*alpha)*f;
-    });
+            Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
+            A_F.anisotrophy[x+y*m] = g_theta;
+            b_F[x + y*m] = Phi + dt/(xi*xi*alpha)*f;
+        });
+    }
+    else
+    {
+        cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
+            Real T = U[x + y*m];
+            Real T_U = *at_mod(U, x, y + 1, m, n);
+            Real T_D = *at_mod(U, x, y - 1, m, n);
+            Real T_R = *at_mod(U, x + 1, y, m, n);
+            Real T_L = *at_mod(U, x - 1, y, m, n);
+
+            Real Phi = F[x + y*m];
+            Real Phi_U = *at_mod(F, x, y + 1, m, n);
+            Real Phi_D = *at_mod(F, x, y - 1, m, n);
+            Real Phi_R = *at_mod(F, x + 1, y, m, n);
+            Real Phi_L = *at_mod(F, x - 1, y, m, n);
+
+            Real grad_Phi_x = (Phi_R - Phi_L)/(2*dx);
+            Real grad_Phi_y = (Phi_U - Phi_D)/(2*dy);
+            Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+
+            Real theta = atan2(grad_Phi_y, grad_Phi_x);;
+            Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
+
+            Real laplace_T = (T_L - 2*T + T_R)/(dx*dx) + (T_D - 2*T + T_U)/(dy*dy);
+            Real laplace_Phi = (Phi_L - 2*Phi + Phi_R)/(dx*dx) + (Phi_D - 2*Phi + Phi_U)/(dy*dy);
+
+            Real f0_tilda = g_theta*a/(xi*xi * alpha)*f0(Phi);
+            Real f1_tilda = b*beta/alpha*hypotf(grad_Phi_x, grad_Phi_y);
+            Real f2_tilda = g_theta/alpha;
+            Real d_tilda = 1 + f1_tilda*dt*L;
+
+            Real right = Phi + dt/d_tilda*((1-gamma)*f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm + dt*laplace_T));
+            Real factor = gamma/d_tilda*f2_tilda; 
+            //@NOTE missing dt here because we add it up in the matrix declaration
+            // to make the convergece criteria more apparent.
+            // Real factor = gamma*dt/d_tilda*f2_tilda;
+            A_F.anisotrophy[x+y*m] = factor;
+            b_F[x + y*m] = right;
+        });
+    }
 
     Conjugate_Gardient_Params solver_params = {0};
     solver_params.epsilon = (Real) 1.0e-12;
-    solver_params.tolerance = (Real) 1.0e-7;
-    solver_params.max_iters = 20;
+    solver_params.tolerance = params.Phi_tolerance;
+    solver_params.max_iters = params.Phi_max_iters;
     solver_params.initial_value_or_null = F;
 
     //Solve A_F*F_next = b_F
     Conjugate_Gardient_Convergence F_converged = conjugate_gradient_solve(&A_F, F_next, b_F, N, anisotrophy_matrix_multiply, &solver_params);
-    printf("%lli F %s in %i iters with error %lf\n", (long long) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, F_converged.error);
+    LOG_DEBUG("SOLVER", "%lli F %s in %i iters with error %lf\n", (long long) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, F_converged.error);
+
+    //@TODO: crank-nicolson version see NME2+TKO notebook
 
     //Calculate b_U
     cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
@@ -836,11 +1069,13 @@ void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solv
         b_U[x + y*m] = T + L*(Phi_next - Phi);
     });
 
+    solver_params.tolerance = params.T_tolerance;
+    solver_params.max_iters = params.T_max_iters;
     solver_params.initial_value_or_null = U_base;
 
     //Solve A_U*U_next = b_U
     Conjugate_Gardient_Convergence U_converged = conjugate_gradient_solve(&A_U, U_next, b_U, N, cross_matrix_static_multiply, &solver_params);
-    printf("%lli U %s in %i iters with error %lf\n", (long long) iter, U_converged.converged ? "converged" : "diverged", U_converged.iters, U_converged.error);
+    LOG_DEBUG("SOLVER", "%lli U %s in %i iters with error %lf\n", (long long) iter, U_converged.converged ? "converged" : "diverged", U_converged.iters, U_converged.error);
 
     if(do_debug)
     {
@@ -858,8 +1093,8 @@ void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solv
             Real back_error_F_max = vector_get_max_dist(AfF, b_F, N);
             Real back_error_U_max = vector_get_max_dist(AuU, b_U, N);
 
-            printf("AVG | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F, back_error_U, solver_params.tolerance*2);
-            printf("MAX | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F_max, back_error_U_max, solver_params.tolerance*2);
+            LOG_DEBUG("SOLVER", "AVG | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F, back_error_U, solver_params.tolerance*2);
+            LOG_DEBUG("SOLVER", "MAX | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F_max, back_error_U_max, solver_params.tolerance*2);
         }
 
         Real* grad_F = solver->debug_maps.grad_phi;
@@ -894,7 +1129,7 @@ void semi_implicit_solver_step_based_sunglasses_emoji(Semi_Implicit_Solver* solv
 
 void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
-    semi_implicit_solver_step_based_sunglasses_emoji(solver, state.F, state.U, state.U, next_state, params, iter, do_debug);
+    semi_implicit_solver_step_based(solver, state.F, state.U, state.U, next_state, params, iter, do_debug);
 }
 
 Real vector_euclid_norm(Real* vector, int N)
@@ -907,31 +1142,49 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
 {
     Cache_Tag tag = cache_tag_make();
 
-    int max_correctors = 8;
     int N = params.n * params.m;
 
-    enum {STEPS = 2};
-    Explicit_State steps[STEPS] = {0};
-    for(int i = 0; i < STEPS; i++)
+    Explicit_State temp_state = {0};
+    temp_state.F = cache_alloc(Real, N, &tag);
+    temp_state.U = cache_alloc(Real, N, &tag);
+    temp_state.m = params.m;
+    temp_state.n = params.n;
+
+    static int last_placement = 0;
+
+    //Init states in such a way that the resutl will already be in 
+    // next_state (thus no need to copy)
+    Explicit_State steps[2] = {0};
+    if(last_placement % 2 == 0)
     {
-        steps[i].F = cache_alloc(Real, N, &tag);
-        steps[i].U = cache_alloc(Real, N, &tag);
-        steps[i].m = params.m;
-        steps[i].n = params.n;
+        steps[0] = next_state;
+        steps[1] = temp_state;
     }
+    else
+    {
+        steps[1] = next_state;
+        steps[0] = temp_state;
+    }
+
     Real* step_resiudal = cache_alloc(Real, N, &tag);
+    
+    Real step_residual_avg_error = 0;
+    Real step_residual_max_error = 0;
+    bool converged = false;
     
     semi_implicit_solver_step(solver, state, steps[0], params, iter, false);
     int k = 0;
-    for(; k < max_correctors; k++)
+    for(; k < params.corrector_max_iters; k++)
     {
-        Explicit_State step_curr = steps[MOD(k, STEPS)];
-        Explicit_State step_next = steps[MOD(k + 1, STEPS)];
-        semi_implicit_solver_step_based_sunglasses_emoji(solver, state.F, step_curr.U, state.U, step_next, params, iter, false);
+        Explicit_State step_curr = steps[MOD(k, 2)];
+        Explicit_State step_next = steps[MOD(k + 1, 2)];
+
+        semi_implicit_solver_step_based(solver, state.F, step_curr.U, state.U, step_next, params, iter, false);
 
         cuda_for(0, N, [=]SHARED(int i){
-            //fabs is broken and linking the wrong function which results in
+            //@NOTE:fabs is broken and linking the wrong function which results in
             // illegal memory access ?!
+            //@NOTE: abs mostly for debug view
             Real diff = step_curr.F[i] - step_next.F[i]; 
             step_resiudal[i] = diff >= 0 ? diff : -diff;
         });
@@ -940,15 +1193,32 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
         if(k < STATIC_ARRAY_SIZE(solver->debug_maps.step_residuals))
             CUDA_DEBUG_TEST(cudaMemcpyAsync(solver->debug_maps.step_residuals[k], step_resiudal, N*sizeof(Real), cudaMemcpyDeviceToDevice));
 
-        Real step_residual_avg_error = vector_euclid_norm(step_resiudal, N);
-        Real step_residual_max_error = vector_max(step_resiudal, N);
-        LOG_INFO("SOLVER", "step residual avg: %.10lf | max: %.10lf", step_residual_avg_error, step_residual_max_error);
+        step_residual_avg_error = vector_euclid_norm(step_resiudal, N);
+        step_residual_max_error = vector_max(step_resiudal, N);
+        LOG_DEBUG(">SOLVER", "step residual loop: %i | avg: %lf | max: %lf | tolerance: %lf", k, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
+        if(step_residual_avg_error < params.corrector_tolerance)
+        {
+            k ++;
+            converged = true;
+            break;
+        }
     }
     
-    //@TODO: we can make this in such a way where this step is unnecessary at least 50% of the time!
-    int final_i = MOD(k + 1, STEPS);
-    CUDA_DEBUG_TEST(cudaMemcpyAsync(next_state.F, steps[final_i].F, N*sizeof(Real), cudaMemcpyDeviceToDevice));
-    CUDA_DEBUG_TEST(cudaMemcpyAsync(next_state.U, steps[final_i].U, N*sizeof(Real), cudaMemcpyDeviceToDevice));
+    last_placement = k;
+
+    //Debug only print
+    step_residual_max_error = vector_max(step_resiudal, N);
+    LOG_DEBUG("SOLVER", "step residual %s iters: %i | avg: %lf | max: %lf | tolerance: %lf", 
+        converged ? "converged" : "diverged", k + 1, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
+
+    //If the ended on step is already next_state dont copy anything
+    Explicit_State final_step = steps[MOD(k, 2)];
+    if(final_step.F != next_state.F)
+    {
+        CUDA_DEBUG_TEST(cudaMemcpyAsync(next_state.F, final_step.F, N*sizeof(Real), cudaMemcpyDeviceToDevice));
+        CUDA_DEBUG_TEST(cudaMemcpyAsync(next_state.U, final_step.U, N*sizeof(Real), cudaMemcpyDeviceToDevice));
+    }
+
     cache_free(&tag);
 }
 
@@ -1305,11 +1575,12 @@ extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Typ
         sim_state_reinit(&states[i], type, n, m);
 }
 
-extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug)
+extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug)
 {
     int required_history = solver_type_required_history(solver->type);
     const char* solver_name = solver_type_to_cstring(solver->type);
     
+    double step_by = params.dt;
     bool okay = true;
     if(states_count < required_history)
     {
@@ -1348,11 +1619,14 @@ extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int state
             } break;
 
             case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: {
-                explicit_solver_rk4_step(&solver->expli, state.expli, &next_state.expli, params, iter, do_debug);
+                step_by = explicit_solver_rk4_adaptive_step(&solver->expli, state.expli, &next_state.expli, params, iter, do_debug);
             } break;
 
             case SOLVER_TYPE_SEMI_IMPLICIT: {
-                semi_implicit_solver_step_corrector(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
+                if(params.do_corrector_loop)
+                    semi_implicit_solver_step_corrector(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
+                else
+                    semi_implicit_solver_step(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
             } break;
 
             case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
@@ -1362,6 +1636,8 @@ extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int state
             default: assert(false);
         };
     }
+
+    return step_by;
 }
 
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count)

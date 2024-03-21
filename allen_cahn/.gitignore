@@ -6,3 +6,5 @@ snapshots/
 snapshots
 build/
 build
+temp/
+showcase/

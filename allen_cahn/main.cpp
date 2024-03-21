@@ -10,8 +10,8 @@
 #include <stddef.h>
 
 #include "assert.h"
-#include <cuda_runtime.h> //without this it fails to link
-#include <netcdf>
+#include <cuda_runtime.h> 
+#include <netcdf.h>
 
 const double FPS_DISPLAY_FREQ = 50000;
 const double RENDER_FREQ = 30;
@@ -253,11 +253,11 @@ int main()
         int snapshot_times_i = 0;
         bool end_reached = false;
 
+        double curr_real_time = 0;
 	    while (!glfwWindowShouldClose(window))
         {
             double frame_start_time = clock_s();
 
-            double curr_real_time = (double) app->iter * config.params.dt;
             double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshots.snapshot_every;
             double next_snapshot_times = (double) (snapshot_times_i + 1) * config.stop_after / config.snapshots.snapshot_times;
 
@@ -284,7 +284,6 @@ int main()
             bool update_frame_time_display = frame_start_time - time_display_last_time > 1.0/FPS_DISPLAY_FREQ;
             bool poll_events = frame_start_time - poll_last_time > 1.0/POLL_FREQ;
 
-            //@TODO: Add idle and not idle frequency to lower resource usage!
             if(update_screen)
             {
                 render_last_time = frame_start_time;
@@ -318,7 +317,7 @@ int main()
                 app->remaining_steps -= 1;
 
                 double solver_start_time = clock_s();
-                sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
+                curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
                 double solver_end_time = clock_s();
 
                 processing_time = solver_end_time - solver_start_time;
@@ -355,11 +354,12 @@ int main()
         bool end_reached = false;
         double start_time = clock_s();
         double last_notif_time = 0;
+
+        double curr_real_time = 0;
         for(; app->iter <= iters; app->iter++)
         {
             double now = clock_s();
             
-            double curr_real_time = (double) app->iter * config.params.dt;
             double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshots.snapshot_every;
             double next_snapshot_times = (double) (snapshot_times_i + 1) * config.stop_after / config.snapshots.snapshot_times;
 
@@ -379,13 +379,13 @@ int main()
             if(now - last_notif_time > 1 || app->iter == iters || app->iter == 0)
             {
                 last_notif_time = now;
-                LOG_INFO("app", "... completed %lf%%", (int) (app->iter * 100 / iters));
+                LOG_INFO("app", "... completed %2lf%%", (double) app->iter * 100 / iters);
 
                 if(app->iter == iters)
                     break;
             }
 
-            sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
+            curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
@@ -437,6 +437,16 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
         {
             app->config.linear_filtering = !app->config.linear_filtering;
             LOG_INFO("APP", "Linear FIltering %s", app->config.linear_filtering ? "true" : "false");
+        }
+        if(key == GLFW_KEY_C)
+        {
+            app->config.params.do_corrector_loop = !app->config.params.do_corrector_loop;
+            LOG_INFO("APP", "Corrector loop %s", app->config.params.do_corrector_loop ? "true" : "false");
+        }
+        if(key == GLFW_KEY_S)
+        {
+            LOG_INFO("APP", "On demand snapshot triggered");
+            save_netcfd_file(app);
         }
         if(key == GLFW_KEY_R)
         {

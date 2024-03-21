@@ -390,8 +390,9 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_real(pairs, &params->S, "params", "S")
             & (uint8_t) key_value_get_real(pairs, &params->m0, "params", "m")
             & (uint8_t) key_value_get_real(pairs, &params->theta0, "params", "theta0")
-            & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "params", "do_anisotropy");
-            
+            & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "params", "do_anisotropy")
+            ;
+
         uint8_t matched_simulation = true
             & (uint8_t) key_value_get_int(pairs, &params->m, "simulation", "mesh_size_x")
             & (uint8_t) key_value_get_int(pairs, &params->n, "simulation", "mesh_size_y")
@@ -401,6 +402,8 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_int(pairs, &params->T_max_iters, "simulation", "T_max_iters")
             & (uint8_t) key_value_get_int(pairs, &params->Phi_max_iters, "simulation", "Phi_max_iters")
             & (uint8_t) key_value_get_int(pairs, &params->corrector_max_iters, "simulation", "corrector_max_iters")
+            & (uint8_t) key_value_get_bool(pairs, &params->do_corrector_loop, "simulation", "do_corrector_loop")
+            & (uint8_t) key_value_get_bool(pairs, &params->do_corrector_guess, "simulation", "do_corrector_guess")
             & (uint8_t) key_value_get_real(pairs, &params->dt, "simulation", "dt");
             
         uint8_t matched_initial = true
@@ -435,6 +438,8 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
         state = matched_initial && matched_snaps && matched_simulation && matched_params && matched_program;
         if(state == false)
             LOG_ERROR("config", "couldnt find or parse some config entries. Config is only partially loaded!");
+        else
+            LOG_OKAY("config", "config successfully read!");
     }
 
     return state;

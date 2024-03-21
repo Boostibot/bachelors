@@ -55,9 +55,13 @@ typedef struct Allen_Cahn_Params{
     Real T_tolerance;
     Real Phi_tolerance;
     Real corrector_tolerance;
+    
     int T_max_iters;
     int Phi_max_iters;
     int corrector_max_iters;
+
+    bool do_corrector_loop;
+    bool do_corrector_guess;
 } Allen_Cahn_Params;
 
 typedef enum Solver_Type{
@@ -204,7 +208,7 @@ typedef struct Sim_Map {
 extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m);
 extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m);
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count);
-extern "C" void sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug);
+extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug);
 
 typedef enum {
     MODIFY_UPLOAD,

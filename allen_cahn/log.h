@@ -9,7 +9,7 @@ enum {
     LOG_ENUM_MAX = 63,  //This is the maximum value log types are allowed to have without being ignored.
     LOG_FLUSH = 63,     //only flushes the log but doesnt log anything
     LOG_INFO = 0,       //Used to log general info.
-    LOG_SUCCESS = 1,    //Used to log the opposites of errors
+    LOG_OKAY = 1,    //Used to log the opposites of errors
     LOG_WARN = 2,       //Used to log near error conditions
     LOG_ERROR = 3,      //Used to log errors
     LOG_FATAL = 4,      //Used to log errors just before giving up some important action
@@ -146,7 +146,7 @@ const char* log_type_to_string(Log_Type type)
     {
         case LOG_FLUSH: return "FLUSH"; break;
         case LOG_INFO: return "INFO"; break;
-        case LOG_SUCCESS: return "SUCC"; break;
+        case LOG_OKAY: return "SUCC"; break;
         case LOG_WARN: return "WARN"; break;
         case LOG_ERROR: return "ERROR"; break;
         case LOG_FATAL: return "FATAL"; break;
@@ -194,7 +194,7 @@ static void def_logger_func(Logger* logger, const char* module, Log_Type type, s
         color_mode = ANSI_COLOR_BRIGHT_RED;
     else if(type == LOG_WARN)
         color_mode = ANSI_COLOR_YELLOW;
-    else if(type == LOG_SUCCESS)
+    else if(type == LOG_OKAY)
         color_mode = ANSI_COLOR_GREEN;
     else if(type == LOG_TRACE || type == LOG_DEBUG)
         color_mode = ANSI_COLOR_GRAY;
