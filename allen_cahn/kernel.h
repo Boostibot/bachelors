@@ -46,6 +46,7 @@ typedef struct Allen_Cahn_Params{
     Real beta;
     Real Tm; //melting point
     Real Tinit; //currenlty unsused
+    Real gamma; //Crank-Nicolson factor: 
 
     Real S; //anisotrophy strength
     Real m0; //anisotrophy frequency (?)

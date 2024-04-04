@@ -169,12 +169,11 @@ SHARED Real f0(Real phi)
 	return phi*(1 - phi)*(phi - 1.0f/2);
 }
 
-SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil input, Allen_Cahn_Params params, Explicit_Solve_Debug* debug_or_null)
+SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil input, Explicit_Solve_Stencil base, Allen_Cahn_Params params, Explicit_Solve_Debug* debug_or_null)
 {
     Real dx = (Real) params.L0 / params.m;
     Real dy = (Real) params.L0 / params.n;
 
-    //@NOTE: dont you wish we had odin lang using in C?
     Real a = params.a;
     Real b = params.b;
     Real alpha = params.alpha;
@@ -206,9 +205,12 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil in
     Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
 
     Real laplace_T = (T_L - 2*T + T_R)/(dx*dx) + (T_D - 2*T + T_U)/(dy*dy);
+    Real laplace_T_base = (base.T_L - 2*base.T + base.T_R)/(dx*dx) + (base.T_D - 2*base.T + base.T_U)/(dy*dy);
     Real laplace_Phi = (Phi_L - 2*Phi + Phi_R)/(dx*dx) + (Phi_D - 2*Phi + Phi_U)/(dy*dy);
 
+    // g_theta = 1;
     Real f0_tilda = g_theta*a/(xi*xi * alpha)*f0(Phi);
+    // Real f0_tilda = a/(xi*xi * alpha)*f0(Phi);
     Real f1_tilda = b*beta/alpha*hypotf(grad_Phi_x, grad_Phi_y);
     Real f2_tilda = g_theta/alpha;
     Real d_tilda = 1 + f1_tilda*dt*L;
@@ -218,7 +220,7 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil in
         dt_Phi = (f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm + dt*laplace_T))/d_tilda;
     else
         dt_Phi = f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm);
-    Real dt_T = laplace_T + L*dt_Phi; 
+    Real dt_T = laplace_T_base + L*dt_Phi; 
 
     if(debug_or_null)
     {
@@ -271,7 +273,7 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
             Explicit_Solve_Debug debug = {0};
             Explicit_Solve_Stencil input = explicit_solve_stencil_mod(Phi, T, x, y, n, m);
-            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, params, &debug);
+            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, input, params, &debug);
 
             //Newton update
             Phi_next[x + y*m] = input.Phi + solved.dt_Phi*params.dt;
@@ -287,46 +289,10 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
     {
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
             Explicit_Solve_Stencil input = explicit_solve_stencil_mod(Phi, T, x, y, n, m);
-            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, params, NULL);
+            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, input, params, NULL);
 
             Phi_next[x + y*m] = input.Phi + solved.dt_Phi*params.dt;
             T_next[x + y*m] = input.T + solved.dt_T*params.dt;
-        });
-    }
-}
-
-void explicit_solver_rk4_dt(Explicit_State* out, Explicit_State base_state, Real blend_factor, Explicit_State half_state, Allen_Cahn_Params params)
-{
-    int m = params.m;
-    int n = params.n;
-    Real* out_F = out->F;
-    Real* out_U = out->U;
-
-    //If blend fatcor == 0 no point in loading extra memory...
-    if(blend_factor == 0)
-    {
-        cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
-            Explicit_Solve_Stencil input_base = explicit_solve_stencil_mod(base_state.F, base_state.U, x, y, n, m);
-            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input_base, params, NULL);
-
-            out_F[x + y*m] = solved.dt_Phi;
-            out_U[x + y*m] = solved.dt_T;
-        });
-    }
-    else
-    {
-        cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
-            Explicit_Solve_Stencil input_base = explicit_solve_stencil_mod(base_state.F, base_state.U, x, y, n, m);
-            Explicit_Solve_Stencil input_half = explicit_solve_stencil_mod(half_state.F, half_state.U, x, y, n, m);
-            Explicit_Solve_Stencil input_blend = {0};
-
-            for(int i = 0; i < sizeof(input_blend.vals) / sizeof(input_blend.vals[0]); i++)
-                input_blend.vals[i] = input_base.vals[i] + blend_factor*input_half.vals[i];
-
-            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input_blend, params, NULL);
-
-            out_F[x + y*m] = solved.dt_Phi;
-            out_U[x + y*m] = solved.dt_T;
         });
     }
 }
@@ -357,7 +323,7 @@ void explicit_solver_solve_lin_combination(Explicit_State* out, Allen_Cahn_Param
                 blend.vals[i] += weight*input.vals[i];
         }
 
-        Explicit_Solve_Result solved = allen_cahn_explicit_solve(blend, params, NULL);
+        Explicit_Solve_Result solved = allen_cahn_explicit_solve(blend, blend, params, NULL);
 
         out_F[x + y*m] = solved.dt_Phi;
         out_U[x + y*m] = solved.dt_T;
@@ -404,10 +370,9 @@ void explicit_solver_debug_step(Explicit_Solver* solver, Explicit_State state, A
 
 }
 
-extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
     Cache_Tag tag = cache_tag_make();
-    Explicit_State empty = {0};
     int N = params.n * params.m;
 
     Explicit_State steps[4] = {0};
@@ -419,35 +384,17 @@ extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State
         steps[i].n = params.n;
     }
 
-    // static Explicit_State steps[4] = {0};
-    // if(steps[0].m != params.m || steps[0].n != params.n)
-    // {
-    //     for(int i = 0; i < STATIC_ARRAY_SIZE(steps); i++)
-    //         explicit_state_resize(&steps[i], params.n, params.n);
-    // }
-
     Explicit_State k1 = steps[0];
     Explicit_State k2 = steps[1];
     Explicit_State k3 = steps[2];
     Explicit_State k4 = steps[3];
 
     Real dt = params.dt;
-    if(0)
-    {
-        explicit_solver_rk4_dt(&k1, state, dt * 0, empty, params);
-        explicit_solver_rk4_dt(&k2, state, dt * 0.5, k1, params);
-        explicit_solver_rk4_dt(&k3, state, dt * 0.5, k2, params);
-        explicit_solver_rk4_dt(&k4, state, dt * 1, k3, params);
-    }
-    else
-    {
-        using W = Explicit_Blend_State;
-        explicit_solver_solve_lin_combination(&k1, params, W{1, state});
-        explicit_solver_solve_lin_combination(&k2, params, W{1, state}, W{dt * 0.5, k1});
-        explicit_solver_solve_lin_combination(&k3, params, W{1, state}, W{dt * 0.5, k2});
-        explicit_solver_solve_lin_combination(&k4, params, W{1, state}, W{dt * 1, k3});
-    }
-    
+    using W = Explicit_Blend_State;
+    explicit_solver_solve_lin_combination(&k1, params, W{1, state});
+    explicit_solver_solve_lin_combination(&k2, params, W{1, state}, W{dt * 0.5, k1});
+    explicit_solver_solve_lin_combination(&k3, params, W{1, state}, W{dt * 0.5, k2});
+    explicit_solver_solve_lin_combination(&k4, params, W{1, state}, W{dt * 1, k3});
 
     Real* out_F = next_state->F;
     Real* out_U = next_state->U;
@@ -463,7 +410,7 @@ extern "C" void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State
     CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
 
-#if 1
+#if 0
 typedef double (*RK4_Func)(double t, const double x, void* context);
 
 static double runge_kutta4_var(double t_ini, double x_ini, double T, double tau_ini, double delta, RK4_Func f, void* context)
@@ -937,15 +884,12 @@ void semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
 
 void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real* U, Real* U_base, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
-    //79 with old explicit caching
-
     Real dx = (Real) params.L0 / solver->m;
     Real dy = (Real) params.L0 / solver->n;
 
     int m = solver->m;
     int n = solver->n;
     int N = m*n;
-    Real gamma = 1;
 
     Real mK = dx * dy;
     Real a = params.a;
@@ -959,6 +903,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
     Real S = params.S; 
     Real m0 = params.m0; 
     Real theta0 = params.theta0;
+    Real gamma = params.gamma;
     
     Real* F_next = next_state.F;
     Real* U_next = next_state.U;
@@ -1003,7 +948,8 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
             // g_theta = 1;
 
-            Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
+            // Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
+            Real f = a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
             A_F.anisotrophy[x+y*m] = g_theta;
             b_F[x + y*m] = Phi + dt/(xi*xi*alpha)*f;
         });
@@ -1066,7 +1012,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
         Real Phi = *at_mod(F, x, y, n, m);
         Real Phi_next = *at_mod(F_next, x, y, n, m);
 
-        b_U[x + y*m] = T + L*(Phi_next - Phi);
+        b_U[x + y*m] = T + L*(Phi_next - Phi) + dt*(1-gamma)*T;
     });
 
     solver_params.tolerance = params.T_tolerance;
@@ -1141,7 +1087,6 @@ Real vector_euclid_norm(Real* vector, int N)
 void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
     Cache_Tag tag = cache_tag_make();
-
     int N = params.n * params.m;
 
     Explicit_State temp_state = {0};
@@ -1179,6 +1124,7 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
         Explicit_State step_curr = steps[MOD(k, 2)];
         Explicit_State step_next = steps[MOD(k + 1, 2)];
 
+        log_group();
         semi_implicit_solver_step_based(solver, state.F, step_curr.U, state.U, step_next, params, iter, false);
 
         cuda_for(0, N, [=]SHARED(int i){
@@ -1195,13 +1141,15 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
 
         step_residual_avg_error = vector_euclid_norm(step_resiudal, N);
         step_residual_max_error = vector_max(step_resiudal, N);
-        LOG_DEBUG(">SOLVER", "step residual loop: %i | avg: %lf | max: %lf | tolerance: %lf", k, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
+        LOG_DEBUG("SOLVER", "step residual loop: %i | avg: %lf | max: %lf | tolerance: %lf", k, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
         if(step_residual_avg_error < params.corrector_tolerance)
         {
             k ++;
             converged = true;
             break;
         }
+
+        log_ungroup();
     }
     
     last_placement = k;
