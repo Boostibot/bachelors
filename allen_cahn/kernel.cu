@@ -52,6 +52,62 @@ void cuda_for_2D(int from_x, int from_y, int to_x, int to_y, Function func, int 
         CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
 
+struct Random_Map_State {
+    Real* map;
+    uint32_t* state;
+    uint64_t seed;
+    uint64_t N; 
+    uint64_t iteration;
+};
+
+SHARED uint32_t pcg_hash(uint32_t input)
+{
+    uint32_t state = input * 747796405u + 2891336453u;
+    uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+SHARED uint32_t pcg_rand(uint32_t* rng_state)
+{
+    uint32_t state = *rng_state;
+    *rng_state = *rng_state * 747796405u + 2891336453u;
+    uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+SHARED Real uint32_to_norm_real(uint32_t val)
+{
+    Real x = (Real) val / (Real) UINT32_MAX;
+    return x;
+}
+
+void random_map_seed(Random_Map_State* state, uint64_t seed)
+{
+    uint32_t* rand = state->state;
+    Real* rand_real = state->map;
+    state->iteration = 0;
+    cuda_for(0, (int)state->N, [=]SHARED(int i) {
+        uint32_t hashed_index = pcg_hash((uint32_t) i);
+        uint32_t fold = (uint32_t) seed ^ (uint32_t) (seed >> 32);
+
+        uint32_t hashed_together = pcg_hash(hashed_index ^ fold);
+        rand[i] = hashed_together;
+        rand_real[i] = uint32_to_norm_real(hashed_together);
+    });
+}
+
+void random_map_next(Random_Map_State* state)
+{
+    uint32_t* rand = state->state;
+    Real* rand_real = state->map;
+    state->iteration += 1;
+    cuda_for(0, (int)state->N, [=]SHARED(int i) {
+        uint32_t val = pcg_rand(&rand[i]); 
+        rand_real[i] = uint32_to_norm_real(val);
+    });
+}
+
+#if 1
 //Will hand write my own version later. For now we trust in thrust *cymbal*
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
@@ -71,6 +127,7 @@ Real vector_max(const Real *a, int N)
     thrust::device_ptr<const Real> d_a(a);
     return *(thrust::max_element(d_a, d_a + N));
 }
+
 
 SHARED Real* at_mod(Real* map, int x, int y, int n, int m)
 {
@@ -208,9 +265,7 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil in
     Real laplace_T_base = (base.T_L - 2*base.T + base.T_R)/(dx*dx) + (base.T_D - 2*base.T + base.T_U)/(dy*dy);
     Real laplace_Phi = (Phi_L - 2*Phi + Phi_R)/(dx*dx) + (Phi_D - 2*Phi + Phi_U)/(dy*dy);
 
-    // g_theta = 1;
     Real f0_tilda = g_theta*a/(xi*xi * alpha)*f0(Phi);
-    // Real f0_tilda = a/(xi*xi * alpha)*f0(Phi);
     Real f1_tilda = b*beta/alpha*hypotf(grad_Phi_x, grad_Phi_y);
     Real f2_tilda = g_theta/alpha;
     Real d_tilda = 1 + f1_tilda*dt*L;
@@ -947,9 +1002,8 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
             Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
 
             // g_theta = 1;
-
-            // Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
-            Real f = a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
+            Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
+            // Real f = a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
             A_F.anisotrophy[x+y*m] = g_theta;
             b_F[x + y*m] = Phi + dt/(xi*xi*alpha)*f;
         });
@@ -1616,3 +1670,684 @@ extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int s
         default: assert(false);
     };
 }
+
+
+extern "C" void benchmark_reduce_kernels(int N)
+{
+
+    (void) N;
+}
+#else
+
+extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m) {}
+extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m) {}
+extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count) {}
+extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug) {}
+
+extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify) {}
+extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify) {}
+extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t size, Sim_Modify modify) {}
+
+
+enum {
+    WARP_SIZE = 32, 
+    // We use a constant. If this is not the case we will 'need' a different algorhimt anyway. 
+    // The PTX codegen treats warpSize as 'runtime immediate constant' which from my undertanding
+    // is a special constat accesible through its name 'mov.u32 %r6, WARP_SZ;'. 
+    // In many contexts having it be a immediate constant is not enough. 
+    // For example when doing 'x % warpSize == 0' the code will emit 'rem.s32' instruction which is
+    // EXTREMELY costly (on GPUs even more than CPUs!) compared to the single binary 'and.b32' emmited 
+    // in case of 'x % WARP_SIZE == 0'.
+
+    // If you would need to make the below code a bit more "future proof" you could make WARP_SIZE into a 
+    // template argument. However we really dont fear this to cahnge anytime soon since many functions
+    // such as __activemask(), __ballot_sync() or anything else producing lane mask, operates on u32 which 
+    // assumes WARP_SIZE == 32.
+};
+
+enum {
+    REDUCE_WARP_GATHER,
+    REDUCE_SHARED_ONLY_FOLD,
+    REDUCE_WARP_ONLY_FOLD,
+    REDUCE_SAMPLES_VERSION,
+};
+
+
+// Utility class used to avoid linker errors with extern
+// unsized shared memory arrays with templated type
+template <class T>
+struct SharedMemory {
+  __device__ inline operator T *() {
+    extern __shared__ int __smem[];
+    return (T *)__smem;
+  }
+
+  __device__ inline operator const T *() const {
+    extern __shared__ int __smem[];
+    return (T *)__smem;
+  }
+};
+
+// specialize for double to avoid unaligned memory
+// access compile errors
+template <>
+struct SharedMemory<double> {
+  __device__ inline operator double *() {
+    extern __shared__ double __smem_d[];
+    return (double *)__smem_d;
+  }
+
+  __device__ inline operator const double *() const {
+    extern __shared__ double __smem_d[];
+    return (double *)__smem_d;
+  }
+};
+
+template <class T>
+__device__ __forceinline__ T warpReduceSum(unsigned int mask, T mySum) {
+  for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+    mySum += __shfl_down_sync(mask, mySum, offset);
+  }
+  return mySum;
+}
+
+template <typename T, unsigned int blockSize, bool nIsPow2>
+__global__ void reduce7(const T *__restrict__ g_idata, T *__restrict__ g_odata,
+                        unsigned int n) {
+  T *sdata = SharedMemory<T>();
+
+  // perform first level of reduction,
+  // reading from global memory, writing to shared memory
+  unsigned int tid = threadIdx.x;
+  unsigned int gridSize = blockSize * gridDim.x;
+  unsigned int maskLength = (blockSize & 31);  // 31 = warpSize-1
+  maskLength = (maskLength > 0) ? (32 - maskLength) : maskLength;
+  const unsigned int mask = (0xffffffff) >> maskLength;
+
+  T mySum = 0;
+
+  // we reduce multiple elements per thread.  The number is determined by the
+  // number of active thread blocks (via gridDim).  More blocks will result
+  // in a larger gridSize and therefore fewer elements per thread
+  if (nIsPow2) {
+    unsigned int i = blockIdx.x * blockSize * 2 + threadIdx.x;
+    gridSize = gridSize << 1;
+
+    while (i < n) {
+      mySum += g_idata[i];
+      // ensure we don't read out of bounds -- this is optimized away for
+      // powerOf2 sized arrays
+      if ((i + blockSize) < n) {
+        mySum += g_idata[i + blockSize];
+      }
+      i += gridSize;
+    }
+  } else {
+    unsigned int i = blockIdx.x * blockSize + threadIdx.x;
+    while (i < n) {
+      mySum += g_idata[i];
+      i += gridSize;
+    }
+  }
+
+  // Reduce within warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
+  // SM 8.0
+  mySum = warpReduceSum<T>(mask, mySum);
+
+  // each thread puts its local sum into shared memory
+  if ((tid % warpSize) == 0) {
+    sdata[tid / warpSize] = mySum;
+  }
+
+  __syncthreads();
+
+  const unsigned int shmem_extent =
+      (blockSize / warpSize) > 0 ? (blockSize / warpSize) : 1;
+  const unsigned int ballot_result = __ballot_sync(mask, tid < shmem_extent);
+  if (tid < shmem_extent) {
+    mySum = sdata[tid];
+    // Reduce final warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
+    // SM 8.0
+    mySum = warpReduceSum<T>(ballot_result, mySum);
+  }
+
+  // write result for this block to global mem
+  if (tid == 0) {
+    g_odata[blockIdx.x] = mySum;
+  }
+}
+
+#if 0
+template<uint SHARED_ITEMS, uint GATHER_MULT, int FLAGS, typename Map_Func, typename Reduce_Func>
+__global__ void map_reduce_kernel(Real* __restrict__ reduced, Map_Func map, Reduce_Func reduce, Real identity_element, uint N)
+{
+    if(FLAGS & REDUCE_WARP_GATHER)
+        assert(SHARED_ITEMS*REDUCE_WARP_GATHER == blockDim.x);
+    else
+        assert(SHARED_ITEMS == blockDim.x);
+
+    assert(WARP_SIZE == warpSize);
+
+    //GATHER_MULT times because the first reduction is while loading to shared memory by doing GATHER_MULT iterations
+    uint segment_size = GATHER_MULT*SHARED_ITEMS;
+    uint ti = threadIdx.x;
+
+    __shared__ Real shared[SHARED_ITEMS];
+
+    for (uint segment = segment_size*blockIdx.x; ; segment += segment_size*gridDim.x) 
+    {
+        uint top_level_mask = __ballot_sync(0xffffffffU, segment + ti < N);
+        if(segment + ti >= N)
+        {
+            shared[ti] = identity_element;
+            break;
+        }
+
+        //Taken from: 
+
+        //We reduce each segment (2*SHARED_ITEMS = 256) into a single
+        // value. These single values must then be finally reduced 
+        // a) on the cpu
+        // b) by relaunching this kernel
+        // c) using atomics.
+        //
+        // We do either (a) or (b) depending on the count of the values. 
+        // If there are more then SHARED_ITEMS*X values we relaunch.
+
+        // 1 [--------------segment-----------------]|[--------------segment-----------------]
+        // 2 [--------shared------]                  |[--------shared------]                  
+        // 3 [---shared---]                          |[---shared---]                          
+        //   ...                                     |...                                       
+        // n [--warp--]                              |[--warp--]                              
+        //   ..                                      |...                                        
+        // m x                                       |x    
+
+        //Operations in shared memory index by threadIdx.x since shared memory is seperate for each block
+        // & threadIdx.x is the index within each block.
+        
+        Real sum = map(segment + ti);
+        for(uint k = 1; k < GATHER_MULT; k++)
+        {
+            if(segment + ti + k*SHARED_ITEMS < N)
+            {
+                Real other = map(segment + ti + k*SHARED_ITEMS);
+                sum = reduce(sum, other);
+            }
+        }
+
+        if(FLAGS & REDUCE_WARP_GATHER)
+        {
+            __syncwarp();
+            for(uint stride = WARP_SIZE/2; stride > 0; stride /= 2)
+                sum = reduce(sum, __shfl_down_sync(top_level_mask, sum, stride));
+
+            if(ti % WARP_SIZE == 0)
+                shared[ti / WARP_SIZE] = sum;
+        }
+        else
+        {
+            shared[ti] = sum;
+        }
+        __syncthreads();
+
+        if(FLAGS & REDUCE_SHARED_ONLY_FOLD)
+        {
+            for(uint stride = SHARED_ITEMS/2; stride > 0; stride /= 2)
+            {
+                if(ti < stride) 
+                    shared[ti] = reduce(shared[ti], shared[ti + stride]);
+                
+                __syncthreads();
+            }
+
+            if(ti == 0)
+                reduced[segment / segment_size] = shared[0];
+        }
+        else if(FLAGS & REDUCE_WARP_ONLY_FOLD)
+        {
+            assert(SHARED_ITEMS % WARP_SIZE == 0);
+
+            int iters = 0;
+            // for(uint big_stride = SHARED_ITEMS; big_stride > 1; big_stride = 1)
+            for(uint big_stride = MIN(SHARED_ITEMS, N); big_stride > 1; big_stride = DIV_CEIL(big_stride, WARP_SIZE))
+            {
+                assert(iters++ < 2);
+
+                if(ti < big_stride)
+                    sum = shared[ti];
+                else
+                    sum = identity_element;
+
+                // uint mask = __ballot_sync(top_level_mask, ti < big_stride);
+                // __syncwarp(mask); //@TODO: is this necessary here? probably not!
+                
+                __syncwarp(top_level_mask);
+                for(uint stride = WARP_SIZE/2; stride > 0; stride /= 2) 
+                    sum = reduce(sum, __shfl_down_sync(top_level_mask, sum, stride));
+
+                __syncthreads();
+                if(ti % WARP_SIZE == 0)
+                    shared[ti / WARP_SIZE] = sum;
+
+                __syncthreads();
+            }
+
+            if(ti == 0)
+                reduced[segment / segment_size] = shared[0];
+        }
+        else
+        {
+            assert(SHARED_ITEMS > WARP_SIZE);
+            for(uint stride = SHARED_ITEMS/2; stride > WARP_SIZE; stride /= 2)
+            {
+                if(ti < stride) 
+                    shared[ti] = reduce(shared[ti], shared[ti + stride]);
+                
+                __syncthreads();
+            }
+            
+            if(ti < WARP_SIZE) {
+                sum = reduce(shared[ti], shared[ti + WARP_SIZE]);
+                
+                for(uint stride = WARP_SIZE/2; stride > 0; stride /= 2)
+                    sum = reduce(sum, __shfl_down_sync(0xffffffffU, sum, stride));
+            }
+
+            //Store the partial result
+            if(ti == 0)
+                reduced[segment / segment_size] = sum;
+        }
+    }
+}
+#else
+template<uint SHARED_ITEMS, uint GATHER_MULT, int FLAGS>
+__global__ void map_reduce_kernel(Real* __restrict__ reduced, Real* __restrict__ input, uint N)
+{
+    //GATHER_MULT times because the first reduction is while loading to shared memory by doing GATHER_MULT iterations
+    uint ti = threadIdx.x;
+
+    __shared__ Real shared[SHARED_ITEMS];
+
+    Real sum = 0;
+    uint i = SHARED_ITEMS*blockIdx.x + ti;
+    while(i < N)
+    {
+        sum += input[i];
+        i += SHARED_ITEMS*gridDim.x;
+    }
+
+    // __syncwarp();
+    for(uint stride = WARP_SIZE/2; stride > 0; stride /= 2)
+        sum = sum + __shfl_down_sync(0xffffffffU, sum, stride);
+
+    if(ti % WARP_SIZE == 0)
+        shared[ti / WARP_SIZE] = sum;
+    
+    __syncthreads();
+
+    uint mask = __ballot_sync(0xffffffffU, ti < SHARED_ITEMS);
+    if(ti < SHARED_ITEMS) {
+        sum = shared[ti];
+
+        for(uint stride = WARP_SIZE/2; stride > 0; stride /= 2)
+            sum = sum + __shfl_down_sync(mask, sum, stride);
+
+        if(ti % WARP_SIZE == 0)
+            shared[ti / WARP_SIZE] = sum;
+    }
+
+    __syncthreads();
+    uint extent = DIV_CEIL(SHARED_ITEMS, WARP_SIZE);
+    mask = __ballot_sync(0xffffffffU, ti < extent);
+    if(ti < extent) {
+        sum = shared[ti*WARP_SIZE]; //uncoalesced
+
+        for(uint stride = WARP_SIZE/2; stride > 0; stride /= 2)
+            sum = sum + __shfl_down_sync(mask, sum, stride);
+    }
+
+    //Store the partial result
+    if(ti == 0)
+        reduced[blockIdx.x] = sum;
+}
+
+#endif
+
+template<uint SHARED_ITEMS, uint GATHER_MULT, uint CPU_REDUCE, int FLAGS = 0>
+Real reduce(Real* input, int N)
+{
+    enum { 
+        // SHARED_ITEMS = 128,
+        // GATHER_MULT = 2,
+        REDUCE_BY = SHARED_ITEMS*GATHER_MULT,
+        // CPU_REDUCE = SHARED_ITEMS*2 
+    };
+
+    if(N <= 0)
+        return 0;
+
+    Cuda_Info info = cuda_one_time_setup();
+    Cache_Tag tag = cache_tag_make();
+    Real* partials[2] = {input, NULL};
+
+    int iter = 0;
+    int Ncurr = N;
+    for(; Ncurr > CPU_REDUCE; Ncurr = (Ncurr + REDUCE_BY - 1) / REDUCE_BY, iter++)
+    {
+        int i_curr = iter%2;
+        int i_next = (iter + 1)%2;
+        if(partials[i_next] == NULL || partials[i_next] == input)
+            partials[i_next] = cache_alloc(Real, N, &tag);
+
+        dim3 block_size = {SHARED_ITEMS, 1, 1};
+        dim3 grids_count = {(uint) info.prop.multiProcessorCount, 1, 1};
+        // dim3 grids_count = {1, 1, 1};
+        int shared_memory = SHARED_ITEMS*sizeof(Real);
+
+        Real* __restrict__ partials_curr = partials[i_curr];
+        #if 0
+        map_reduce_kernel<SHARED_ITEMS, GATHER_MULT, FLAGS>
+            <<<grids_count, block_size, shared_memory>>>(partials[i_next], 
+                [=]SHARED(int i){return partials_curr[i];}, 
+                [=]SHARED(Real a, Real b){return a + b;}, 0.0, Ncurr);
+        #else
+        if(FLAGS & REDUCE_SAMPLES_VERSION)
+            reduce7<Real, SHARED_ITEMS, false>
+                <<<grids_count, block_size, shared_memory>>>(partials_curr, partials[i_next], Ncurr);
+        else
+            map_reduce_kernel<SHARED_ITEMS, GATHER_MULT, FLAGS>
+                <<<grids_count, block_size, shared_memory>>>(partials[i_next], partials_curr, Ncurr);
+        #endif
+
+        CUDA_DEBUG_TEST(cudaGetLastError());
+        CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+    }   
+    Real sum = 0;
+    Real cpu[CPU_REDUCE];
+    cudaMemcpy(cpu, partials[iter%2], sizeof(Real)*Ncurr, cudaMemcpyDeviceToHost);
+    for(int i = 0; i < Ncurr; i++)
+        sum += cpu[i];
+
+    cache_free(&tag);
+    return sum;
+}
+
+#include <thrust/inner_product.h>
+#include <thrust/device_ptr.h>
+Real thrust_reduce(const Real *input, int n)
+{
+  // wrap raw pointers to device memory with device_ptr
+  thrust::device_ptr<const Real> d_input(input);
+
+  return thrust::reduce(d_input, d_input+n, (Real) 0.0, thrust::plus<Real>());
+}
+
+Real cpu_reduce(const Real *input, int n)
+{
+    enum {COPY_AT_ONCE = 256};
+    Real cpu[COPY_AT_ONCE] = {0};
+    Real sum = 0;
+
+    for(int k = 0; k < n; k += COPY_AT_ONCE)
+    {
+        int from = k;
+        int to = MIN(k + COPY_AT_ONCE, n);
+        cudaMemcpy(cpu, input + from, sizeof(Real)*(to - from), cudaMemcpyDeviceToHost);
+        
+        for(int i = 0; i < to - from; i++)
+            sum += cpu[i];
+    }
+
+    return sum;
+}
+
+Real cpu_fold_reduce(const Real *input, int n)
+{
+    if(n <= 0)
+        return 0;
+
+    static Real* copy = 0;
+    static int local_capacity = 0;
+
+    if(local_capacity < n)
+    {
+        copy = (Real*) realloc(copy, n*sizeof(Real));
+        local_capacity = n;
+    }
+    
+    cudaMemcpy(copy, input, sizeof(Real)*n, cudaMemcpyDeviceToHost);
+    for(int range = n; range > 1; range /= 2)
+    {
+        // if(range == n)
+        // {
+        //     printf("%i > ", n);
+        //     for(int i = 0; i < range; i ++)
+        //         printf("%.2lf ", copy[i]);
+        //     printf("\n");
+        // }
+
+        for(int i = 0; i < range/2 ; i ++)
+            copy[i] = copy[2*i] + copy[2*i + 1];
+
+        if(range%2)
+            copy[range/2 - 1] += copy[range - 1];
+    }
+
+    return copy[0];
+}
+
+Real cpu_reduce_hiding(const Real *input, int n)
+{
+    enum {COPY_AT_ONCE = 256};
+    Real cpu[COPY_AT_ONCE] = {0};
+    Real sum = 0;
+    cudaMemcpyAsync(cpu, input, sizeof(Real)* MIN(COPY_AT_ONCE, n), cudaMemcpyDeviceToHost);
+
+    for(int k = 0; k < n; k += COPY_AT_ONCE)
+    {
+        int from = k;
+        int to = MIN(k + COPY_AT_ONCE, n);
+        int next_to = MIN(k + COPY_AT_ONCE*2, n);
+        cudaDeviceSynchronize();
+        cudaMemcpyAsync(cpu, input + to, sizeof(Real)*(next_to - to), cudaMemcpyDeviceToHost);
+        for(int i = 0; i < to - from; i++)
+            sum += cpu[i];
+
+    }
+
+    return sum;
+}
+
+void cache_prepare(int count, int item_size, int N)
+{
+    Cache_Tag tag = cache_tag_make();
+    for(int i = 0; i < count; i++)
+        _cache_alloc(item_size*N, &tag, SOURCE_INFO());
+    cache_free(&tag);
+}
+
+#include <chrono>
+static int64_t clock_ns()
+{
+    return std::chrono::high_resolution_clock::now().time_since_epoch().count();
+}
+
+static double clock_s()
+{
+    static int64_t init_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    int64_t now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    double unit = (double) std::chrono::high_resolution_clock::period::den;
+    double clock = (double) (now - init_time) / unit;
+    return clock;
+}
+
+
+template <typename Func>
+double benchmark(double time, double warmup, Func func)
+{
+    int64_t sec_to_ns = 1000000000;
+    int64_t start_time = clock_ns();
+    int64_t time_ns = (int64_t)(time * sec_to_ns);
+    int64_t warmup_ns = (int64_t)(warmup * sec_to_ns);
+
+    int64_t sum = 0;
+    int64_t iters = 0;
+    int64_t start = clock_ns();
+    int64_t before = 0;
+    int64_t after = start;
+    for(; after < start + time_ns; iters ++)
+    {
+        before = clock_ns();
+        func();
+        after = clock_ns();
+
+        if(after >= start + warmup_ns)
+            sum += after - before;
+    }
+
+    double avg = (double) sum / (double) iters / (double) sec_to_ns; 
+    return avg;
+}
+
+template <typename Func>
+double benchmark(double time, Func func)
+{
+    return benchmark(time, time / 10.0, func);
+}
+
+bool is_near(double a, double b, double epsilon = 1e-8)
+{
+    //this form guarantees that is_nearf(NAN, NAN, 1) == true
+    return !(fabs(a - b) > epsilon);
+}
+
+//Returns true if x and y are within epsilon distance of each other.
+//If |x| and |y| are less than 1 uses epsilon directly
+//else scales epsilon to account for growing floating point inaccuracy
+bool is_near_scaled(double x, double y, double epsilon = 1e-8)
+{
+    //This is the form that produces the best assembly
+    double calced_factor = fabs(x) + fabs(y);
+    double factor = 2 > calced_factor ? 2 : calced_factor;
+    return is_near(x, y, factor * epsilon / 2);
+}
+
+extern "C" void benchmark_reduce_kernels(int N)
+{
+    // cache_prepare(3, N, sizeof(Real));
+    // cache_prepare(3, N, sizeof(uint));
+
+    if(0)
+    {
+            
+        uint Ns[] = {0, 1, 5, 31, 32, 33, 64, 65, 256, 257, 512, 513, 1023, 1024, 1025, 256*256, 1024*1024};
+        for(int i = 0; i < STATIC_ARRAY_SIZE(Ns); i++)
+        {
+            Cache_Tag tag = cache_tag_make();
+            uint n = Ns[i];
+
+            Random_Map_State rand = {0};
+            rand.N = n;
+            rand.state = cache_alloc(uint, n, &tag);
+            rand.map = cache_alloc(Real, n, &tag);
+
+            uint seed = 14121;
+            random_map_seed(&rand, seed);
+
+            Real sum0 = cpu_reduce(rand.map, n);
+            Real sum1 = cpu_fold_reduce(rand.map, n);
+            Real sum2 = thrust_reduce(rand.map, n);
+
+            Real sum3 = reduce<256, 1, 1>(rand.map, n);
+            Real sum4 = reduce<128, 1, 1>(rand.map, n);
+            Real sum5 = reduce<64, 1, 1>(rand.map, n);
+
+            Real sum3_wg = reduce<256, 1, 1, REDUCE_WARP_GATHER>(rand.map, n);
+            Real sum4_wg = reduce<128, 1, 1, REDUCE_WARP_GATHER>(rand.map, n);
+            Real sum5_wg = reduce<64, 1, 1, REDUCE_WARP_GATHER>(rand.map, n);
+
+            Real sum3_sf = reduce<256, 1, 1, REDUCE_SHARED_ONLY_FOLD>(rand.map, n);
+            Real sum4_sf = reduce<128, 1, 1, REDUCE_SHARED_ONLY_FOLD>(rand.map, n);
+            Real sum5_sf = reduce<64, 1, 1, REDUCE_SHARED_ONLY_FOLD>(rand.map, n);
+
+            Real sum3_wf = reduce<256, 1, 1, REDUCE_WARP_ONLY_FOLD>(rand.map, n);
+            Real sum4_wf = reduce<128, 1, 1, REDUCE_WARP_ONLY_FOLD>(rand.map, n);
+            Real sum5_wf = reduce<64, 1, 1, REDUCE_WARP_ONLY_FOLD>(rand.map, n);
+
+            Real sum3_wf_wg = reduce<256, 1, 1, REDUCE_WARP_ONLY_FOLD | REDUCE_WARP_GATHER>(rand.map, n);
+            Real sum4_wf_wg = reduce<128, 1, 1, REDUCE_WARP_ONLY_FOLD | REDUCE_WARP_GATHER>(rand.map, n);
+            Real sum5_wf_wg = reduce<64, 1, 1, REDUCE_WARP_ONLY_FOLD | REDUCE_WARP_GATHER>(rand.map, n);
+
+            Real sum3_2 = reduce<256, 2, 1>(rand.map, n);
+            Real sum4_2 = reduce<128, 2, 1>(rand.map, n);
+            Real sum5_2 = reduce<64, 2, 1>(rand.map, n);
+
+            Real sum3_5 = reduce<256, 5, 1>(rand.map, n);
+            Real sum4_5 = reduce<128, 5, 1>(rand.map, n);
+            Real sum5_5 = reduce<64, 5, 1>(rand.map, n);
+
+            //naive cpu reduce diverges from the true values for large n due to
+            // floating point rounding
+            if(n < 1024)
+                ASSERT(is_near(sum1, sum0));
+
+            ASSERT(is_near(sum1, sum2));
+            ASSERT(is_near(sum1, sum3));
+            ASSERT(is_near(sum1, sum4));
+            ASSERT(is_near(sum1, sum5));
+
+            ASSERT(is_near(sum1, sum3_wg));
+            ASSERT(is_near(sum1, sum4_wg));
+            ASSERT(is_near(sum1, sum5_wg));
+
+            ASSERT(is_near(sum1, sum3_sf));
+            ASSERT(is_near(sum1, sum4_sf));
+            ASSERT(is_near(sum1, sum5_sf));
+
+            ASSERT(is_near(sum1, sum3_wf));
+            ASSERT(is_near(sum1, sum4_wf));
+            ASSERT(is_near(sum1, sum5_wf));
+
+            ASSERT(is_near(sum1, sum3_wf_wg));
+            ASSERT(is_near(sum1, sum4_wf_wg));
+            ASSERT(is_near(sum1, sum5_wf_wg));
+            
+            ASSERT(is_near(sum1, sum3_2));
+            ASSERT(is_near(sum1, sum4_2));
+            ASSERT(is_near(sum1, sum5_2));
+
+            ASSERT(is_near(sum1, sum3_5));
+            ASSERT(is_near(sum1, sum4_5));
+            ASSERT(is_near(sum1, sum5_5));
+            cache_free(&tag);
+        }
+    }
+
+    Cache_Tag tag = cache_tag_make();
+    Random_Map_State rand = {0};
+    rand.N = N;
+    rand.state = cache_alloc(uint, N, &tag);
+    rand.map = cache_alloc(Real, N, &tag);
+
+    double cpu_time = benchmark(3, [=]{ cpu_fold_reduce(rand.map, N); });
+    double thrust_time = benchmark(3, [=]{ thrust_reduce(rand.map, N); });
+    double custom_time_thrust = benchmark(3, [=]{ reduce<64, 2, 128>(rand.map, N); });
+    double samples_time = benchmark(3, [=]{ reduce<512, 8, 128, REDUCE_SAMPLES_VERSION>(rand.map, N); });
+    // double custom_time_opt_1 = benchmark(3, [=]{ reduce<512, 8, 128>(rand.map, N); });
+    // double custom_time_opt_2 = benchmark(3, [=]{ reduce<512, 8, 128, REDUCE_WARP_GATHER | REDUCE_WARP_ONLY_FOLD>(rand.map, N); });
+    // double custom_time_opt_3 = benchmark(3, [=]{ reduce<512, 4, 128, REDUCE_WARP_GATHER | REDUCE_WARP_ONLY_FOLD>(rand.map, N); });
+    // double custom_time_opt_4 = benchmark(3, [=]{ reduce<512, 8, 128, REDUCE_WARP_GATHER>(rand.map, N); });
+    double custom_time_opt_5 = benchmark(3, [=]{ reduce<512, 12, 128, REDUCE_WARP_GATHER>(rand.map, N); });
+    double custom_time_opt_6 = benchmark(3, [=]{ reduce<512, 12, 128, REDUCE_WARP_GATHER | REDUCE_WARP_ONLY_FOLD>(rand.map, N); });
+
+    int GB = 1024*1024*1024;
+    double total_gb = (double) N / GB * sizeof(Real);
+    LOG_INFO("BENCH", "Benchmark results for %i items (%lfGB)", N, total_gb);
+    LOG_INFO("BENCH", "thrust: %lf GB/s | custom: %lf GB/s | samples: %lf", total_gb/(double)thrust_time, total_gb/(double)custom_time_opt_5, total_gb/(double)samples_time);
+    LOG_INFO("BENCH", "cpu: %lf | thrust: %lf | custom thrust: %lf | samples: %lf", N, cpu_time, thrust_time, custom_time_thrust, samples_time);
+    // LOG_INFO("BENCH", "best: %lf | %lf | %lf | %lf | %lf | %lf",  custom_time_opt_1, custom_time_opt_2, custom_time_opt_3, custom_time_opt_4, custom_time_opt_5, custom_time_opt_6);
+    LOG_INFO("BENCH", "best: %lf | %lf ",  custom_time_opt_5, custom_time_opt_6);
+    
+    cache_free(&tag);
+}
+#endif

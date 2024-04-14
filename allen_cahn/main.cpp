@@ -206,6 +206,7 @@ int main()
     config.interactive_mode = false;
     #endif // DO_GRAPHICAL_BUILD
 
+    benchmark_reduce_kernels(config.params.m * config.params.n);
 
     //OPENGL setup
     if(config.interactive_mode)

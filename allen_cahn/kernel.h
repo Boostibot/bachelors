@@ -63,6 +63,22 @@ typedef struct Allen_Cahn_Params{
 
     bool do_corrector_loop;
     bool do_corrector_guess;
+
+    Real noise_T_strength;
+    Real noise_T_min;      
+    Real noise_T_max;
+    Real noise_T_timestep; //Regenerates a new noise map ever 
+
+    Real noise_Phi_strength;
+    Real noise_Phi_min;      
+    Real noise_Phi_max;
+
+    Real noise_der_Phi_strength;
+    Real noise_der_Phi_min;      
+    Real noise_der_Phi_max;
+
+    Real noise_Phi_timestep; //Regenerates a new noise map ever 
+    bool do_noise;
 } Allen_Cahn_Params;
 
 typedef enum Solver_Type{
@@ -219,6 +235,8 @@ typedef enum {
 extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify);
 extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify);
 extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t size, Sim_Modify modify);
+
+extern "C" void benchmark_reduce_kernels(int N);
 
 // solver -> init to some concrete solver
 // solver has to have internal state for caching CACHING! CACHING! its all about caching! We dont even have to have a solver

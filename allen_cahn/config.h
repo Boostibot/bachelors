@@ -391,6 +391,7 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_real(pairs, &params->m0, "params", "m")
             & (uint8_t) key_value_get_real(pairs, &params->theta0, "params", "theta0")
             & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "params", "do_anisotropy")
+            & (uint8_t) key_value_get_real(pairs, &params->gamma, "simulation", "gamma")
             ;
 
         uint8_t matched_simulation = true

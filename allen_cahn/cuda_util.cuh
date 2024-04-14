@@ -121,9 +121,14 @@ Cuda_Info cuda_one_time_setup()
         for (int i = 0; i < nDevices; i++)
             LOG_INFO(">CUDA", "[%i] %s (score: %lf) %s\n", i, devices[i].name, scores[i], i == max_score_i ? "[selected]" : "");
 
+        // selected.maxThreadsDim
         LOG_INFO("CUDA", "Selected %s:\n", selected.name);
         LOG_INFO("CUDA", "  Multi Processor count: %i\n", selected.multiProcessorCount);
         LOG_INFO("CUDA", "  Warp-size: %d\n", selected.warpSize);
+        LOG_INFO("CUDA", "  Max thread dim: %d %d %d\n", selected.maxThreadsDim[0], selected.maxThreadsDim[1], selected.maxThreadsDim[2]);
+        LOG_INFO("CUDA", "  Max threads per block: %d\n", selected.maxThreadsPerBlock);
+        LOG_INFO("CUDA", "  Max threads per multi processor: %d\n", selected.maxThreadsPerMultiProcessor);
+        LOG_INFO("CUDA", "  Max blocks per multi processor: %d\n", selected.maxBlocksPerMultiProcessor);
         LOG_INFO("CUDA", "  Memory Clock Rate (MHz): %d\n", selected.memoryClockRate/1024);
         LOG_INFO("CUDA", "  Memory Bus Width (bits): %d\n", selected.memoryBusWidth);
         LOG_INFO("CUDA", "  Peak Memory Bandwidth (GB/s): %.1f\n", peak_memory[max_score_i]);

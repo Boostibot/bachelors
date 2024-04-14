@@ -7,7 +7,7 @@ HOST_LINK  := -lm -rdynamic -lcuda -lcudart -lglfw -lGL -lnetcdf
 DEVICE_COMP  := nvcc
 # DEVICE_FLAGS := -g -G -Xcudafe --display_error_number --extended-lambda -std=c++17 -ccbin /usr/bin/g++-10 -O3
 # DEVICE_LINK  := -g -G -dlink
-DEVICE_FLAGS := -g -G -Xcudafe --display_error_number --extended-lambda -std=c++17 -ccbin /usr/bin/g++-10
+DEVICE_FLAGS := -g -G -Xcudafe --display_error_number --extended-lambda -std=c++17 -ccbin /usr/bin/g++-10 
 DEVICE_LINK  := -g -G -dlink
 
 
