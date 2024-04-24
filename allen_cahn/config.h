@@ -377,6 +377,8 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
     {
         Key_Value pairs = to_key_value(config->entire_config_file);
 
+
+
         uint8_t matched_params = true
             & (uint8_t) key_value_get_real(pairs, &params->L0, "params", "L0")
             & (uint8_t) key_value_get_real(pairs, &params->L, "params", "L")
@@ -392,6 +394,8 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_real(pairs, &params->theta0, "params", "theta0")
             & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "params", "do_anisotropy")
             & (uint8_t) key_value_get_real(pairs, &params->gamma, "simulation", "gamma")
+            & (uint8_t) key_value_get_bool(pairs, &params->do_stats, "program", "collect_stats")
+            & (uint8_t) key_value_get_bool(pairs, &params->do_stats_step_residual, "program", "collect_step_residual")
             ;
 
         uint8_t matched_simulation = true
@@ -424,7 +428,8 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_bool(pairs, &snaps->snapshot_initial_conditions, "snapshot", "snapshot_initial_conditions")
             & (uint8_t) key_value_get_string(pairs, &snaps->folder, "snapshot", "folder")
             & (uint8_t) key_value_get_string(pairs, &snaps->prefix, "snapshot", "prefix")
-            & (uint8_t) key_value_get_string(pairs, &snaps->postfix, "snapshot", "postfix");
+            & (uint8_t) key_value_get_string(pairs, &snaps->postfix, "snapshot", "postfix")
+            ;
 
         uint8_t matched_program = true
             & (uint8_t) key_value_get_solver_type(pairs, &config->solver, "program", "solver")
@@ -432,7 +437,8 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_bool(pairs, &config->interactive_mode, "program", "interactive")
             & (uint8_t) key_value_get_bool(pairs, &config->linear_filtering, "program", "linear_filtering")
             & (uint8_t) key_value_get_real(pairs, &config->display_min, "program", "display_min")
-            & (uint8_t) key_value_get_real(pairs, &config->display_max, "program", "display_max");
+            & (uint8_t) key_value_get_real(pairs, &config->display_max, "program", "display_max")
+            ;
             
 
 

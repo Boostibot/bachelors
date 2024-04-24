@@ -107,7 +107,7 @@ void random_map_next(Random_Map_State* state)
     });
 }
 
-#if 1
+#if 0
 //Will hand write my own version later. For now we trust in thrust *cymbal*
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
@@ -226,6 +226,8 @@ SHARED Real f0(Real phi)
 	return phi*(1 - phi)*(phi - 1.0f/2);
 }
 
+#if 0
+
 SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil input, Explicit_Solve_Stencil base, Allen_Cahn_Params params, Explicit_Solve_Debug* debug_or_null)
 {
     Real dx = (Real) params.L0 / params.m;
@@ -268,11 +270,11 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil in
     Real f0_tilda = g_theta*a/(xi*xi * alpha)*f0(Phi);
     Real f1_tilda = b*beta/alpha*hypotf(grad_Phi_x, grad_Phi_y);
     Real f2_tilda = g_theta/alpha;
-    Real d_tilda = 1 + f1_tilda*dt*L;
+    Real corr = 1 + f1_tilda*dt*L;
 
     Real dt_Phi = 0;
     if(params.do_corrector_guess)
-        dt_Phi = (f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm + dt*laplace_T))/d_tilda;
+        dt_Phi = (f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm + dt*laplace_T))/corr;
     else
         dt_Phi = f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm);
     Real dt_T = laplace_T_base + L*dt_Phi; 
@@ -282,7 +284,7 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil in
         debug_or_null->grad_Phi = hypotf(Phi_R - Phi_L, Phi_U - Phi_D);
         debug_or_null->grad_T = hypotf(T_R - T_L, T_U - T_D);
         if(params.do_corrector_guess)
-            debug_or_null->reaction_term = (f0_tilda + f1_tilda*(T - Tm + dt*laplace_T)) / d_tilda;
+            debug_or_null->reaction_term = (f0_tilda + f1_tilda*(T - Tm + dt*laplace_T)) / corr;
         else
             debug_or_null->reaction_term = f0_tilda - f1_tilda*(T - Tm);
         debug_or_null->g_theta = g_theta;
@@ -292,6 +294,77 @@ SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil in
     Explicit_Solve_Result out = {dt_Phi, dt_T};
     return out;
 }
+
+#else
+SHARED Explicit_Solve_Result allen_cahn_explicit_solve(Explicit_Solve_Stencil input, Allen_Cahn_Params params, Explicit_Solve_Debug* debug_or_null)
+{
+    Real dx = (Real) params.L0 / params.m;
+    Real dy = (Real) params.L0 / params.n;
+
+    //@NOTE: dont you wish we had odin lang using in C?
+    Real a = params.a;
+    Real b = params.b;
+    Real alpha = params.alpha;
+    Real beta = params.beta;
+    Real xi = params.xi;
+    Real Tm = params.Tm;
+    Real L = params.L; //Latent heat, not L0 (sym size) ! 
+    Real dt = params.dt;
+    Real S = params.S; //anisotrophy strength
+    Real m0 = params.m0; //anisotrophy frequency (?)
+    Real theta0 = params.theta0;
+
+    Real Phi = input.Phi;
+    Real Phi_U = input.Phi_U;
+    Real Phi_D = input.Phi_D;
+    Real Phi_L = input.Phi_L;
+    Real Phi_R = input.Phi_R;
+
+    Real T = input.T;
+    Real T_U = input.T_U;
+    Real T_D = input.T_D;
+    Real T_L = input.T_L;
+    Real T_R = input.T_R;
+
+    Real grad_Phi_x = (Phi_R - Phi_L)/(2*dx);
+    Real grad_Phi_y = (Phi_U - Phi_D)/(2*dy);
+    Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+
+    Real theta = atan2(grad_Phi_y, grad_Phi_x);;
+    Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
+
+    Real laplace_T = (T_L - 2*T + T_R)/(dx*dx) + (T_D - 2*T + T_U)/(dy*dy);
+    Real laplace_Phi = (Phi_L - 2*Phi + Phi_R)/(dx*dx) + (Phi_D - 2*Phi + Phi_U)/(dy*dy);
+
+    Real k0 = g_theta*a*f0(Phi)/(xi*xi * alpha);
+    Real k1 = g_theta/alpha;
+    Real k2 = b*beta*grad_Phi_norm/alpha;
+    Real corr = 1 + k2*dt*L;
+
+    Real dt_Phi = 0;
+    if(params.do_corrector_guess)
+        dt_Phi = (k1*laplace_Phi + k0 - k2*(T - Tm + dt*laplace_T))/corr;
+    else
+        dt_Phi = k1*laplace_Phi + k0 - k2*(T - Tm);
+
+    Real dt_T = laplace_T + L*dt_Phi; 
+    if(debug_or_null)
+    {
+        debug_or_null->grad_Phi = hypotf(Phi_R - Phi_L, Phi_U - Phi_D);
+        debug_or_null->grad_T = hypotf(T_R - T_L, T_U - T_D);
+        if(params.do_corrector_guess)
+            debug_or_null->reaction_term = (k0 + k2*(T - Tm + dt*laplace_T)) / corr;
+        else
+            debug_or_null->reaction_term = k0 - k2*(T - Tm);
+        debug_or_null->g_theta = g_theta;
+        debug_or_null->theta = theta;
+    }
+
+    Explicit_Solve_Result out = {dt_Phi, dt_T};
+    return out;
+}
+
+#endif
 
 SHARED Explicit_Solve_Stencil explicit_solve_stencil_mod(const Real* Phi, const Real* T, int x, int y, int n, int m)
 {
@@ -328,7 +401,7 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
             Explicit_Solve_Debug debug = {0};
             Explicit_Solve_Stencil input = explicit_solve_stencil_mod(Phi, T, x, y, n, m);
-            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, input, params, &debug);
+            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, params, &debug);
 
             //Newton update
             Phi_next[x + y*m] = input.Phi + solved.dt_Phi*params.dt;
@@ -344,7 +417,7 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
     {
         cuda_for_2D(0, 0, params.m, params.n, [=]SHARED(int x, int y){
             Explicit_Solve_Stencil input = explicit_solve_stencil_mod(Phi, T, x, y, n, m);
-            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, input, params, NULL);
+            Explicit_Solve_Result solved = allen_cahn_explicit_solve(input, params, NULL);
 
             Phi_next[x + y*m] = input.Phi + solved.dt_Phi*params.dt;
             T_next[x + y*m] = input.T + solved.dt_T*params.dt;
@@ -378,7 +451,7 @@ void explicit_solver_solve_lin_combination(Explicit_State* out, Allen_Cahn_Param
                 blend.vals[i] += weight*input.vals[i];
         }
 
-        Explicit_Solve_Result solved = allen_cahn_explicit_solve(blend, blend, params, NULL);
+        Explicit_Solve_Result solved = allen_cahn_explicit_solve(blend, params, NULL);
 
         out_F[x + y*m] = solved.dt_Phi;
         out_U[x + y*m] = solved.dt_T;
@@ -464,62 +537,6 @@ void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Exp
     cache_free(&tag);
     CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
-
-#if 0
-typedef double (*RK4_Func)(double t, const double x, void* context);
-
-static double runge_kutta4_var(double t_ini, double x_ini, double T, double tau_ini, double delta, RK4_Func f, void* context)
-{
-    (void) delta;
-    double t = t_ini;
-    double tau = tau_ini;
-    double x = x_ini;
-
-    double n = 1;
-    for(;;)
-    {
-        bool last = false;
-        if(fabs(T - t) < fabs(tau))
-        {
-            tau = T - t;
-            last = true;
-        }
-        else
-        {
-            last = false;
-        }
-
-        double k1 = f(t, x, context);
-        double k2 = f(t + tau/3, x + tau/3*k1, context);
-        double k3 = f(t + tau/3, x + tau/6*(k1 + k2), context);
-        double k4 = f(t + tau/2, x + tau/8*(k1 + 3*k3), context);
-        double k5 = f(t + tau/1, x + tau*(0.5f*k1 - 1.5f*k3 + 2*k4), context);
-        
-        double epsilon = 0;
-        for(double i = 0; i < n; i++)
-        {
-            double curr = fabs(0.2f*k1 - 0.9f*k3 + 0.8f*k4 - 0.1f*k5);
-            epsilon = std::max(epsilon, curr);
-        }
-
-        //if(epsilon < delta)
-        {
-            x = x + tau*(1.0f/6*(k1 + k5) + 2.0f/3*k4);
-            t = t + tau;
-
-            if(last)
-                break;
-
-            if(epsilon == 0)
-                continue;
-        }
-
-        //tau = powf(delta / epsilon, 0.2f)* 4.0f/5*tau;
-    }
-
-    return x;
-}
-#endif
 
 double explicit_solver_rk4_adaptive_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
@@ -614,6 +631,96 @@ double explicit_solver_rk4_adaptive_step(Explicit_Solver* solver, Explicit_State
     cache_free(&tag);
     CUDA_DEBUG_TEST(cudaDeviceSynchronize());
     return (double) used_tau;
+}
+
+double explicit_solver_choose(Solver_Type type, Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter)
+{
+    if(type == SOLVER_TYPE_EXPLICIT)
+    {
+        explicit_solver_newton_step(solver, state, *next_state, params, iter, params.do_debug);
+        return params.dt;
+    }
+    if(type == SOLVER_TYPE_EXPLICIT_RK4)
+    {
+        explicit_solver_rk4_step(solver, state, next_state, params, iter, params.do_debug);
+        return params.dt;
+    }
+    if(type == SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE)
+    {
+        return explicit_solver_rk4_adaptive_step(solver, state, next_state, params, iter, params.do_debug);
+    }
+
+    assert(false);
+    return false;
+}
+
+Real vector_get_l2_dist(const Real* a, const Real* b, int N)
+{
+    Cache_Tag tag = cache_tag_make();
+    Real* temp = cache_alloc(Real, N, &tag);
+    cuda_for(0, N, [=]SHARED(int i){
+        temp[i] = a[i] - b[i];
+    });
+
+    Real temp_dot_temp = vector_dot_product(temp, temp, N);
+    Real error = sqrt(temp_dot_temp/N);
+    cache_free(&tag);
+    return error;
+}
+
+Real vector_get_max_dist(const Real* a, const Real* b, int N)
+{
+    Cache_Tag tag = cache_tag_make();
+    Real* temp = cache_alloc(Real, N, &tag);
+    cuda_for(0, N, [=]SHARED(int i){
+        temp[i] = a[i] - b[i];
+    });
+
+    Real temp_dot_temp = vector_max(temp, N);
+    Real error = sqrt(temp_dot_temp/N);
+    cache_free(&tag);
+    return error;
+}
+
+
+Real vector_euclid_norm(Real* vector, int N)
+{
+    Real dot = vector_dot_product(vector, vector, N);
+    return sqrt(dot / N);
+}
+
+double explicit_solver_choose_and_copute_step_residual(Solver_Type type, Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, Allen_Cahn_Stats* stats_or_null)
+{
+    double advance_by = explicit_solver_choose(type, solver, state, next_state, params, iter);
+    if(params.do_stats_step_residual && stats_or_null)
+    {
+        Explicit_State combined_state = state;
+        combined_state.U = next_state->U;
+
+        Explicit_State corrected_next = {0};
+        Cache_Tag tag = cache_tag_make();
+        int N = params.n * params.m;
+        corrected_next.F = cache_alloc(Real, N, &tag);
+        corrected_next.U = cache_alloc(Real, N, &tag);
+        corrected_next.m = params.m;
+        corrected_next.n = params.n;
+
+        Allen_Cahn_Params changed_params = params;
+        changed_params.do_debug = false;
+        changed_params.do_stats = false;
+        changed_params.do_stats_step_residual = false;
+
+        explicit_solver_choose(type, solver, combined_state, &corrected_next, changed_params, iter);
+        stats_or_null->L2_step_residuals[0] = vector_get_l2_dist(corrected_next.F, next_state->F, N);
+        stats_or_null->Lmax_step_residuals[0] = vector_get_max_dist(corrected_next.F, next_state->F, N);
+        stats_or_null->step_residuals = 1;
+
+        LOG_DEBUG("SOLVER", "%lli step residual | avg: %e | max: %e", (long long) iter, stats_or_null->L2_step_residuals[0], stats_or_null->Lmax_step_residuals[0]);
+
+        cache_free(&tag);
+    }
+
+    return advance_by;
 }
 
 void explicit_solver_get_maps(Explicit_Solver* solver, Explicit_State state, Sim_Map* maps, int map_count)
@@ -885,33 +992,6 @@ void matrix_multiply(Real* output, const Real* A, const Real* B, int A_height, i
     }
 }
 
-Real vector_get_avg_dist(const Real* a, const Real* b, int N)
-{
-    Cache_Tag tag = cache_tag_make();
-    Real* temp = cache_alloc(Real, N, &tag);
-    cuda_for(0, N, [=]SHARED(int i){
-        temp[i] = a[i] - b[i];
-    });
-
-    Real temp_dot_temp = vector_dot_product(temp, temp, N);
-    Real error = sqrt(temp_dot_temp/N);
-    cache_free(&tag);
-    return error;
-}
-
-Real vector_get_max_dist(const Real* a, const Real* b, int N)
-{
-    Cache_Tag tag = cache_tag_make();
-    Real* temp = cache_alloc(Real, N, &tag);
-    cuda_for(0, N, [=]SHARED(int i){
-        temp[i] = a[i] - b[i];
-    });
-
-    Real temp_dot_temp = vector_max(temp, N);
-    Real error = sqrt(temp_dot_temp/N);
-    cache_free(&tag);
-    return error;
-}
 
 void semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
 {
@@ -983,70 +1063,52 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
     A_U.m = m;
     A_U.n = n;
 
-    if(params.do_corrector_guess == false)
-    {
-        cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
-            Real T = U[x + y*m];
-            Real Phi = F[x + y*m];
+    bool do_corrector_guess = params.do_corrector_guess;
+    cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
+        Real T = U[x + y*m];
+        Real Phi = F[x + y*m];
+        Real Phi_U = *at_mod(F, x, y + 1, m, n);
+        Real Phi_D = *at_mod(F, x, y - 1, m, n);
+        Real Phi_R = *at_mod(F, x + 1, y, m, n);
+        Real Phi_L = *at_mod(F, x - 1, y, m, n);
 
-            Real Phi_U = *at_mod(F, x, y + 1, m, n);
-            Real Phi_D = *at_mod(F, x, y - 1, m, n);
-            Real Phi_R = *at_mod(F, x + 1, y, m, n);
-            Real Phi_L = *at_mod(F, x - 1, y, m, n);
+        Real grad_Phi_x = (Phi_R - Phi_L)/(2*dx);
+        Real grad_Phi_y = (Phi_U - Phi_D)/(2*dy);
+        Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
 
-            Real grad_Phi_x = dy*(Phi_R - Phi_L);
-            Real grad_Phi_y = dx*(Phi_U - Phi_D);
-            Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
-    
-            Real theta = atan2(grad_Phi_y, grad_Phi_x);
-            Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
+        Real theta = atan2(grad_Phi_y, grad_Phi_x);;
+        Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
 
-            // g_theta = 1;
-            Real f = g_theta*a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
-            // Real f = a*f0(Phi) - b*xi*xi*beta*(T - Tm)*grad_Phi_norm/(2*mK);
-            A_F.anisotrophy[x+y*m] = g_theta;
-            b_F[x + y*m] = Phi + dt/(xi*xi*alpha)*f;
-        });
-    }
-    else
-    {
-        cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
-            Real T = U[x + y*m];
+        Real laplace_Phi = (Phi_L - 2*Phi + Phi_R)/(dx*dx) + (Phi_D - 2*Phi + Phi_U)/(dy*dy);
+
+        Real k0 = g_theta*a*f0(Phi)/(xi*xi * alpha);
+        Real k2 = b*beta/alpha*grad_Phi_norm;
+        Real k1 = g_theta/alpha;
+
+        Real right = 0;
+        Real factor = 0;
+
+        if(do_corrector_guess)
+        {
             Real T_U = *at_mod(U, x, y + 1, m, n);
             Real T_D = *at_mod(U, x, y - 1, m, n);
             Real T_R = *at_mod(U, x + 1, y, m, n);
             Real T_L = *at_mod(U, x - 1, y, m, n);
-
-            Real Phi = F[x + y*m];
-            Real Phi_U = *at_mod(F, x, y + 1, m, n);
-            Real Phi_D = *at_mod(F, x, y - 1, m, n);
-            Real Phi_R = *at_mod(F, x + 1, y, m, n);
-            Real Phi_L = *at_mod(F, x - 1, y, m, n);
-
-            Real grad_Phi_x = (Phi_R - Phi_L)/(2*dx);
-            Real grad_Phi_y = (Phi_U - Phi_D)/(2*dy);
-            Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
-
-            Real theta = atan2(grad_Phi_y, grad_Phi_x);;
-            Real g_theta = 1.0f - S*cosf(m0*theta + theta0);
-
             Real laplace_T = (T_L - 2*T + T_R)/(dx*dx) + (T_D - 2*T + T_U)/(dy*dy);
-            Real laplace_Phi = (Phi_L - 2*Phi + Phi_R)/(dx*dx) + (Phi_D - 2*Phi + Phi_U)/(dy*dy);
+            Real corr = 1 + k2*dt*L;
 
-            Real f0_tilda = g_theta*a/(xi*xi * alpha)*f0(Phi);
-            Real f1_tilda = b*beta/alpha*hypotf(grad_Phi_x, grad_Phi_y);
-            Real f2_tilda = g_theta/alpha;
-            Real d_tilda = 1 + f1_tilda*dt*L;
+            right = Phi + dt/corr*((1-gamma)*k1*laplace_Phi + k0 - k2*(T - Tm + dt*laplace_T));
+            factor = gamma/corr*k1; 
+        }
+        else
+        {
+            right = Phi + dt*((1-gamma)*k1*laplace_Phi + k0 - k2*(T - Tm));
+            factor = gamma*k1; 
+        }
 
-            Real right = Phi + dt/d_tilda*((1-gamma)*f2_tilda*laplace_Phi + f0_tilda - f1_tilda*(T - Tm + dt*laplace_T));
-            Real factor = gamma/d_tilda*f2_tilda; 
-            //@NOTE missing dt here because we add it up in the matrix declaration
-            // to make the convergece criteria more apparent.
-            // Real factor = gamma*dt/d_tilda*f2_tilda;
-            A_F.anisotrophy[x+y*m] = factor;
-            b_F[x + y*m] = right;
-        });
-    }
+        A_F.anisotrophy[x+y*m] = factor;
+        b_F[x + y*m] = right;
+    });
 
     Conjugate_Gardient_Params solver_params = {0};
     solver_params.epsilon = (Real) 1.0e-12;
@@ -1087,8 +1149,8 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
             anisotrophy_matrix_multiply(AfF, &A_F, F_next, N);
             cross_matrix_static_multiply(AuU, &A_U, U_next, N);
 
-            Real back_error_F = vector_get_avg_dist(AfF, b_F, N);
-            Real back_error_U = vector_get_avg_dist(AuU, b_U, N);
+            Real back_error_F = vector_get_l2_dist(AfF, b_F, N);
+            Real back_error_U = vector_get_l2_dist(AuU, b_U, N);
 
             Real back_error_F_max = vector_get_max_dist(AfF, b_F, N);
             Real back_error_U_max = vector_get_max_dist(AuU, b_U, N);
@@ -1127,18 +1189,15 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
     }
 }
 
+
 void semi_implicit_solver_step(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
     semi_implicit_solver_step_based(solver, state.F, state.U, state.U, next_state, params, iter, do_debug);
 }
 
-Real vector_euclid_norm(Real* vector, int N)
-{
-    Real dot = vector_dot_product(vector, vector, N);
-    return sqrt(dot / N);
-}
 
-void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
+
+void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Implicit_State state, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, Allen_Cahn_Stats* stats_or_null)
 {
     Cache_Tag tag = cache_tag_make();
     int N = params.n * params.m;
@@ -1171,9 +1230,19 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
     Real step_residual_max_error = 0;
     bool converged = false;
     
-    semi_implicit_solver_step(solver, state, steps[0], params, iter, false);
     int k = 0;
-    for(; k < params.corrector_max_iters; k++)
+    int max_iters = params.corrector_max_iters;
+    if(params.do_corrector_loop == false)
+        max_iters = 0;
+
+    if(max_iters == 0 && params.do_stats_step_residual)
+        max_iters = 1;
+
+    bool do_debug = false;
+    if(max_iters == 0)
+        do_debug = params.do_debug;
+    semi_implicit_solver_step(solver, state, steps[0], params, iter, do_debug);
+    for(; k < max_iters; k++)
     {
         Explicit_State step_curr = steps[MOD(k, 2)];
         Explicit_State step_next = steps[MOD(k + 1, 2)];
@@ -1195,7 +1264,14 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
 
         step_residual_avg_error = vector_euclid_norm(step_resiudal, N);
         step_residual_max_error = vector_max(step_resiudal, N);
-        LOG_DEBUG("SOLVER", "step residual loop: %i | avg: %lf | max: %lf | tolerance: %lf", k, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
+        if(k < STATIC_ARRAY_SIZE(stats_or_null->L2_step_residuals) && stats_or_null)
+        {
+            stats_or_null->L2_step_residuals[k] = step_residual_avg_error;
+            stats_or_null->Lmax_step_residuals[k] = step_residual_max_error;
+            stats_or_null->step_residuals = k + 1;
+        }
+
+        LOG_DEBUG("SOLVER", "step residual loop: %i | avg: %e | max: %e | tolerance: %lf", k, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
         if(step_residual_avg_error < params.corrector_tolerance)
         {
             k ++;
@@ -1210,8 +1286,9 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
 
     //Debug only print
     step_residual_max_error = vector_max(step_resiudal, N);
-    LOG_DEBUG("SOLVER", "step residual %s iters: %i | avg: %lf | max: %lf | tolerance: %lf", 
-        converged ? "converged" : "diverged", k + 1, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
+    // if(max_iters > 0)
+        // LOG_DEBUG("SOLVER", "step residual %s iters: %i | avg: %lf | max: %lf | tolerance: %lf", 
+            // converged ? "converged" : "diverged", k + 1, step_residual_avg_error, step_residual_max_error, params.corrector_tolerance);
 
     //If the ended on step is already next_state dont copy anything
     Explicit_State final_step = steps[MOD(k, 2)];
@@ -1577,12 +1654,11 @@ extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Typ
         sim_state_reinit(&states[i], type, n, m);
 }
 
-extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug)
+extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, Allen_Cahn_Stats* stats_or_null)
 {
     int required_history = solver_type_required_history(solver->type);
     const char* solver_name = solver_type_to_cstring(solver->type);
     
-    double step_by = params.dt;
     bool okay = true;
     if(states_count < required_history)
     {
@@ -1601,8 +1677,10 @@ extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int sta
         }
     }
     
+    double step_by = 0;
     if(okay)
     {
+        step_by = params.dt;
         ASSERT(states_count > 0);
         Sim_State state = states[MOD(iter, states_count)];
         Sim_State next_state = states[MOD(iter + 1, states_count)];
@@ -1612,27 +1690,18 @@ extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int sta
                 // nothing
             } break;
 
-            case SOLVER_TYPE_EXPLICIT: {
-                explicit_solver_newton_step(&solver->expli, state.expli, next_state.expli, params, iter, do_debug);
-            } break;
-
-            case SOLVER_TYPE_EXPLICIT_RK4: {
-                explicit_solver_rk4_step(&solver->expli, state.expli, &next_state.expli, params, iter, do_debug);
-            } break;
-
+            case SOLVER_TYPE_EXPLICIT: 
+            case SOLVER_TYPE_EXPLICIT_RK4: 
             case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: {
-                step_by = explicit_solver_rk4_adaptive_step(&solver->expli, state.expli, &next_state.expli, params, iter, do_debug);
+                step_by = explicit_solver_choose_and_copute_step_residual(solver->type, &solver->expli, state.expli, &next_state.expli, params, iter, stats_or_null);
             } break;
 
             case SOLVER_TYPE_SEMI_IMPLICIT: {
-                if(params.do_corrector_loop)
-                    semi_implicit_solver_step_corrector(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
-                else
-                    semi_implicit_solver_step(&solver->impli, state.impli, next_state.impli, params, iter, do_debug);
+                semi_implicit_solver_step_corrector(&solver->impli, state.impli, next_state.impli, params, iter, stats_or_null);
             } break;
 
             case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
-                semi_implicit_coupled_solver_step(&solver->impli_coupled, state.impli_coupled, next_state.impli_coupled, params, iter, do_debug);
+                semi_implicit_coupled_solver_step(&solver->impli_coupled, state.impli_coupled, next_state.impli_coupled, params, iter, params.do_debug);
             } break;
 
             default: assert(false);
@@ -1672,17 +1741,17 @@ extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int s
 }
 
 
-extern "C" void benchmark_reduce_kernels(int N)
+extern "C" bool benchmark_reduce_kernels(int N)
 {
-
     (void) N;
+    return false;
 }
 #else
 
 extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m) {}
 extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m) {}
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count) {}
-extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug) {}
+extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, Allen_Cahn_Stats* stats_or_null) {return 0;}
 
 extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify) {}
 extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify) {}
@@ -1712,109 +1781,210 @@ enum {
     REDUCE_SAMPLES_VERSION,
 };
 
-
-// Utility class used to avoid linker errors with extern
-// unsized shared memory arrays with templated type
-template <class T>
-struct SharedMemory {
-  __device__ inline operator T *() {
-    extern __shared__ int __smem[];
-    return (T *)__smem;
-  }
-
-  __device__ inline operator const T *() const {
-    extern __shared__ int __smem[];
-    return (T *)__smem;
-  }
-};
-
-// specialize for double to avoid unaligned memory
-// access compile errors
-template <>
-struct SharedMemory<double> {
-  __device__ inline operator double *() {
-    extern __shared__ double __smem_d[];
-    return (double *)__smem_d;
-  }
-
-  __device__ inline operator const double *() const {
-    extern __shared__ double __smem_d[];
-    return (double *)__smem_d;
-  }
-};
-
 template <class T>
 __device__ __forceinline__ T warpReduceSum(unsigned int mask, T mySum) {
-  for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-    mySum += __shfl_down_sync(mask, mySum, offset);
-  }
-  return mySum;
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+        mySum += __shfl_down_sync(mask, mySum, offset);
+    }
+    return mySum;
 }
 
-template <typename T, unsigned int blockSize, bool nIsPow2>
-__global__ void reduce7(const T *__restrict__ g_idata, T *__restrict__ g_odata,
-                        unsigned int n) {
-  T *sdata = SharedMemory<T>();
+template <typename T>
+__global__ void reduce7(const T *__restrict__ input, T *__restrict__ output, unsigned int n) 
+{
+    assert(blockDim.x > WARP_SIZE && blockDim.x % WARP_SIZE == 0 && "we expect the block dim to be chosen as expected");
 
-  // perform first level of reduction,
-  // reading from global memory, writing to shared memory
-  unsigned int tid = threadIdx.x;
-  unsigned int gridSize = blockSize * gridDim.x;
-  unsigned int maskLength = (blockSize & 31);  // 31 = warpSize-1
-  maskLength = (maskLength > 0) ? (32 - maskLength) : maskLength;
-  const unsigned int mask = (0xffffffff) >> maskLength;
+    uint shared_size = blockDim.x / WARP_SIZE;
+    extern __shared__ T shared[];
 
-  T mySum = 0;
+    uint tid = threadIdx.x;
+    uint grids_size = blockDim.x * gridDim.x;
+    uint mask = 0xffffffff;
 
-  // we reduce multiple elements per thread.  The number is determined by the
-  // number of active thread blocks (via gridDim).  More blocks will result
-  // in a larger gridSize and therefore fewer elements per thread
-  if (nIsPow2) {
-    unsigned int i = blockIdx.x * blockSize * 2 + threadIdx.x;
-    gridSize = gridSize << 1;
-
-    while (i < n) {
-      mySum += g_idata[i];
-      // ensure we don't read out of bounds -- this is optimized away for
-      // powerOf2 sized arrays
-      if ((i + blockSize) < n) {
-        mySum += g_idata[i + blockSize];
-      }
-      i += gridSize;
+    T sum = 0;
+    uint i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < n) 
+    {
+        sum += input[i];
+        i += grids_size;
     }
-  } else {
-    unsigned int i = blockIdx.x * blockSize + threadIdx.x;
-    while (i < n) {
-      mySum += g_idata[i];
-      i += gridSize;
+
+    sum = warpReduceSum<T>(mask, sum);
+    if (tid % WARP_SIZE == 0) 
+        shared[tid / WARP_SIZE] = sum;
+    
+    __syncthreads();
+    uint ballot_mask = __ballot_sync(mask, tid < shared_size);
+    if (tid < shared_size) 
+    {
+        sum = shared[tid];
+        sum = warpReduceSum<T>(ballot_mask, sum);
     }
-  }
 
-  // Reduce within warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
-  // SM 8.0
-  mySum = warpReduceSum<T>(mask, mySum);
+    // write result for this block to global mem
+    if (tid == 0) {
+        output[blockIdx.x] = sum;
+    }
+}
 
-  // each thread puts its local sum into shared memory
-  if ((tid % warpSize) == 0) {
-    sdata[tid / warpSize] = mySum;
-  }
+struct Reduce {
+    struct Add {};
+    struct Mul {};
+    struct Min {};
+    struct Max {};
+    struct Or {};
+    struct And {};
+    struct Xor {};
 
-  __syncthreads();
+    static Add ADD;
+    static Mul MUL;
+    static Min MIN;
+    static Max MAX;
+    static Or  OR;
+    static And AND;
+    static Xor XOR;
+};
 
-  const unsigned int shmem_extent =
-      (blockSize / warpSize) > 0 ? (blockSize / warpSize) : 1;
-  const unsigned int ballot_result = __ballot_sync(mask, tid < shmem_extent);
-  if (tid < shmem_extent) {
-    mySum = sdata[tid];
-    // Reduce final warp using shuffle or reduce_add if T==int & CUDA_ARCH ==
-    // SM 8.0
-    mySum = warpReduceSum<T>(ballot_result, mySum);
-  }
+template <class Reduction, typename T>
+__host__ __device__ __forceinline__ T _reduce(T a, T b)
+{
+    if constexpr      (std::is_same_v<Reduction, Reduce::Add>)
+        return a + b;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Mul>)
+        return a * b;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Min>)
+        return MIN(a, b);
+    else if constexpr (std::is_same_v<Reduction, Reduce::Max>)
+        return MAX(a, b);
+    else if constexpr (std::is_same_v<Reduction, Reduce::And>)
+        return a & b;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Or>)
+        return a | b;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Xor>)
+        return a ^ b;
+    else
+        return Reduction::reduce(a, b);
+}
 
-  // write result for this block to global mem
-  if (tid == 0) {
-    g_odata[blockIdx.x] = mySum;
-  }
+template <class Reduction, typename T>
+__host__ __device__ __forceinline__ T _identity()
+{
+    if constexpr      (std::is_same_v<Reduction, Reduce::Add>)
+        return (T) 0;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Mul>)
+        return (T) 1;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Min>)
+        return (T) MAX(std::numeric_limits<T>::max(), std::numeric_limits<T>::infinity());
+    else if constexpr (std::is_same_v<Reduction, Reduce::Max>)
+        return (T) MIN(std::numeric_limits<T>::min(), -std::numeric_limits<T>::infinity());
+    else if constexpr (std::is_same_v<Reduction, Reduce::And>)
+        return (T) 0xFFFFFFFFFFFFULL;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Or>)
+        return (T) 0;
+    else if constexpr (std::is_same_v<Reduction, Reduce::Xor>)
+        return (T) 0;
+    else
+        return Reduction::identity();
+}
+
+template <class Reduction, typename T>
+__device__ __forceinline__ T warp_reduce(unsigned int mask, T value) 
+{
+    //For integral (up to 32 bit) types we can use builtins for super fast reduction.
+    constexpr bool is_okay_int = std::is_integral_v<T> && sizeof(T) <= sizeof(int); (void) is_okay_int;
+
+    if constexpr(0) {}
+    #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+    else if constexpr (is_okay_int && std::is_same_v<Reduction, Reduce::Add>)
+        return (T) __reduce_add_sync(mask, value);
+    else if constexpr (is_okay_int && std::is_same_v<Reduction, Reduce::Min>)
+        return (T) __reduce_min_sync(mask, value);
+    else if constexpr (is_okay_int && std::is_same_v<Reduction, Reduce::Max>)
+        return (T) __reduce_max_sync(mask, value);
+    else if constexpr (is_okay_int && std::is_same_v<Reduction, Reduce::And>)
+        return (T) __reduce_and_sync(mask, (unsigned) value);
+    else if constexpr (is_okay_int && std::is_same_v<Reduction, Reduce::Or>)
+        return (T) __reduce_or_sync(mask, (unsigned) value);
+    else if constexpr (is_okay_int && std::is_same_v<Reduction, Reduce::Xor>)
+        return (T) __reduce_xor_sync(mask, (unsigned) value);
+    #endif
+    else
+    {
+        //@NOTE: T must be one of: (unsigned) short, (unsigned) int, (unsigned) long long, hafl, float, double.
+        //Otherwise when sizeof(T) < 8 we will need to write custom casting code
+        //Otherwiese when sizeof(T) > 8 we will need to change to algorhimt to do only shared memory reduction
+        #if 1
+        for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) 
+            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, offset), value);
+        #else
+            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 16), value);
+            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 8), value);
+            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 4), value);
+            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 2), value);
+            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 1), value);
+        #endif
+
+        return value;
+    }
+}
+
+//@TODO: finish & test reduction
+//@TODO: benchmark improvemnt with semi implcit and adaptive rk4 method
+
+//produce_reduce(N, out, (int)->Real, Reduction::Sum)
+//reduce<Reduction::Sum>(N, out, in)
+// -> compare for equality if types equal inline. Has to be a template argument
+// -> template arguments must have their 'subtype' present. this is ugly.
+// -> If we do the tag approach we get rid of a certain template argument explosion
+
+//reduce<Reduction::Sum>
+//reduce<MyReducer>
+
+// Convolution?
+
+//-> L1 diff
+//-> L2 diff
+//-> Lmax diff
+//-> dot product
+//-> sum
+//-> max
+
+template <class Reduction, typename T, typename Producer, bool is_trivial_producer>
+__global__ void produce_reduce_kernel(T* __restrict__ output, Producer produce, uint N) 
+{
+    assert(blockDim.x > WARP_SIZE && blockDim.x % WARP_SIZE == 0 && "we expect the block dim to be chosen sainly");
+    uint shared_size = blockDim.x / WARP_SIZE;
+
+    extern __shared__ max_align_t shared_backing[];
+    T* shared = (T*) (void*) shared_backing;
+
+    T reduced = _identity<Reduction, T>();
+    for(uint i = blockIdx.x*blockDim.x + threadIdx.x; i < N; i += blockDim.x*gridDim.x)
+    {
+        T produced;
+        if constexpr(is_trivial_producer)
+            produced = produce[i];
+        else 
+            produced = produce(i);
+
+        reduced = _reduce<Reduction, T>(produced, reduced);
+    }
+
+    reduced = warp_reduce<Reduction, T>(0xffffffffU, reduced);
+    uint ti = threadIdx.x;
+    if (ti % WARP_SIZE == 0) 
+        shared[ti / WARP_SIZE] = reduced;
+    
+    __syncthreads();
+    uint ballot_mask = __ballot_sync(0xffffffffU, ti < shared_size);
+    if (ti < shared_size) 
+    {
+        reduced = shared[ti];
+        reduced = warp_reduce<Reduction, T>(ballot_mask, reduced);
+    }
+
+    if (ti == 0) 
+        output[blockIdx.x] = reduced;
 }
 
 #if 0
@@ -1960,20 +2130,19 @@ __global__ void map_reduce_kernel(Real* __restrict__ reduced, Map_Func map, Redu
     }
 }
 #else
-template<uint SHARED_ITEMS, uint GATHER_MULT, int FLAGS>
 __global__ void map_reduce_kernel(Real* __restrict__ reduced, Real* __restrict__ input, uint N)
 {
     //GATHER_MULT times because the first reduction is while loading to shared memory by doing GATHER_MULT iterations
     uint ti = threadIdx.x;
 
-    __shared__ Real shared[SHARED_ITEMS];
+    extern __shared__ Real shared[];
 
     Real sum = 0;
-    uint i = SHARED_ITEMS*blockIdx.x + ti;
+    uint i = blockDim.x*blockIdx.x + ti;
     while(i < N)
     {
         sum += input[i];
-        i += SHARED_ITEMS*gridDim.x;
+        i += blockDim.x*gridDim.x;
     }
 
     // __syncwarp();
@@ -1985,8 +2154,8 @@ __global__ void map_reduce_kernel(Real* __restrict__ reduced, Real* __restrict__
     
     __syncthreads();
 
-    uint mask = __ballot_sync(0xffffffffU, ti < SHARED_ITEMS);
-    if(ti < SHARED_ITEMS) {
+    uint mask = __ballot_sync(0xffffffffU, ti < blockDim.x);
+    if(ti < blockDim.x) {
         sum = shared[ti];
 
         for(uint stride = WARP_SIZE/2; stride > 0; stride /= 2)
@@ -1997,7 +2166,7 @@ __global__ void map_reduce_kernel(Real* __restrict__ reduced, Real* __restrict__
     }
 
     __syncthreads();
-    uint extent = DIV_CEIL(SHARED_ITEMS, WARP_SIZE);
+    uint extent = DIV_CEIL(blockDim.x, WARP_SIZE);
     mask = __ballot_sync(0xffffffffU, ti < extent);
     if(ti < extent) {
         sum = shared[ti*WARP_SIZE]; //uncoalesced
@@ -2010,161 +2179,229 @@ __global__ void map_reduce_kernel(Real* __restrict__ reduced, Real* __restrict__
     if(ti == 0)
         reduced[blockIdx.x] = sum;
 }
-
 #endif
 
-template<uint SHARED_ITEMS, uint GATHER_MULT, uint CPU_REDUCE, int FLAGS = 0>
-Real reduce(Real* input, int N)
+template <typename T, class Reduction, typename Producer, bool has_trivial_producer = false>
+T produce_reduce(uint N, Producer produce, Reduction reduce_dummy = Reduction(), uint cpu_reduce = 128)
 {
-    enum { 
-        // SHARED_ITEMS = 128,
-        // GATHER_MULT = 2,
-        REDUCE_BY = SHARED_ITEMS*GATHER_MULT,
-        // CPU_REDUCE = SHARED_ITEMS*2 
+    (void) reduce_dummy;
+    enum {
+        CPU_REDUCE_MAX = 16,
+        CPU_REDUCE_MIN = 16,
     };
 
-    if(N <= 0)
-        return 0;
-
-    Cuda_Info info = cuda_one_time_setup();
-    Cache_Tag tag = cache_tag_make();
-    Real* partials[2] = {input, NULL};
-
-    int iter = 0;
-    int Ncurr = N;
-    for(; Ncurr > CPU_REDUCE; Ncurr = (Ncurr + REDUCE_BY - 1) / REDUCE_BY, iter++)
+    T reduced = _identity<Reduction, T>();
+    if(N > 0)
     {
-        int i_curr = iter%2;
-        int i_next = (iter + 1)%2;
-        if(partials[i_next] == NULL || partials[i_next] == input)
-            partials[i_next] = cache_alloc(Real, N, &tag);
+        Cache_Tag tag = cache_tag_make();
+        Cuda_Info info = cuda_one_time_setup();
+        cpu_reduce = CLAMP(cpu_reduce, CPU_REDUCE_MIN, CPU_REDUCE_MAX);
+        uint N_curr = N;
 
-        dim3 block_size = {SHARED_ITEMS, 1, 1};
-        dim3 grids_count = {(uint) info.prop.multiProcessorCount, 1, 1};
-        // dim3 grids_count = {1, 1, 1};
-        int shared_memory = SHARED_ITEMS*sizeof(Real);
+        uint max_shared_items = info.prop.sharedMemPerBlock / sizeof(T);
+        uint block_size_hw_upper_bound = info.prop.maxThreadsPerBlock;
+        uint block_size_hw_lower_bound = DIV_CEIL(info.prop.maxThreadsPerMultiProcessor + 1, info.prop.maxBlocksPerMultiProcessor + 1);
 
-        Real* __restrict__ partials_curr = partials[i_curr];
-        #if 0
-        map_reduce_kernel<SHARED_ITEMS, GATHER_MULT, FLAGS>
-            <<<grids_count, block_size, shared_memory>>>(partials[i_next], 
-                [=]SHARED(int i){return partials_curr[i];}, 
-                [=]SHARED(Real a, Real b){return a + b;}, 0.0, Ncurr);
-        #else
-        if(FLAGS & REDUCE_SAMPLES_VERSION)
-            reduce7<Real, SHARED_ITEMS, false>
-                <<<grids_count, block_size, shared_memory>>>(partials_curr, partials[i_next], Ncurr);
-        else
-            map_reduce_kernel<SHARED_ITEMS, GATHER_MULT, FLAGS>
-                <<<grids_count, block_size, shared_memory>>>(partials[i_next], partials_curr, Ncurr);
-        #endif
+        uint block_size_upper_bound = MIN(block_size_hw_upper_bound, max_shared_items*WARP_SIZE);
+        uint block_size_lower_bound = block_size_hw_lower_bound;
 
-        CUDA_DEBUG_TEST(cudaGetLastError());
-        CUDA_DEBUG_TEST(cudaDeviceSynchronize());
-    }   
-    Real sum = 0;
-    Real cpu[CPU_REDUCE];
-    cudaMemcpy(cpu, partials[iter%2], sizeof(Real)*Ncurr, cudaMemcpyDeviceToHost);
-    for(int i = 0; i < Ncurr; i++)
-        sum += cpu[i];
+        uint block_size_max = (block_size_upper_bound/WARP_SIZE)*WARP_SIZE;
+        uint block_size_min = DIV_CEIL(block_size_lower_bound,WARP_SIZE)*WARP_SIZE;
+        if(block_size_min > block_size_max || WARP_SIZE != info.prop.warpSize)
+        {
+            LOG_ERROR("kernel", "this device has very strange hardware and as such we cannot launch the redutcion kernel. This shouldnt happen.");
+            return reduced;
+        }
+        
+        //Find the optimal block_size. It must
+        // 1) be twithin range [block_size_min, block_size_max] (to be feasible)
+        // 2) be divisible by warpSize (W) (to have good block utlization)
+        // 3) be as big as possible (to obtain maximum paralelism)
+        // 4) divide prop.maxThreadsPerMultiProcessor (to have good streaming multiprocessor utilization - requiring less SMs)
+        uint block_size = 0;
+        for(uint curr_size = block_size_max; curr_size >= block_size_min; curr_size -= WARP_SIZE)
+        {
+            if(info.prop.maxThreadsPerMultiProcessor % curr_size == 0)
+            {
+                block_size = curr_size; 
+                break;
+            }
+        }
 
-    cache_free(&tag);
-    return sum;
+        //If couldnt find one that would divide cleanly just use the biggest ammount
+        if(block_size == 0)
+            block_size = block_size_max;
+
+        uint max_concurent_blocks = info.prop.multiProcessorCount*(info.prop.maxThreadsPerMultiProcessor / block_size);
+        uint shared_items = DIV_CEIL(block_size, WARP_SIZE);
+        ASSERT(block_size_lower_bound <= block_size && block_size <= block_size_upper_bound && block_size % WARP_SIZE == 0);
+
+        T* partials[2] = {NULL, NULL};
+        uint iter = 0;
+        for(; (iter == 0 && has_trivial_producer == false) || N_curr > cpu_reduce; iter++)
+        {
+            uint i_curr = iter%2;
+            uint i_next = (iter + 1)%2;
+            if(iter < 2)
+                partials[i_next] = cache_alloc(T, N, &tag);
+
+            uint block_dim = block_size;
+            uint grid_dim = MIN(DIV_CEIL(N_curr, block_size), max_concurent_blocks); //Only fire the blocks we actually need!
+            uint shared_memory = shared_items*sizeof(T);
+            ASSERT(shared_memory <= info.prop.sharedMemPerBlock, "too much shared mem requested!");
+
+            T* __restrict__ curr_input = partials[i_curr];
+            T* __restrict__ curr_output = partials[i_next];
+            if(iter ==  0)
+            {
+                produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>
+                    <<<grid_dim, block_dim, shared_memory>>>(curr_output, (Producer&&) produce, N_curr);
+            }
+            else
+            {
+                produce_reduce_kernel<Reduction, T, const T* __restrict__, true>
+                    <<<grid_dim, block_dim, shared_memory>>>(curr_output, curr_input, N_curr);
+            }
+
+            CUDA_DEBUG_TEST(cudaGetLastError());
+            CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+
+            uint G = MIN(N_curr, block_size*grid_dim);
+            uint N_next = DIV_CEIL(G, WARP_SIZE*WARP_SIZE); 
+            N_curr = N_next;
+        }   
+
+        //in case N <= CPU_REDUCE and has_trivial_producer 
+        // we entirely skipped the whole loop => the partials array is
+        // still null. We have to init it to the produce array.
+        const T* last_input = partials[iter%2];
+        if constexpr(has_trivial_producer)
+            if(N <= cpu_reduce)
+                last_input = produce;
+
+        T cpu[CPU_REDUCE_MAX];
+        cudaMemcpy(cpu, last_input, sizeof(T)*N_curr, cudaMemcpyDeviceToHost);
+        for(uint i = 0; i < N_curr; i++)
+            reduced = _reduce<Reduction, T>(reduced, cpu[i]);
+
+        cache_free(&tag);
+    }
+
+    return reduced;
+}
+
+void test_identity()
+{
+    ASSERT((_identity<Reduce::Add, double>() == 0));
+    ASSERT((_identity<Reduce::Min, double>() == INFINITY));
+    ASSERT((_identity<Reduce::Max, double>() == -INFINITY));
+
+    ASSERT((_identity<Reduce::Add, int>() == 0));
+    ASSERT((_identity<Reduce::Min, int>() == INT_MAX));
+    ASSERT((_identity<Reduce::Max, int>() == INT_MIN));
+
+    ASSERT((_identity<Reduce::Add, unsigned>() == 0));
+    ASSERT((_identity<Reduce::Min, unsigned>() == UINT_MAX));
+    ASSERT((_identity<Reduce::Max, unsigned>() == 0));
+
+    ASSERT((_identity<Reduce::Or, unsigned>() == 0));
+    ASSERT((_identity<Reduce::And, unsigned>() == 0xFFFFFFFFU));
+    ASSERT((_identity<Reduce::Xor, unsigned>() == 0));
+}
+
+template<class Reduction, typename T>
+T reduce(const T *input, uint N, Reduction reduce_tag = Reduction())
+{
+    T output = produce_reduce<T, Reduction, const T* __restrict__, true>(N, input);
+    return output;
 }
 
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
-Real thrust_reduce(const Real *input, int n)
-{
-  // wrap raw pointers to device memory with device_ptr
-  thrust::device_ptr<const Real> d_input(input);
+#include <thrust/extrema.h>
 
-  return thrust::reduce(d_input, d_input+n, (Real) 0.0, thrust::plus<Real>());
+template<class Reduction, typename T>
+T thrust_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
+{
+    // wrap raw pointers to device memory with device_ptr
+    thrust::device_ptr<const T> d_input(input);
+
+    T id = _identity<Reduction, T>();
+    if constexpr(std::is_same_v<Reduction, Reduce::Add>)
+        return thrust::reduce(d_input, d_input+n, id, thrust::plus<T>());
+    else if constexpr(std::is_same_v<Reduction, Reduce::Min>)
+        return thrust::reduce(d_input, d_input+n, id, thrust::minimum<T>());
+    else if constexpr(std::is_same_v<Reduction, Reduce::Max>)
+        return thrust::reduce(d_input, d_input+n, id, thrust::maximum<T>());
+    else if constexpr(std::is_same_v<Reduction, Reduce::And>)
+        return thrust::reduce(d_input, d_input+n, id, thrust::bit_and<T>());
+    else if constexpr(std::is_same_v<Reduction, Reduce::Or>)
+        return thrust::reduce(d_input, d_input+n, id, thrust::bit_or<T>());
+    else if constexpr(std::is_same_v<Reduction, Reduce::Xor>)
+        return thrust::reduce(d_input, d_input+n, id, thrust::bit_xor<T>());
+    else
+        ASSERT(false, "Bad reduce type for thrust!");
+    return 0;
 }
 
-Real cpu_reduce(const Real *input, int n)
+template<class Reduction, typename T>
+T cpu_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
 {
     enum {COPY_AT_ONCE = 256};
-    Real cpu[COPY_AT_ONCE] = {0};
-    Real sum = 0;
+    T cpu[COPY_AT_ONCE] = {0};
+    T sum = _identity<Reduction, T>();
 
     for(int k = 0; k < n; k += COPY_AT_ONCE)
     {
         int from = k;
         int to = MIN(k + COPY_AT_ONCE, n);
-        cudaMemcpy(cpu, input + from, sizeof(Real)*(to - from), cudaMemcpyDeviceToHost);
+        cudaMemcpy(cpu, input + from, sizeof(T)*(to - from), cudaMemcpyDeviceToHost);
         
         for(int i = 0; i < to - from; i++)
-            sum += cpu[i];
+            sum = _reduce<Reduction, T>(sum, cpu[i]);
     }
 
     return sum;
 }
 
-Real cpu_fold_reduce(const Real *input, int n)
+template<class Reduction, typename T>
+T cpu_fold_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
 {
-    if(n <= 0)
-        return 0;
-
-    static Real* copy = 0;
-    static int local_capacity = 0;
-
-    if(local_capacity < n)
+    T sum = _identity<Reduction, T>();
+    if(n > 0)
     {
-        copy = (Real*) realloc(copy, n*sizeof(Real));
-        local_capacity = n;
-    }
-    
-    cudaMemcpy(copy, input, sizeof(Real)*n, cudaMemcpyDeviceToHost);
-    for(int range = n; range > 1; range /= 2)
-    {
-        // if(range == n)
-        // {
-        //     printf("%i > ", n);
-        //     for(int i = 0; i < range; i ++)
-        //         printf("%.2lf ", copy[i]);
-        //     printf("\n");
-        // }
+        static T* copy = 0;
+        static int local_capacity = 0;
+        if(local_capacity < n)
+        {
+            copy = (T*) realloc(copy, n*sizeof(T));
+            local_capacity = n;
+        }
 
-        for(int i = 0; i < range/2 ; i ++)
-            copy[i] = copy[2*i] + copy[2*i + 1];
+        cudaMemcpy(copy, input, sizeof(T)*n, cudaMemcpyDeviceToHost);
+        for(int range = n; range > 1; range /= 2)
+        {
+            // if(range == n)
+            // {
+            //     printf("%i > ", n);
+            //     for(int i = 0; i < range; i ++)
+            //         printf("%.2lf ", copy[i]);
+            //     printf("\n");
+            // }
 
-        if(range%2)
-            copy[range/2 - 1] += copy[range - 1];
-    }
+            for(int i = 0; i < range/2 ; i ++)
+                copy[i] = _reduce<Reduction, T>(copy[2*i], copy[2*i + 1]);
 
-    return copy[0];
-}
+            if(range%2)
+                copy[range/2 - 1] = _reduce<Reduction, T>(copy[range/2 - 1], copy[range - 1]);
+        }
 
-Real cpu_reduce_hiding(const Real *input, int n)
-{
-    enum {COPY_AT_ONCE = 256};
-    Real cpu[COPY_AT_ONCE] = {0};
-    Real sum = 0;
-    cudaMemcpyAsync(cpu, input, sizeof(Real)* MIN(COPY_AT_ONCE, n), cudaMemcpyDeviceToHost);
-
-    for(int k = 0; k < n; k += COPY_AT_ONCE)
-    {
-        int from = k;
-        int to = MIN(k + COPY_AT_ONCE, n);
-        int next_to = MIN(k + COPY_AT_ONCE*2, n);
-        cudaDeviceSynchronize();
-        cudaMemcpyAsync(cpu, input + to, sizeof(Real)*(next_to - to), cudaMemcpyDeviceToHost);
-        for(int i = 0; i < to - from; i++)
-            sum += cpu[i];
-
+        sum  = copy[0];
     }
 
     return sum;
 }
 
-void cache_prepare(int count, int item_size, int N)
-{
-    Cache_Tag tag = cache_tag_make();
-    for(int i = 0; i < count; i++)
-        _cache_alloc(item_size*N, &tag, SOURCE_INFO());
-    cache_free(&tag);
-}
 
 #include <chrono>
 static int64_t clock_ns()
@@ -2232,96 +2469,127 @@ bool is_near_scaled(double x, double y, double epsilon = 1e-8)
     return is_near(x, y, factor * epsilon / 2);
 }
 
-extern "C" void benchmark_reduce_kernels(int N)
+template<typename T>
+void test_reduce(uint64_t seed = (uint64_t) clock_ns())
 {
-    // cache_prepare(3, N, sizeof(Real));
-    // cache_prepare(3, N, sizeof(uint));
+    test_identity();
+    uint Ns[] = {0, 1, 5, 31, 32, 33, 64, 65, 256, 257, 512, 513, 1023, 1024, 1025, 256*256, 1024*1024 - 1, 1024*1024};
 
-    if(0)
+    //Find max size 
+    uint N = 0;
+    for(int i = 0; i < STATIC_ARRAY_SIZE(Ns); i++)
+        if(N < Ns[i])
+            N = Ns[i];
+
+    //generate max sized map of radonom data.
+    Cache_Tag tag = cache_tag_make();
+    uint32_t* rand_state = cache_alloc(uint, N, &tag);
+    T*        rand = cache_alloc(T, N, &tag);
+    cuda_for(0, (int)N, [=]SHARED(int i) {
+        uint32_t hashed_index = pcg_hash((uint32_t) i);
+        uint32_t fold = (uint32_t) seed ^ (uint32_t) (seed >> 32);
+
+        uint32_t hashed_together = pcg_hash(hashed_index ^ fold);
+        rand_state[i] = hashed_together;
+        rand[i] = (T) 0;
+        if constexpr(std::is_floating_point_v<T>)
+            rand[i] = (T) hashed_together / (T) UINT32_MAX;
+        else if constexpr(std::is_integral_v<T>)
+            rand[i] = (T) hashed_together;
+    });
+
+    //test each size on radom data.
+    for(int i = 0; i < STATIC_ARRAY_SIZE(Ns); i++)
     {
-            
-        uint Ns[] = {0, 1, 5, 31, 32, 33, 64, 65, 256, 257, 512, 513, 1023, 1024, 1025, 256*256, 1024*1024};
-        for(int i = 0; i < STATIC_ARRAY_SIZE(Ns); i++)
+        uint n = Ns[i];
+        T sum0 = cpu_reduce(rand, n, Reduce::ADD);
+        T sum1 = cpu_fold_reduce(rand, n, Reduce::ADD);
+        T sum2 = thrust_reduce(rand, n, Reduce::ADD);
+        T sum3 = reduce(rand, n, Reduce::ADD);
+
+        //naive cpu sum reduce diverges from the true values for large n due to
+        // floating point rounding
+        if(n < 1024) TEST(is_near(sum1, sum0));
+
+        // TEST(is_near(sum1, sum2)); //thrust gives inaccuarte results...
+        TEST(is_near(sum1, sum3));
+
+        T min0 = cpu_reduce(rand, n, Reduce::MIN);
+        T min1 = cpu_fold_reduce(rand, n, Reduce::MIN);
+        T min2 = thrust_reduce(rand, n, Reduce::MIN);
+        T min3 = reduce(rand, n, Reduce::MIN);
+
+        TEST(is_near(min1, min0));
+        TEST(is_near(min1, min2));
+        TEST(is_near(min1, min3));
+
+        T max0 = cpu_reduce(rand, n, Reduce::MAX);
+        T max1 = cpu_fold_reduce(rand, n, Reduce::MAX);
+        T max2 = thrust_reduce(rand, n, Reduce::MAX);
+        T max3 = reduce(rand, n, Reduce::MAX);
+
+        TEST(is_near(max1, max0));
+        TEST(is_near(max1, max2));
+        TEST(is_near(max1, max3));
+
+        if constexpr(std::is_integral_v<T>)
         {
-            Cache_Tag tag = cache_tag_make();
-            uint n = Ns[i];
+            T and0 = cpu_reduce(rand, n, Reduce::AND);
+            T and1 = cpu_fold_reduce(rand, n, Reduce::AND);
+            T and2 = thrust_reduce(rand, n, Reduce::AND);
+            T and3 = reduce(rand, n, Reduce::AND);
 
-            Random_Map_State rand = {0};
-            rand.N = n;
-            rand.state = cache_alloc(uint, n, &tag);
-            rand.map = cache_alloc(Real, n, &tag);
+            TEST(and1 == and0);
+            TEST(and1 == and2);
+            TEST(and1 == and3);
 
-            uint seed = 14121;
-            random_map_seed(&rand, seed);
+            T or0 = cpu_reduce(rand, n, Reduce::OR);
+            T or1 = cpu_fold_reduce(rand, n, Reduce::OR);
+            T or2 = thrust_reduce(rand, n, Reduce::OR);
+            T or3 = reduce(rand, n, Reduce::OR);
 
-            Real sum0 = cpu_reduce(rand.map, n);
-            Real sum1 = cpu_fold_reduce(rand.map, n);
-            Real sum2 = thrust_reduce(rand.map, n);
+            TEST(or1 == or0);
+            TEST(or1 == or2);
+            TEST(or1 == or3);
 
-            Real sum3 = reduce<256, 1, 1>(rand.map, n);
-            Real sum4 = reduce<128, 1, 1>(rand.map, n);
-            Real sum5 = reduce<64, 1, 1>(rand.map, n);
+            T xor0 = cpu_reduce(rand, n, Reduce::XOR);
+            T xor1 = cpu_fold_reduce(rand, n, Reduce::XOR);
+            T xor2 = thrust_reduce(rand, n, Reduce::XOR);
+            T xor3 = reduce(rand, n, Reduce::XOR);
 
-            Real sum3_wg = reduce<256, 1, 1, REDUCE_WARP_GATHER>(rand.map, n);
-            Real sum4_wg = reduce<128, 1, 1, REDUCE_WARP_GATHER>(rand.map, n);
-            Real sum5_wg = reduce<64, 1, 1, REDUCE_WARP_GATHER>(rand.map, n);
-
-            Real sum3_sf = reduce<256, 1, 1, REDUCE_SHARED_ONLY_FOLD>(rand.map, n);
-            Real sum4_sf = reduce<128, 1, 1, REDUCE_SHARED_ONLY_FOLD>(rand.map, n);
-            Real sum5_sf = reduce<64, 1, 1, REDUCE_SHARED_ONLY_FOLD>(rand.map, n);
-
-            Real sum3_wf = reduce<256, 1, 1, REDUCE_WARP_ONLY_FOLD>(rand.map, n);
-            Real sum4_wf = reduce<128, 1, 1, REDUCE_WARP_ONLY_FOLD>(rand.map, n);
-            Real sum5_wf = reduce<64, 1, 1, REDUCE_WARP_ONLY_FOLD>(rand.map, n);
-
-            Real sum3_wf_wg = reduce<256, 1, 1, REDUCE_WARP_ONLY_FOLD | REDUCE_WARP_GATHER>(rand.map, n);
-            Real sum4_wf_wg = reduce<128, 1, 1, REDUCE_WARP_ONLY_FOLD | REDUCE_WARP_GATHER>(rand.map, n);
-            Real sum5_wf_wg = reduce<64, 1, 1, REDUCE_WARP_ONLY_FOLD | REDUCE_WARP_GATHER>(rand.map, n);
-
-            Real sum3_2 = reduce<256, 2, 1>(rand.map, n);
-            Real sum4_2 = reduce<128, 2, 1>(rand.map, n);
-            Real sum5_2 = reduce<64, 2, 1>(rand.map, n);
-
-            Real sum3_5 = reduce<256, 5, 1>(rand.map, n);
-            Real sum4_5 = reduce<128, 5, 1>(rand.map, n);
-            Real sum5_5 = reduce<64, 5, 1>(rand.map, n);
-
-            //naive cpu reduce diverges from the true values for large n due to
-            // floating point rounding
-            if(n < 1024)
-                ASSERT(is_near(sum1, sum0));
-
-            ASSERT(is_near(sum1, sum2));
-            ASSERT(is_near(sum1, sum3));
-            ASSERT(is_near(sum1, sum4));
-            ASSERT(is_near(sum1, sum5));
-
-            ASSERT(is_near(sum1, sum3_wg));
-            ASSERT(is_near(sum1, sum4_wg));
-            ASSERT(is_near(sum1, sum5_wg));
-
-            ASSERT(is_near(sum1, sum3_sf));
-            ASSERT(is_near(sum1, sum4_sf));
-            ASSERT(is_near(sum1, sum5_sf));
-
-            ASSERT(is_near(sum1, sum3_wf));
-            ASSERT(is_near(sum1, sum4_wf));
-            ASSERT(is_near(sum1, sum5_wf));
-
-            ASSERT(is_near(sum1, sum3_wf_wg));
-            ASSERT(is_near(sum1, sum4_wf_wg));
-            ASSERT(is_near(sum1, sum5_wf_wg));
-            
-            ASSERT(is_near(sum1, sum3_2));
-            ASSERT(is_near(sum1, sum4_2));
-            ASSERT(is_near(sum1, sum5_2));
-
-            ASSERT(is_near(sum1, sum3_5));
-            ASSERT(is_near(sum1, sum4_5));
-            ASSERT(is_near(sum1, sum5_5));
-            cache_free(&tag);
+            TEST(xor1 == xor0);
+            TEST(xor1 == xor2);
+            TEST(xor1 == xor3);
         }
     }
+
+    cache_free(&tag);
+}
+
+void cache_prepare(int count, int item_size, int N)
+{
+    Cache_Tag tag = cache_tag_make();
+    for(int i = 0; i < count; i++)
+        _cache_alloc(item_size*N, &tag, SOURCE_INFO());
+    cache_free(&tag);
+}
+
+extern "C" bool benchmark_reduce_kernels(int N)
+{
+    if(1)
+    {
+        // test_reduce<char>();
+        // test_reduce<unsigned char>();
+        // test_reduce<short>();
+        // test_reduce<ushort>();
+        test_reduce<int>();
+        // test_reduce<uint>();
+        // test_reduce<float>();
+        // test_reduce<double>();
+    }
+
+    cache_prepare(3, N, sizeof(Real));
+    cache_prepare(3, N, sizeof(uint));
 
     Cache_Tag tag = cache_tag_make();
     Random_Map_State rand = {0};
@@ -2329,25 +2597,28 @@ extern "C" void benchmark_reduce_kernels(int N)
     rand.state = cache_alloc(uint, N, &tag);
     rand.map = cache_alloc(Real, N, &tag);
 
-    double cpu_time = benchmark(3, [=]{ cpu_fold_reduce(rand.map, N); });
-    double thrust_time = benchmark(3, [=]{ thrust_reduce(rand.map, N); });
-    double custom_time_thrust = benchmark(3, [=]{ reduce<64, 2, 128>(rand.map, N); });
-    double samples_time = benchmark(3, [=]{ reduce<512, 8, 128, REDUCE_SAMPLES_VERSION>(rand.map, N); });
-    // double custom_time_opt_1 = benchmark(3, [=]{ reduce<512, 8, 128>(rand.map, N); });
-    // double custom_time_opt_2 = benchmark(3, [=]{ reduce<512, 8, 128, REDUCE_WARP_GATHER | REDUCE_WARP_ONLY_FOLD>(rand.map, N); });
-    // double custom_time_opt_3 = benchmark(3, [=]{ reduce<512, 4, 128, REDUCE_WARP_GATHER | REDUCE_WARP_ONLY_FOLD>(rand.map, N); });
-    // double custom_time_opt_4 = benchmark(3, [=]{ reduce<512, 8, 128, REDUCE_WARP_GATHER>(rand.map, N); });
-    double custom_time_opt_5 = benchmark(3, [=]{ reduce<512, 12, 128, REDUCE_WARP_GATHER>(rand.map, N); });
-    double custom_time_opt_6 = benchmark(3, [=]{ reduce<512, 12, 128, REDUCE_WARP_GATHER | REDUCE_WARP_ONLY_FOLD>(rand.map, N); });
-
     int GB = 1024*1024*1024;
-    double total_gb = (double) N / GB * sizeof(Real);
-    LOG_INFO("BENCH", "Benchmark results for %i items (%lfGB)", N, total_gb);
-    LOG_INFO("BENCH", "thrust: %lf GB/s | custom: %lf GB/s | samples: %lf", total_gb/(double)thrust_time, total_gb/(double)custom_time_opt_5, total_gb/(double)samples_time);
-    LOG_INFO("BENCH", "cpu: %lf | thrust: %lf | custom thrust: %lf | samples: %lf", N, cpu_time, thrust_time, custom_time_thrust, samples_time);
-    // LOG_INFO("BENCH", "best: %lf | %lf | %lf | %lf | %lf | %lf",  custom_time_opt_1, custom_time_opt_2, custom_time_opt_3, custom_time_opt_4, custom_time_opt_5, custom_time_opt_6);
-    LOG_INFO("BENCH", "best: %lf | %lf ",  custom_time_opt_5, custom_time_opt_6);
-    
+    {
+        double cpu_time = benchmark(3, [=]{ cpu_fold_reduce(rand.map, N, Reduce::ADD); });
+        double thrust_time = benchmark(3, [=]{ thrust_reduce(rand.map, N, Reduce::ADD); });
+        double custom_time = benchmark(3, [=]{ reduce(rand.map, N, Reduce::ADD); });
+        double total_gb = (double) N / GB * sizeof(Real);
+        LOG_INFO("BENCH", "Benchmark results for %i items (%lfGB)", N, total_gb);
+        LOG_INFO("BENCH", "double (gb/s): cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf", total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time);
+        LOG_INFO("BENCH", "double (time): cpu: %e | thrust: %e | custom: %e | custom uint: %e", N, cpu_time, thrust_time, custom_time);
+    }
+
+    {
+        double cpu_time = benchmark(3, [=]{ cpu_fold_reduce(rand.state, N, Reduce::ADD); });
+        double thrust_time = benchmark(3, [=]{ thrust_reduce(rand.state, N, Reduce::ADD); });
+        double custom_time = benchmark(3, [=]{ reduce(rand.state, N, Reduce::ADD); });
+        double total_gb = (double) N / GB * sizeof(uint);
+        LOG_INFO("BENCH", "Benchmark results for %i items (%lfGB)", N, total_gb);
+        LOG_INFO("BENCH", "uint (gb/s): cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf", total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time);
+        LOG_INFO("BENCH", "uint (time): cpu: %e | thrust: %e | custom: %e | custom uint: %e", N, cpu_time, thrust_time, custom_time);
+    }
+
     cache_free(&tag);
+    return true;
 }
 #endif

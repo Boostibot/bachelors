@@ -78,8 +78,24 @@ typedef struct Allen_Cahn_Params{
     Real noise_der_Phi_max;
 
     Real noise_Phi_timestep; //Regenerates a new noise map ever 
+    bool do_debug;
     bool do_noise;
+    bool do_stats;
+    bool do_stats_step_residual;
 } Allen_Cahn_Params;
+
+#define STEP_RESIDUALS_MAX 10
+typedef struct Allen_Cahn_Stats{
+    Real L2_step_residuals[10];
+    Real Lmax_step_residuals[10];
+    int step_residuals;
+
+    int T_iters;
+    int Phi_iters;
+
+    Real T_error;
+    Real Phi_errror;
+} Allen_Cahn_Stats;
 
 typedef enum Solver_Type{
     SOLVER_TYPE_NONE = 0,
@@ -225,7 +241,7 @@ typedef struct Sim_Map {
 extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m);
 extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m);
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count);
-extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, bool do_debug);
+extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, Allen_Cahn_Stats* stats_or_null);
 
 typedef enum {
     MODIFY_UPLOAD,
@@ -236,7 +252,7 @@ extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, 
 extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify);
 extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t size, Sim_Modify modify);
 
-extern "C" void benchmark_reduce_kernels(int N);
+extern "C" bool benchmark_reduce_kernels(int N);
 
 // solver -> init to some concrete solver
 // solver has to have internal state for caching CACHING! CACHING! its all about caching! We dont even have to have a solver
@@ -256,7 +272,6 @@ static void sim_example()
     
     int m = 20;
     int n = 20;
-    bool do_debug = false;
     Solver_Type type = SOLVER_TYPE_EXPLICIT; 
     (void) type; //for some reason we get unreferenced variable warning here even though it clearly is used (?)
     
@@ -272,7 +287,7 @@ static void sim_example()
     {
         //Do a step in the simulation
         Sim_Map maps[SIM_MAPS_MAX] = {0};
-        sim_solver_step(&solver, states, state_count, i, params, do_debug);
+        sim_solver_step(&solver, states, state_count, i, params, NULL);
 
         //Get debug maps
         sim_solver_get_maps(&solver, states, state_count, i, maps, SIM_MAPS_MAX);

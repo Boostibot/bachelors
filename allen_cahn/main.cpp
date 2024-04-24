@@ -38,6 +38,10 @@ typedef struct App_State {
     int snapshot_index;
     time_t init_time;
 
+    Allen_Cahn_Stats stats_last;
+    Allen_Cahn_Stats stats_summed;
+    int stats_summed_over_iters;
+
     Allen_Cahn_Config   config;
 
     Sim_Solver solver;
@@ -206,7 +210,8 @@ int main()
     config.interactive_mode = false;
     #endif // DO_GRAPHICAL_BUILD
 
-    benchmark_reduce_kernels(config.params.m * config.params.n);
+    if(benchmark_reduce_kernels(config.params.m * config.params.n))
+        return 0;
 
     //OPENGL setup
     if(config.interactive_mode)
@@ -317,9 +322,24 @@ int main()
                 simulated_last_time = frame_start_time;
                 app->remaining_steps -= 1;
 
+                Allen_Cahn_Stats stats = {0};
+                app->config.params.do_debug = app->is_in_debug_mode;
                 double solver_start_time = clock_s();
-                curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
+                curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, &stats);
                 double solver_end_time = clock_s();
+
+                app->stats_last = stats;
+                app->stats_summed.Phi_errror += stats.Phi_errror;
+                app->stats_summed.T_error += stats.T_error;
+                app->stats_summed.Phi_iters += stats.Phi_iters;
+                app->stats_summed.T_iters += stats.T_iters;
+                app->stats_summed.step_residuals = stats.step_residuals;
+                for(size_t z = 0; z < sizeof(stats.L2_step_residuals) / sizeof(int); z++)
+                {
+                    app->stats_summed.L2_step_residuals[z] += stats.L2_step_residuals[z];
+                    app->stats_summed.Lmax_step_residuals[z] += stats.Lmax_step_residuals[z];
+                }
+                app->stats_summed_over_iters += 1;
 
                 processing_time = solver_end_time - solver_start_time;
                 app->iter += 1;
@@ -386,7 +406,11 @@ int main()
                     break;
             }
 
-            curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, app->is_in_debug_mode);
+            Allen_Cahn_Stats stats = {0};
+            app->config.params.do_debug = app->is_in_debug_mode;
+            curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, &stats);
+
+
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
@@ -535,6 +559,7 @@ static void wait_s(double seconds)
     std::this_thread::sleep_until(sleep_til);
 }
 
+
 bool save_netcfd_file(App_State* app)
 {
     enum {NDIMS = 2};
@@ -550,11 +575,12 @@ bool save_netcfd_file(App_State* app)
 
     //creates a path in the form "path/to/snapshots/prefix_2024_03_01__10_22_43_postfix/0001.nc"
     std::string composed_filename;
+
     {
         Allen_Cahn_Snapshots* snapshots = &app->config.snapshots;
         tm* t = localtime(&app->init_time);
 
-        std::filesystem::path composed_path = snapshots->folder;
+        std::filesystem::path snapshot_folder = snapshots->folder;
 
         std::string folder = format_string("%s%04i-%02i-%02i__%02i-%02i-%02i__%s%s", 
             snapshots->prefix.data(), 
@@ -563,25 +589,63 @@ bool save_netcfd_file(App_State* app)
             snapshots->postfix.data()
         );
         std::error_code error = {};
-        if(composed_path.empty() == false)
-            std::filesystem::create_directory(composed_path, error);
+        if(snapshot_folder.empty() == false)
+            std::filesystem::create_directory(snapshot_folder, error);
 
         
 
-        composed_path.append(folder.c_str()); 
-        std::filesystem::create_directory(composed_path, error);
+        snapshot_folder.append(folder.c_str()); 
+        std::filesystem::create_directory(snapshot_folder, error);
 
         if(app->snapshot_index <= 1)
         {
-            std::filesystem::path config_path = composed_path; 
+            std::filesystem::path config_path = snapshot_folder; 
             config_path.append("config.ini");
-
             file_write_entire(config_path.c_str(), app->config.entire_config_file);
         }
 
-        composed_path.append(format_string("%s_%04i.nc", solver_type_to_cstring(app->config.solver), app->snapshot_index).c_str());
+        //Saving of stats!
+        if(app->config.params.do_stats)
+        {
+            std::filesystem::path stats_path = snapshot_folder; 
+            stats_path.append(format_string("stats_%04i.txt", app->snapshot_index));
 
-        composed_filename = composed_path.c_str();
+            Allen_Cahn_Stats cur_stats = app->stats_last;
+            Allen_Cahn_Stats avg_stats = app->stats_summed;
+            int iters = app->stats_summed_over_iters;
+            if(iters <= 0)
+                iters = 1;
+            avg_stats.Phi_errror /= iters;
+            avg_stats.T_error /= iters;
+            avg_stats.Phi_iters /= iters;
+            avg_stats.T_iters /= iters;
+            for(size_t z = 0; z < sizeof(avg_stats.L2_step_residuals) / sizeof(int); z++)
+            {
+                avg_stats.L2_step_residuals[z] /= iters;
+                avg_stats.Lmax_step_residuals[z] /= iters;
+            }
+
+            //Clear any stats @TODO: less OOP. This functions should not modify app state in any way!
+            app->stats_summed_over_iters = 0;
+            app->stats_summed = Allen_Cahn_Stats{0};
+
+            int l_i = avg_stats.step_residuals - 1;
+            if(l_i < 0)
+                l_i = 0;
+
+            file_write_entire(stats_path.c_str(), format_string(
+                "     L2     Lmax\n"
+                "avg: %e, %e\n" 
+                "cur: %e, %e\n", 
+                avg_stats.L2_step_residuals[l_i], avg_stats.Lmax_step_residuals[l_i],
+                cur_stats.L2_step_residuals[l_i], cur_stats.Lmax_step_residuals[l_i]
+            ));
+        }
+
+        std::filesystem::path snapshot_path = snapshot_folder; 
+        snapshot_path.append(format_string("%s_%04i.nc", solver_type_to_cstring(app->config.solver), app->snapshot_index).c_str());
+
+        composed_filename = snapshot_path.c_str();
 
         if(error)
         {
