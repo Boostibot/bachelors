@@ -1,3 +1,4 @@
+#pragma once
 #define SHARED __host__ __device__
 
 //For the moment we compile these onese as well but
@@ -15,6 +16,9 @@
 #include <device_launch_parameters.h>
 #include <cuda_runtime.h>
 
+typedef int csize;
+
+//Can be defined to something else if we wish to for example use size_t or uint
 static bool _test_cuda_(cudaError_t error, const char* expression, int line, const char* file, const char* function, const char* format, ...)
 {
     if(error != cudaSuccess)
@@ -46,7 +50,7 @@ struct Cuda_Info {
     cudaDeviceProp prop;
 };
 
-Cuda_Info cuda_one_time_setup()
+static Cuda_Info cuda_one_time_setup()
 {
     static bool was_setup = false;
     static Cuda_Info info = {0};
@@ -148,8 +152,9 @@ enum {
 };
 
 
-void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int flags, const char* file, const char* function, int line)
+static void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int flags, const char* file, const char* function, int line)
 {
+    Cuda_Info info = cuda_one_time_setup();
     LOG_INFO("CUDA", "realloc " MEMORY_FMT "-> " MEMORY_FMT " %s %s:%i\n",
             MEMORY_PRINT(old_size), 
             MEMORY_PRINT(new_size),
@@ -159,7 +164,6 @@ void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int flags, 
     void* new_ptr = NULL;
     if(new_size != 0)
     {
-        Cuda_Info info = cuda_one_time_setup();
         CUDA_TEST(cudaMalloc(&new_ptr, new_size), 
             "Out of CUDA memory! Requested " MEMORY_FMT ". Using " MEMORY_FMT " / " MEMORY_FMT ". %s %s:%i", 
             MEMORY_PRINT(new_size), 
@@ -188,16 +192,13 @@ void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int flags, 
     return new_ptr;
 }
 
-void _cuda_realloc_in_place(void** ptr_ptr, size_t new_size, size_t old_size, int flags, const char* file, const char* function, int line)
+static void _cuda_realloc_in_place(void** ptr_ptr, size_t new_size, size_t old_size, int flags, const char* file, const char* function, int line)
 {
     *ptr_ptr = _cuda_realloc(*ptr_ptr, new_size, old_size, flags, file, function, line);
 }
 
 #define cuda_realloc(old_ptr, new_size, old_size, flags)          _cuda_realloc(old_ptr, new_size, old_size, flags, __FILE__, __FUNCTION__, __LINE__)
 #define cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags) _cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags, __FILE__, __FUNCTION__, __LINE__)
-
-// #include "hash_index.h"
-// #include "hash.h"
 
 typedef struct Source_Info {
     int line;
@@ -236,29 +237,30 @@ typedef struct Allocation_Cache {
     size_t max_alloced_bytes;
     
     int bucket_count;
-    //We store flat max because we are lazy and 32 seems like enough.
-    Size_Bucket buckets[32];
+    //We store flat max because we are lazy and 256 seems like enough.
+    Size_Bucket buckets[256];
 } Allocation_Cache;
 
-Allocation_Cache _global_allocation_cache;
-
+static inline Allocation_Cache* _global_allocation_cache() {
+    thread_local static Allocation_Cache c;
+    return &c;
+}
 
 typedef struct Cache_Tag {
     uint64_t generation;
     Cache_Index last;
 } Cache_Tag;
 
-Cache_Tag cache_tag_make()
+static Cache_Tag cache_tag_make()
 {
     Cache_Tag out = {0};
-    _global_allocation_cache.generation += 1;
-    out.generation = _global_allocation_cache.generation;
+    out.generation = ++_global_allocation_cache()->generation;
     return out;
 }
 
-void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
+static void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
 {
-    Allocation_Cache* cache = &_global_allocation_cache;
+    Allocation_Cache* cache = _global_allocation_cache();
     if(bytes == 0)
         return NULL;
 
@@ -327,9 +329,9 @@ void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
     return allocation->ptr;
 }
 
-void cache_free(Cache_Tag* tag)
+static void cache_free(Cache_Tag* tag)
 {
-    Allocation_Cache* cache = &_global_allocation_cache;
+    Allocation_Cache* cache = _global_allocation_cache();
     while(tag->last.index != 0)
     {
         Size_Bucket* bucket = &cache->buckets[tag->last.bucket];

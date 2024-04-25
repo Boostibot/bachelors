@@ -10,7 +10,6 @@ DEVICE_LINK  := -g -G -dlink
 # DEVICE_FLAGS := -g -G -Xcudafe --display_error_number --extended-lambda --expt-relaxed-constexpr -std=c++17 -ccbin /usr/bin/g++-10 
 # DEVICE_LINK  := -g -G -dlink
 
-
 ALL_SOURCES = $(shell find -L -regex '.*/.*\.\(c\|h\|cpp\|hpp\|cu\|cuh\)$ ')
 DEPENDENCIES = $(ALL_SOURCES) Makefile
 D := $(BUILD_DIR)
