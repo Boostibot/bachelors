@@ -300,7 +300,7 @@ static T L2_norm(const T *a, uint N)
         T diff = a[i];
         return diff*diff;
     });
-    return output;
+    return (T) sqrt(output);
 }
 
 template<typename T>
@@ -332,7 +332,7 @@ static T L2_distance(const T *a, const T *b, uint N)
         T diff = a[i] - b[i];
         return diff*diff;
     });
-    return output;
+    return (T) sqrt(output);
 }
 
 template<typename T>
@@ -444,7 +444,7 @@ static __device__ __forceinline__ T _warp_reduce(unsigned int mask, T value)
 
 //============================= TESTS =================================
 
-#ifdef TEST_USING_THRUST
+#ifdef USE_THRUST
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
@@ -678,11 +678,15 @@ static void test_identity()
 void test_reduce(uint64_t seed)
 {
     test_identity();
+    //When compiling with thrust enabled this thing completely halts
+    // the compiler...
+    #ifndef USE_THRUST
     test_reduce_type<char>(seed);
     test_reduce_type<unsigned char>(seed);
     test_reduce_type<short>(seed);
     test_reduce_type<ushort>(seed);
     test_reduce_type<int>(seed);
+    #endif
     test_reduce_type<uint>(seed);
     test_reduce_type<float>(seed);
     test_reduce_type<double>(seed);

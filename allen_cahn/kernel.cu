@@ -1,31 +1,90 @@
+// #define USE_THRUST
+
 #include "kernel.h"
 #include "cuda_util.cuh"
+#include "cuda_reduction.cuh"
 
 #define PI          ((Real) 3.14159265359)
 #define TAU         (2*PI)
 #define ECHOF(x)    printf(#x ": " REAL_FMT "\n", (x))
 
+#if 1
 
-
-#if 0
-//Will hand write my own version later. For now we trust in thrust *cymbal*
+#ifdef USE_THRUST
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
+#include <thrust/extrema.h>
+#endif
 
 Real vector_dot_product(const Real *a, const Real *b, int n)
 {
-  // wrap raw pointers to device memory with device_ptr
-  thrust::device_ptr<const Real> d_a(a);
-  thrust::device_ptr<const Real> d_b(b);
+    #ifndef USE_THRUST
+    return dot_product(a, b, n);
+    #else
+    // wrap raw pointers to device memory with device_ptr
+    thrust::device_ptr<const Real> d_a(a);
+    thrust::device_ptr<const Real> d_b(b);
 
-  // inner_product implements a mathematical dot product
-  return thrust::inner_product(d_a, d_a + n, d_b, 0.0);
+    // inner_product implements a mathematical dot product
+    return thrust::inner_product(d_a, d_a + n, d_b, 0.0);
+    #endif
 }
 
 Real vector_max(const Real *a, int N)
 {
+    #ifndef USE_THRUST
+    return max(a, N);
+    #else
     thrust::device_ptr<const Real> d_a(a);
     return *(thrust::max_element(d_a, d_a + N));
+    #endif
+}
+
+Real vector_get_l2_dist(const Real* a, const Real* b, int N)
+{
+    #ifndef USE_THRUST
+    return L2_distance(a, b, N)/ sqrt((Real) N);
+    #else
+    Cache_Tag tag = cache_tag_make();
+    Real* temp = cache_alloc(Real, N, &tag);
+    cuda_for(0, N, [=]SHARED(int i){
+        temp[i] = a[i] - b[i];
+    });
+
+    Real temp_dot_temp = vector_dot_product(temp, temp, N);
+    Real error = sqrt(temp_dot_temp/N);
+    cache_free(&tag);
+    return error;
+    #endif
+}
+
+Real vector_get_max_dist(const Real* a, const Real* b, int N)
+{
+    #ifndef USE_THRUST
+    return L2_distance(a, b, N);
+    #else
+    Cache_Tag tag = cache_tag_make();
+    Real* temp = cache_alloc(Real, N, &tag);
+    cuda_for(0, N, [=]SHARED(int i){
+        temp[i] = a[i] - b[i];
+    });
+
+    Real temp_dot_temp = vector_max(temp, N);
+    Real error = sqrt(temp_dot_temp/N);
+    cache_free(&tag);
+    return error;
+    #endif
+}
+
+
+Real vector_euclid_norm(const Real* vector, int N)
+{
+    #ifndef USE_THRUST
+    return L2_norm(vector, N)/ sqrt((Real) N);
+    #else
+    Real dot = vector_dot_product(vector, vector, N);
+    return sqrt(dot / N);
+    #endif
 }
 
 
@@ -554,40 +613,6 @@ double explicit_solver_choose(Solver_Type type, Explicit_Solver* solver, Explici
     return false;
 }
 
-Real vector_get_l2_dist(const Real* a, const Real* b, int N)
-{
-    Cache_Tag tag = cache_tag_make();
-    Real* temp = cache_alloc(Real, N, &tag);
-    cuda_for(0, N, [=]SHARED(int i){
-        temp[i] = a[i] - b[i];
-    });
-
-    Real temp_dot_temp = vector_dot_product(temp, temp, N);
-    Real error = sqrt(temp_dot_temp/N);
-    cache_free(&tag);
-    return error;
-}
-
-Real vector_get_max_dist(const Real* a, const Real* b, int N)
-{
-    Cache_Tag tag = cache_tag_make();
-    Real* temp = cache_alloc(Real, N, &tag);
-    cuda_for(0, N, [=]SHARED(int i){
-        temp[i] = a[i] - b[i];
-    });
-
-    Real temp_dot_temp = vector_max(temp, N);
-    Real error = sqrt(temp_dot_temp/N);
-    cache_free(&tag);
-    return error;
-}
-
-
-Real vector_euclid_norm(Real* vector, int N)
-{
-    Real dot = vector_dot_product(vector, vector, N);
-    return sqrt(dot / N);
-}
 
 double explicit_solver_choose_and_copute_step_residual(Solver_Type type, Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, Allen_Cahn_Stats* stats_or_null)
 {
