@@ -45,8 +45,31 @@ static bool _test_cuda_(cudaError_t error, const char* expression, int line, con
     #define CUDA_DEBUG_TEST(status, ...) CUDA_TEST(status, __VA_ARGS__)
 #endif
 
+
+enum {
+    WARP_SIZE = 32
+
+    // We use a constant. If this is not the case we will 'need' a different algorhimt anyway. 
+    // The PTX codegen treats warpSize as 'runtime immediate constant' which from my undertanding
+    // is a special constat accesible through its name 'mov.u32 %r6, WARP_SZ;'. 
+    // In many contexts having it be a immediate constant is not enough. 
+    // For example when doing 'x % warpSize == 0' the code will emit 'rem.s32' instruction which is
+    // EXTREMELY costly (on GPUs even more than CPUs!) compared to the single binary 'and.b32' emmited 
+    // in case of 'x % WARP_SIZE == 0'.
+
+    // If you would need to make the below code a bit more "future proof" you could make WARP_SIZE into a 
+    // template argument. However we really dont fear this to cahnge anytime soon since many functions
+    // such as __activemask(), __ballot_sync() or anything else producing lane mask, operates on u32 which 
+    // assumes WARP_SIZE == 32.
+
+    // Prior to launching the kernel we check if warpSize == WARP_SIZE. If it does not we error return.
+};
+
+
+
 struct Cuda_Info {
     int device_id;
+    bool has_broken_driver;
     cudaDeviceProp prop;
 };
 
@@ -118,27 +141,29 @@ static Cuda_Info cuda_one_time_setup()
         cudaDeviceProp selected = devices[max_score_i];
         info.prop = selected;
         info.device_id = max_score_i;
+        info.has_broken_driver = strcmp(selected.name, "NVIDIA GeForce MX450") == 0;
         was_setup = true;
         CUDA_TEST(cudaSetDevice(info.device_id));
 
-        LOG_INFO("CUDA", "Listing devices below (%d):\n", nDevices);
+        LOG_INFO("CUDA", "Listing devices below (%i):\n", nDevices);
         for (int i = 0; i < nDevices; i++)
             LOG_INFO(">CUDA", "[%i] %s (score: %lf) %s\n", i, devices[i].name, scores[i], i == max_score_i ? "[selected]" : "");
 
         // selected.maxThreadsDim
-        LOG_INFO("CUDA", "Selected %s:\n", selected.name);
+        LOG_INFO("CUDA", "Selected '%s':\n", selected.name);
         LOG_INFO("CUDA", "  Multi Processor count: %i\n", selected.multiProcessorCount);
-        LOG_INFO("CUDA", "  Warp-size: %d\n", selected.warpSize);
-        LOG_INFO("CUDA", "  Max thread dim: %d %d %d\n", selected.maxThreadsDim[0], selected.maxThreadsDim[1], selected.maxThreadsDim[2]);
-        LOG_INFO("CUDA", "  Max threads per block: %d\n", selected.maxThreadsPerBlock);
-        LOG_INFO("CUDA", "  Max threads per multi processor: %d\n", selected.maxThreadsPerMultiProcessor);
-        LOG_INFO("CUDA", "  Max blocks per multi processor: %d\n", selected.maxBlocksPerMultiProcessor);
-        LOG_INFO("CUDA", "  Memory Clock Rate (MHz): %d\n", selected.memoryClockRate/1024);
-        LOG_INFO("CUDA", "  Memory Bus Width (bits): %d\n", selected.memoryBusWidth);
+        LOG_INFO("CUDA", "  Warp-size: %i\n", selected.warpSize);
+        LOG_INFO("CUDA", "  Max thread dim: %i %i %i\n", selected.maxThreadsDim[0], selected.maxThreadsDim[1], selected.maxThreadsDim[2]);
+        LOG_INFO("CUDA", "  Max threads per block: %i\n", selected.maxThreadsPerBlock);
+        LOG_INFO("CUDA", "  Max threads per multi processor: %i\n", selected.maxThreadsPerMultiProcessor);
+        LOG_INFO("CUDA", "  Max blocks per multi processor: %i\n", selected.maxBlocksPerMultiProcessor);
+        LOG_INFO("CUDA", "  Memory Clock Rate (MHz): %i\n", selected.memoryClockRate/1024);
+        LOG_INFO("CUDA", "  Memory Bus Width (bits): %i\n", selected.memoryBusWidth);
         LOG_INFO("CUDA", "  Peak Memory Bandwidth (GB/s): %.1f\n", peak_memory[max_score_i]);
-        LOG_INFO("CUDA", "  Total global memory (Gbytes) %.1f\n",(float)(selected.totalGlobalMem)/1024.0/1024.0/1024.0);
+        LOG_INFO("CUDA", "  Global memory (Gbytes) %.1f\n",(float)(selected.totalGlobalMem)/1024.0/1024.0/1024.0);
         LOG_INFO("CUDA", "  Shared memory per block (Kbytes) %.1f\n",(float)(selected.sharedMemPerBlock)/1024.0);
-        LOG_INFO("CUDA", "  minor-major: %d-%d\n", selected.minor, selected.major);
+        LOG_INFO("CUDA", "  Constant memory (Kbytes) %.1f\n",(float)(selected.totalConstMem)/1024.0);
+        LOG_INFO("CUDA", "  minor-major: %i-%i\n", selected.minor, selected.major);
         LOG_INFO("CUDA", "  Concurrent kernels: %s\n", selected.concurrentKernels ? "yes" : "no");
         LOG_INFO("CUDA", "  Concurrent computation/communication: %s\n\n",selected.deviceOverlap ? "yes" : "no");
     }
@@ -146,11 +171,166 @@ static Cuda_Info cuda_one_time_setup()
     return info;
 }
 
+struct Cuda_Launch_Params {
+    // Value in range [0, 1] selecting on of the preferd sizes. 
+    // Prefered sizes are valid sizes that achieve maximum utilization of hardware, usually powers of two.
+    double preferd_block_size_ratio = 1; 
+
+    // If greater than zero and within the valid block size range used as the block size regardless of
+    // anything else. If is not given or not within range block size is determined by preferd_block_size_ratio instead.
+    uint   preferd_block_size = 0;
+
+    //The cap on number of blocks. Can be used to tune sheduler.
+    uint   max_block_count = UINT_MAX;
+    
+    //when greater then zero caps on number of blocks used for drivers with broken sheduler (such as the MX450).
+    uint   max_block_count_for_broken_drivers = 0;
+
+    //The stream used for the launch
+    cudaStream_t stream = 0;
+};
+
+struct Cuda_Launch_Config {
+    uint block_size;
+    uint block_count;
+    uint shared_memory;
+    uint dynamic_shared_memory;
+
+    uint desired_block_count;
+    uint max_concurent_blocks;
+};  
+
+struct Cuda_Launch_Bounds {
+    uint min_block_size;
+    uint max_block_size;
+    uint preferd_block_sizes[12];
+    uint preferd_block_sizes_count;
+
+    double used_shared_memory_per_thread;
+    uint used_shared_memory_per_block;
+};  
+
+struct Cuda_Launch_Query {
+    double used_shared_memory_per_thread = 0;
+    uint used_shared_memory_per_block = 0;
+    
+    uint used_register_count_per_block = 0;
+    uint used_constant_memory = 0;
+
+    uint max_shared_mem = UINT_MAX;
+    uint max_block_size = UINT_MAX;
+    uint min_block_size = 0;
+
+    cudaFuncAttributes attributes;
+};
+
+//Recalculates launch bounds using a different N
+Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bounds, Cuda_Launch_Params params)
+{
+    Cuda_Info info = cuda_one_time_setup();
+    Cuda_Launch_Config launch = {0};
+    if(params.preferd_block_size > 0)
+    {
+        if(bounds.min_block_size <= params.preferd_block_size && params.preferd_block_size <= bounds.max_block_size)
+            launch.block_size = params.preferd_block_size;
+    }
+
+    if(launch.block_size == 0)
+    {
+        ASSERT(bounds.preferd_block_sizes_count >= 1);
+        ASSERT(0 <= params.preferd_block_size_ratio && params.preferd_block_size_ratio <= 1);
+        uint index = (uint) round(params.preferd_block_size_ratio*(bounds.preferd_block_sizes_count - 1));
+        launch.block_size = bounds.preferd_block_sizes[index];
+    }
+
+    launch.dynamic_shared_memory = (uint) (bounds.used_shared_memory_per_thread*launch.block_size + 0.5);
+    launch.shared_memory = launch.dynamic_shared_memory + bounds.used_shared_memory_per_block;
+    
+    launch.max_concurent_blocks = UINT_MAX;
+    if(launch.shared_memory > 0)
+        launch.max_concurent_blocks = info.prop.multiProcessorCount*(info.prop.sharedMemPerMultiprocessor/launch.shared_memory); 
+
+    //Only fire as many blocks as the hardware could ideally support at once. 
+    // Any more than that is pure overhead for the sheduler
+    launch.desired_block_count = DIV_CEIL((uint) N, launch.block_size);
+    launch.block_count = MIN(MIN(launch.desired_block_count, launch.max_concurent_blocks), params.max_block_count);
+    if(info.has_broken_driver && params.max_block_count_for_broken_drivers)
+        launch.block_count = MIN(launch.block_count, params.max_block_count_for_broken_drivers);
+
+    return launch;
+}
+
+Cuda_Launch_Bounds cuda_query_launch_bounds(Cuda_Launch_Query query)
+{
+    Cuda_Launch_Bounds out = {0};
+    Cuda_Info info = cuda_one_time_setup();
+
+    uint max_shared_mem = MIN(info.prop.sharedMemPerBlock, query.max_shared_mem);
+    uint block_size_hw_upper_bound = info.prop.maxThreadsPerBlock;
+    uint block_size_hw_lower_bound = DIV_CEIL(info.prop.maxThreadsPerMultiProcessor + 1, info.prop.maxBlocksPerMultiProcessor + 1);
+
+    uint block_size_max = MIN(block_size_hw_upper_bound, query.max_block_size);
+    uint block_size_min = MAX(block_size_hw_lower_bound, query.min_block_size);
+    
+    block_size_max = (block_size_max/WARP_SIZE)*WARP_SIZE;
+    block_size_min = DIV_CEIL(block_size_min,WARP_SIZE)*WARP_SIZE;
+
+    out.min_block_size = block_size_min;
+    out.max_block_size = block_size_max;
+    if(query.used_shared_memory_per_thread > 0)
+    {
+        uint shared_memory_max_block_size = (max_shared_mem - query.used_shared_memory_per_block)/query.used_shared_memory_per_thread;
+        out.max_block_size = MIN(out.max_block_size, shared_memory_max_block_size);
+    }
+
+    if(out.max_block_size < out.min_block_size || out.max_block_size == 0)
+    {
+        LOG_ERROR("kernel", "no matching launch info found! @TODO: print query");
+        return out;
+    }
+
+    //Find the optimal block_size. It must
+    // 1) be twithin range [block_size_min, block_size_max] (to be feasible)
+    // 2) be divisible by warpSize (W) (to have good block utlization)
+    // 3) be as big as possible (should be at least WARP_SIZE^2 = 1024 for maximum reduction (also right now 1024 is the max size of block on all cards))
+    // 4) divide prop.maxThreadsPerMultiProcessor (to have good streaming multiprocessor utilization - requiring less SMs)
+    for(uint curr_size = out.max_block_size; curr_size >= out.min_block_size; curr_size -= WARP_SIZE)
+    {
+        if(info.prop.maxThreadsPerMultiProcessor % curr_size == 0)
+        {   
+            if(out.preferd_block_sizes_count < STATIC_ARRAY_SIZE(out.preferd_block_sizes))
+                out.preferd_block_sizes[out.preferd_block_sizes_count++] = curr_size;
+            else
+                out.preferd_block_sizes[out.preferd_block_sizes_count - 1] = curr_size;
+        }
+    }
+
+    if(out.preferd_block_sizes_count == 0)
+        out.preferd_block_sizes[0] = out.max_block_size;
+
+    out.used_shared_memory_per_block = query.used_shared_memory_per_block;
+    out.used_shared_memory_per_thread = query.used_shared_memory_per_thread;
+    return out;
+}
+
+Cuda_Launch_Query cuda_launch_query_from_kernel(const void* kernel)
+{
+    cudaFuncAttributes attributes = {};
+    CUDA_TEST(cudaFuncGetAttributes(&attributes, kernel));
+
+    Cuda_Launch_Query query = {};
+    query.max_shared_mem = attributes.maxDynamicSharedSizeBytes;
+    query.max_block_size = attributes.maxThreadsPerBlock;
+    query.used_constant_memory = attributes.constSizeBytes;
+    query.used_shared_memory_per_block = attributes.sharedSizeBytes;
+    query.attributes = attributes;
+    return query;
+}
+
 enum {
     REALLOC_COPY = 1,
     REALLOC_ZERO = 2,
 };
-
 
 static void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int flags, const char* file, const char* function, int line)
 {

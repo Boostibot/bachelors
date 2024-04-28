@@ -84,6 +84,7 @@
         "__node_handle": "cpp",
         "__memory": "cpp",
         "locale": "cpp",
-        "__config": "cpp"
+        "__config": "cpp",
+        "climits": "cpp"
     }
 }

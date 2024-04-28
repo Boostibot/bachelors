@@ -1,3 +1,4 @@
+// #define RUN_BENCH
 // #define USE_THRUST
 
 #include "kernel.h"
@@ -6,9 +7,9 @@
 
 #define PI          ((Real) 3.14159265359)
 #define TAU         (2*PI)
-#define ECHOF(x)    printf(#x ": " REAL_FMT "\n", (x))
+#define ECHOF(x)    printf(#x ": %e\n", (x))
 
-#if 1
+#ifndef RUN_BENCH
 
 #ifdef USE_THRUST
 #include <thrust/inner_product.h>
@@ -488,7 +489,7 @@ void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Exp
     cuda_for(0, params.n*params.m, [=]SHARED(int i){
         out_F[i] =  state.F[i] + dt/6*(k1.F[i] + 2*k2.F[i] + 2*k3.F[i] + k4.F[i]);
         out_U[i] =  state.U[i] + dt/6*(k1.U[i] + 2*k2.U[i] + 2*k3.U[i] + k4.U[i]);
-    }, CUDA_FOR_ASYNC);
+    });
 
     if(do_debug)
         explicit_solver_debug_step(solver, state, params);
@@ -834,6 +835,7 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
     Real* Ap = cache_alloc(Real, N, &tag);
     Real r_dot_r = 0;
 
+    //@TODO: streams
     if(params.initial_value_or_null)
     {
         CUDA_DEBUG_TEST(cudaMemcpyAsync(x, params.initial_value_or_null, sizeof(Real)*N, cudaMemcpyDeviceToDevice));
@@ -858,11 +860,11 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
     if(0)
     {
         Real max_diff = vector_max(r, N);
-        printf("First error MAX: " REAL_FMT " AVG: " REAL_FMT "\n", max_diff, sqrt(r_dot_r/N));
+        printf("First error MAX: %e AVG: %e\n", max_diff, sqrt(r_dot_r/N));
     }
 
     int iter = 0;
-    if(r_dot_r >= scaled_squared_tolerance)
+    if(r_dot_r >= scaled_squared_tolerance || iter == 0)
     {
         for(; iter < params.max_iters; iter++)
         {
@@ -1043,7 +1045,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
     //Solve A_F*F_next = b_F
     Conjugate_Gardient_Convergence F_converged = conjugate_gradient_solve(&A_F, F_next, b_F, N, anisotrophy_matrix_multiply, &solver_params);
-    LOG_DEBUG("SOLVER", "%lli F %s in %i iters with error %lf\n", (long long) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, F_converged.error);
+    LOG_DEBUG("SOLVER", "%lli F %s in %i iters with error %e\n", (long long) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, F_converged.error);
 
     //@TODO: crank-nicolson version see NME2+TKO notebook
 
@@ -1062,7 +1064,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
     //Solve A_U*U_next = b_U
     Conjugate_Gardient_Convergence U_converged = conjugate_gradient_solve(&A_U, U_next, b_U, N, cross_matrix_static_multiply, &solver_params);
-    LOG_DEBUG("SOLVER", "%lli U %s in %i iters with error %lf\n", (long long) iter, U_converged.converged ? "converged" : "diverged", U_converged.iters, U_converged.error);
+    LOG_DEBUG("SOLVER", "%lli U %s in %i iters with error %e\n", (long long) iter, U_converged.converged ? "converged" : "diverged", U_converged.iters, U_converged.error);
 
     if(do_debug)
     {
@@ -1080,8 +1082,8 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
             Real back_error_F_max = vector_get_max_dist(AfF, b_F, N);
             Real back_error_U_max = vector_get_max_dist(AuU, b_U, N);
 
-            LOG_DEBUG("SOLVER", "AVG | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F, back_error_U, solver_params.tolerance*2);
-            LOG_DEBUG("SOLVER", "MAX | F:" REAL_FMT " U:" REAL_FMT " Epsilon:" REAL_FMT "\n", back_error_F_max, back_error_U_max, solver_params.tolerance*2);
+            LOG_DEBUG("SOLVER", "AVG | F:%e U:%e Epsilon:%e \n", back_error_F, back_error_U, solver_params.tolerance*2);
+            LOG_DEBUG("SOLVER", "MAX | F:%e U:%e Epsilon:%e \n", back_error_F_max, back_error_U_max, solver_params.tolerance*2);
         }
 
         Real* grad_F = solver->debug_maps.grad_phi;
@@ -1153,7 +1155,7 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
     
     Real step_residual_avg_error = 0;
     Real step_residual_max_error = 0;
-    bool converged = false;
+    bool converged = false; (void) converged;
     
     int k = 0;
     int max_iters = params.corrector_max_iters;
@@ -1744,7 +1746,8 @@ void cache_prepare(int count, int item_size, int N)
 
 extern "C" bool benchmark_reduce_kernels(int N)
 {
-    test_reduce((uint64_t) clock_ns());
+    test_tiled_for((uint64_t) clock_ns(), true);
+    // test_reduce((uint64_t) clock_ns());
 
     Cache_Tag tag = cache_tag_make();
     uint* rand_state = cache_alloc(uint, N, &tag);

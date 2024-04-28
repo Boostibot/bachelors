@@ -13,17 +13,17 @@
 //The main interface is given by the following two functions
 
 //Seeds a random state filling it with values depending on the seed.
-static void random_map_seed_32(uint32_t* rand_state, isize N, uint32_t seed);
-static void random_map_seed_64(uint32_t* rand_state, isize N, uint64_t seed);
+static void random_map_seed_32(uint32_t* rand_state, csize N, uint32_t seed);
+static void random_map_seed_64(uint32_t* rand_state, csize N, uint64_t seed);
 
 //Saves random values to the provided input depending on the type. Updates rand_state. 
 // For integer types up to sizeof(*rand_state) the entire range is used.
 // For integer types from to sizeof(*rand_state) only the range till the maximum value of rand_state type is used.
 // For floating point types the values lie evenly distributed (exponent is constant!) within the range [0, 1).
 template<typename T>
-static void random_map_32(T* output, uint32_t* rand_state, isize N);
+static void random_map_32(T* output, uint32_t* rand_state, csize N);
 template<typename T>
-static void random_map_64(T* output, uint64_t* rand_state, isize N);
+static void random_map_64(T* output, uint64_t* rand_state, csize N);
 
 
 //Hashes a 64 bit value to 64 bit hash.
@@ -155,35 +155,35 @@ static SHARED T random_bits_to_value_64(uint64_t bits)
 }
 
 
-static void random_map_seed_32(uint32_t* rand_state, isize N, uint32_t seed)
+static void random_map_seed_32(uint32_t* rand_state, csize N, uint32_t seed)
 {
-    cuda_for(0, N, [=]SHARED(isize i) {
+    cuda_for(0, N, [=]SHARED(csize i) {
         uint32_t hashed_index = hash_bijective_32((uint32_t) i);
         rand_state[i] = hash_mix32(hashed_index, seed);
     });
 }
 
-static void random_map_seed_64(uint64_t* rand_state, isize N, uint64_t seed)
+static void random_map_seed_64(uint64_t* rand_state, csize N, uint64_t seed)
 {
-    cuda_for(0, N, [=]SHARED(isize i) {
+    cuda_for(0, N, [=]SHARED(csize i) {
         uint64_t hashed_index = hash_bijective_64((uint64_t) i);
         rand_state[i] = hash_mix64(hashed_index, seed);
     });
 }
 
 template<typename T>
-static void random_map_32(T* output, uint32_t* rand_state, isize N)
+static void random_map_32(T* output, uint32_t* rand_state, csize N)
 {
-    cuda_for(0, N, [=]SHARED(isize i) {
+    cuda_for(0, N, [=]SHARED(csize i) {
         uint32_t random_bits = random_pcg_32(&rand_state[i]); 
         output[i] = random_bits_to_value_32<T>(random_bits);
     });
 }
 
 template<typename T>
-static void random_map_64(T* output, uint64_t* rand_state, isize N)
+static void random_map_64(T* output, uint64_t* rand_state, csize N)
 {
-    cuda_for(0, N, [=]SHARED(isize i) {
+    cuda_for(0, N, [=]SHARED(csize i) {
         uint64_t random_bits = random_splitmix_64(&rand_state[i]); 
         output[i] = random_bits_to_value_64<T>(random_bits);
     });

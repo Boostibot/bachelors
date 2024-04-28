@@ -15,7 +15,7 @@
 //If you are not convinced this is in fact simpler approach then the traditional map_reduce
 // interface compare https://github.com/NVIDIA/thrust/blob/main/examples/dot_products_with_zip.cu with our dot_product function
 template <typename T, class Reduction, typename Producer, bool has_trivial_producer = false>
-static T produce_reduce(isize N, Producer produce, Reduction reduce_dummy = Reduction(), isize cpu_reduce = 128);
+static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy = Reduction(), csize cpu_reduce = 128, Cuda_Launch_Params launch_params = {});
 
 //Predefined reduction functions. These are defined in special ways because:
 // 1. They can be used with any type (that suports them!). No need to template them => simpler outside interface.
@@ -46,6 +46,10 @@ struct Reduce {
 template <typename T>
 struct Example_Custom_Reduce_Operation 
 {
+    static const char* name() {
+        return "Example_Custom_Reduce_Operation";
+    }
+
     //Returns the idnetity element for this operation
     static T identity() {
         return INFINITY;
@@ -71,34 +75,18 @@ static __host__ __device__ __forceinline__ T _identity();
 template <class Reduction, typename T>
 static __host__ __device__ __forceinline__ T _reduce(T a, T b);
 
+template <class Reduction>
+static __host__ __device__ __forceinline__ const char* _name();
+
 //Performs reduction operation within lanes of warp enabled by mask. 
 //If mask includes lanes which do not participate within the reduction 
 // (as a cause of divergent control flow) might cause deadlocks.
 template <class Reduction, typename T>
 static __device__ __forceinline__ T _warp_reduce(unsigned int mask, T value) ;
 
-enum {
-    WARP_SIZE = 32
-
-    // We use a constant. If this is not the case we will 'need' a different algorhimt anyway. 
-    // The PTX codegen treats warpSize as 'runtime immediate constant' which from my undertanding
-    // is a special constat accesible through its name 'mov.u32 %r6, WARP_SZ;'. 
-    // In many contexts having it be a immediate constant is not enough. 
-    // For example when doing 'x % warpSize == 0' the code will emit 'rem.s32' instruction which is
-    // EXTREMELY costly (on GPUs even more than CPUs!) compared to the single binary 'and.b32' emmited 
-    // in case of 'x % WARP_SIZE == 0'.
-
-    // If you would need to make the below code a bit more "future proof" you could make WARP_SIZE into a 
-    // template argument. However we really dont fear this to cahnge anytime soon since many functions
-    // such as __activemask(), __ballot_sync() or anything else producing lane mask, operates on u32 which 
-    // assumes WARP_SIZE == 32.
-
-    // Prior to launching the kernel we check if warpSize == WARP_SIZE. If it does not we error return.
-};
-
 
 template <class Reduction, typename T, typename Producer, bool is_trivial_producer>
-static __global__ void produce_reduce_kernel(T* __restrict__ output, Producer produce, uint N) 
+static __global__ void produce_reduce_kernel(T* __restrict__ output, Producer produce, csize N) 
 {
     assert(blockDim.x > WARP_SIZE && blockDim.x % WARP_SIZE == 0 && "we expect the block dim to be chosen sainly");
     uint shared_size = blockDim.x / WARP_SIZE;
@@ -107,7 +95,7 @@ static __global__ void produce_reduce_kernel(T* __restrict__ output, Producer pr
     T* shared = (T*) (void*) shared_backing;
 
     T reduced = _identity<Reduction, T>();
-    for(uint i = blockIdx.x*blockDim.x + threadIdx.x; i < N; i += blockDim.x*gridDim.x)
+    for(int i = (int) blockIdx.x*blockDim.x + threadIdx.x; i < N; i += blockDim.x*gridDim.x)
     {
         T produced;
         if constexpr(is_trivial_producer)
@@ -135,14 +123,27 @@ static __global__ void produce_reduce_kernel(T* __restrict__ output, Producer pr
         output[blockIdx.x] = reduced;
 }
 
+template <size_t size_per_elem>
+size_t reduce_block_size_to_shared_mem_size(int block_size)
+{
+    return DIV_CEIL(block_size, WARP_SIZE)*size_per_elem;
+
+}
+
+#include <cuda_occupancy.h>
+#include <cuda_runtime.h>
+
+#if 0
 template <typename T, class Reduction, typename Producer, bool has_trivial_producer>
-static T produce_reduce(isize N, Producer produce, Reduction reduce_dummy, isize cpu_reduce)
+static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize cpu_reduce, Cuda_Launch_Params launch_params)
 {
     (void) reduce_dummy;
     enum {
-        CPU_REDUCE_MAX = 16,
-        CPU_REDUCE_MIN = 16,
+        CPU_REDUCE_MAX = 256,
+        CPU_REDUCE_MIN = 32,
     };
+
+    // LOG_INFO("reduce", "Reduce %s N:%i", _name<Reduction>(), (int) N);
 
     T reduced = _identity<Reduction, T>();
     if(N > 0)
@@ -150,7 +151,7 @@ static T produce_reduce(isize N, Producer produce, Reduction reduce_dummy, isize
         Cache_Tag tag = cache_tag_make();
         Cuda_Info info = cuda_one_time_setup();
         cpu_reduce = CLAMP(cpu_reduce, CPU_REDUCE_MIN, CPU_REDUCE_MAX);
-        uint N_curr = (uint) N;
+        csize N_curr = N;
 
         uint max_shared_items = info.prop.sharedMemPerBlock / sizeof(T);
         uint block_size_hw_upper_bound = info.prop.maxThreadsPerBlock;
@@ -163,14 +164,16 @@ static T produce_reduce(isize N, Producer produce, Reduction reduce_dummy, isize
         uint block_size_min = DIV_CEIL(block_size_lower_bound,WARP_SIZE)*WARP_SIZE;
         if(block_size_min > block_size_max || WARP_SIZE != info.prop.warpSize)
         {
-            LOG_ERROR("kernel", "this device has very strange hardware and as such we cannot launch the redutcion kernel. This shouldnt happen.");
+            LOG_ERROR("reduce", "this device has very strange hardware and as such we cannot launch the redutcion kernel. This shouldnt happen.");
             return reduced;
         }
         
+        //@TODO: have a control parameter that selects the closest mathcing fit.
+
         //Find the optimal block_size. It must
         // 1) be twithin range [block_size_min, block_size_max] (to be feasible)
         // 2) be divisible by warpSize (W) (to have good block utlization)
-        // 3) be as big as possible (to obtain maximum paralelism)
+        // 3) be as big as possible (should be at least WARP_SIZE^2 = 1024 for maximum reduction (also right now 1024 is the max size of block on all cards))
         // 4) divide prop.maxThreadsPerMultiProcessor (to have good streaming multiprocessor utilization - requiring less SMs)
         uint block_size = 0;
         for(uint curr_size = block_size_max; curr_size >= block_size_min; curr_size -= WARP_SIZE)
@@ -186,9 +189,65 @@ static T produce_reduce(isize N, Producer produce, Reduction reduce_dummy, isize
         if(block_size == 0)
             block_size = block_size_max;
 
-        uint max_concurent_blocks = info.prop.multiProcessorCount*(info.prop.maxThreadsPerMultiProcessor / block_size);
         uint shared_items = DIV_CEIL(block_size, WARP_SIZE);
+        uint shared_memory = shared_items*sizeof(T);
+
         ASSERT(block_size_lower_bound <= block_size && block_size <= block_size_upper_bound && block_size % WARP_SIZE == 0);
+        ASSERT(shared_memory <= info.prop.sharedMemPerBlock);
+
+        if(0) 
+        {
+            cudaFuncAttributes attributes;
+            cudaFuncGetAttributes(&attributes, produce_reduce_kernel<Reduction, T, const T* __restrict__, true>);
+
+            int occBlockSize = 0;
+            int occMinGridSize = 0;
+
+            size_t (*block_size_to_smem_size)(int) = reduce_block_size_to_shared_mem_size<sizeof(T)>;
+            cudaOccDeviceProp       occProp(info.prop);
+            cudaOccFuncAttributes   occAttributes(attributes);
+            cudaOccDeviceState      occState = {};
+
+            // cudaOccError cudaOccMaxPotentialOccupancyBlockSize(
+            //     int                         *minGridSize,      // out
+            //     int                         *blockSize,        // out
+            //     const cudaOccDeviceProp     *properties,       // in
+            //     const cudaOccFuncAttributes *attributes,       // in
+            //     const cudaOccDeviceState    *state,            // in
+            //     size_t                     (*blockSizeToDynamicSMemSize)(int), // in
+            //     size_t                       dynamicSMemSize); // in
+
+            cudaOccMaxPotentialOccupancyBlockSize(
+                &occMinGridSize, &occBlockSize, 
+                &occProp, &occAttributes, &occState, 
+                block_size_to_smem_size, 
+                (size_t) 0
+            );
+
+            // cudaOccError cudaOccMaxActiveBlocksPerMultiprocessor(
+            //     cudaOccResult               *result,           // out
+            //     const cudaOccDeviceProp     *properties,       // in
+            //     const cudaOccFuncAttributes *attributes,       // in
+            //     const cudaOccDeviceState    *state,            // in
+            //     int                          blockSize,        // in
+            //     size_t                       dynamicSmemSize); // in
+            cudaOccResult occupacy = {0};
+            cudaOccMaxActiveBlocksPerMultiprocessor(
+                &occupacy,
+                &occProp, &occAttributes, &occState, 
+                block_size,
+                shared_memory
+            );
+        }
+
+        // cudaOccMaxActiveBlocksPerMultiprocessor(&occupacy, produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>, block_size, shared_memory);
+        // int occupacy_max = info.prop.multiProcessorCount*occupacy;
+        
+        //Our algorithm needs at least shared_memory bytes per block. Threfore we can only physically have 
+        // info.prop.sharedMemPerMultiprocessor/shared_memory blocks running at once on a sing steraming multiprocessor.
+        //Thus the we can calculate the absolute maximum number of blocks we can have.
+        uint max_concurent_blocks = info.prop.multiProcessorCount*(info.prop.sharedMemPerMultiprocessor/shared_memory); 
+        uint shedule_max_blocks = 1000; //@TODO: use the heuristic functions
 
         T* partials[2] = {NULL, NULL};
         uint iter = 0;
@@ -199,28 +258,115 @@ static T produce_reduce(isize N, Producer produce, Reduction reduce_dummy, isize
             if(iter < 2)
                 partials[i_next] = cache_alloc(T, N, &tag);
 
-            uint block_dim = block_size;
-            uint grid_dim = MIN(DIV_CEIL(N_curr, block_size), max_concurent_blocks); //Only fire the blocks we actually need!
-            uint shared_memory = shared_items*sizeof(T);
-            ASSERT(shared_memory <= info.prop.sharedMemPerBlock, "too much shared mem requested!");
+            //Only fire as many blocks as the hardware could ideally support at once. 
+            // Any more than that is pure overhead for the sheduler
+            uint ideal_blocks = DIV_CEIL((uint) N_curr, block_size);
+            uint block_count = MAX(MIN(MIN(ideal_blocks, max_concurent_blocks), shedule_max_blocks), 1); 
 
             T* __restrict__ curr_input = partials[i_curr];
             T* __restrict__ curr_output = partials[i_next];
             if(iter ==  0)
             {
                 produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>
-                    <<<grid_dim, block_dim, shared_memory>>>(curr_output, (Producer&&) produce, N_curr);
+                    <<<block_count, block_size, shared_memory>>>(curr_output, (Producer&&) produce, N_curr);
             }
             else
             {
                 produce_reduce_kernel<Reduction, T, const T* __restrict__, true>
-                    <<<grid_dim, block_dim, shared_memory>>>(curr_output, curr_input, N_curr);
+                    <<<block_count, block_size, shared_memory>>>(curr_output, curr_input, N_curr);
             }
 
             CUDA_DEBUG_TEST(cudaGetLastError());
-            CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+            // CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 
-            uint G = MIN(N_curr, block_size*grid_dim);
+            uint G = MIN(N_curr, block_size*block_count);
+            uint N_next = DIV_CEIL(G, WARP_SIZE*WARP_SIZE); 
+            N_curr = N_next;
+        }   
+
+        //in case N <= CPU_REDUCE and has_trivial_producer 
+        // we entirely skipped the whole loop => the partials array is
+        // still null. We have to init it to the produce array.
+        const T* last_input = partials[iter%2];
+        if constexpr(has_trivial_producer)
+            if(N <= cpu_reduce)
+                last_input = produce;
+
+        T cpu[CPU_REDUCE_MAX];
+        cudaMemcpy(cpu, last_input, sizeof(T)*N_curr, cudaMemcpyDeviceToHost);
+        for(uint i = 0; i < N_curr; i++)
+            reduced = _reduce<Reduction, T>(reduced, cpu[i]);
+
+        cache_free(&tag);
+    }
+
+    return reduced;
+}
+#else
+template <typename T, class Reduction, typename Producer, bool has_trivial_producer>
+static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize cpu_reduce, Cuda_Launch_Params launch_params)
+{
+    (void) reduce_dummy;
+    
+    // LOG_INFO("reduce", "Reduce %s N:%i", _name<Reduction>(), (int) N);
+    T reduced = _identity<Reduction, T>();
+    if(N > 0)
+    {
+        enum {
+            CPU_REDUCE_MAX = 256,
+            CPU_REDUCE_MIN = 32,
+        };
+
+        static Cuda_Launch_Bounds bounds = {};
+        static Cuda_Launch_Query query = {};
+        if(bounds.max_block_size == 0)
+        {
+            query = cuda_launch_query_from_kernel((void*) produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>);
+            query.used_shared_memory_per_thread = (double) sizeof(T)/WARP_SIZE;
+            bounds = cuda_query_launch_bounds(query);
+        }
+
+        cpu_reduce = CLAMP(cpu_reduce, CPU_REDUCE_MIN, CPU_REDUCE_MAX);
+        if(launch_params.max_block_count_for_broken_drivers == 0)
+            launch_params.max_block_count_for_broken_drivers = 100;
+            
+        Cache_Tag tag = cache_tag_make();
+        T* partials[2] = {NULL, NULL};
+
+        csize N_curr = N;
+        uint iter = 0;
+        for(; (iter == 0 && has_trivial_producer == false) || N_curr > cpu_reduce; iter++)
+        {
+            Cuda_Launch_Config launch = cuda_get_launch_config(N_curr, bounds, launch_params);
+            if(bounds.max_block_size == 0 || launch.block_size == 0)
+            {
+                LOG_ERROR("reduce", "this device has very strange hardware and as such we cannot launch the redutcion kernel. This shouldnt happen.");
+                cache_free(&tag);
+                return reduced;
+            }
+
+            uint i_curr = iter%2;
+            uint i_next = (iter + 1)%2;
+            if(iter < 2)
+                partials[i_next] = cache_alloc(T, N, &tag);
+
+            T* __restrict__ curr_input = partials[i_curr];
+            T* __restrict__ curr_output = partials[i_next];
+            if(iter ==  0)
+            {
+                produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>
+                    <<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(curr_output, (Producer&&) produce, N_curr);
+            }
+            else
+            {
+                produce_reduce_kernel<Reduction, T, const T* __restrict__, true>
+                    <<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(curr_output, curr_input, N_curr);
+            }
+
+            CUDA_DEBUG_TEST(cudaGetLastError());
+            // CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+
+            uint G = MIN(N_curr, launch.block_size*launch.block_count);
             uint N_next = DIV_CEIL(G, WARP_SIZE*WARP_SIZE); 
             N_curr = N_next;
         }   
@@ -244,12 +390,15 @@ static T produce_reduce(isize N, Producer produce, Reduction reduce_dummy, isize
     return reduced;
 }
 
+#endif
+
+
 //============================== IMPLEMENTATION OF MORE SPECIFIC REDUCTIONS ===================================
 
 template<class Reduction, typename T, typename Map_Func>
 static T map_reduce(const T *input, uint N, Map_Func map, Reduction reduce_tag = Reduction())
 {
-    T output = produce_reduce<T, Reduction>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduction>(N, [=]SHARED(csize i){
         return map(input[i]);
     });
     return output;
@@ -286,7 +435,7 @@ static T max(const T *input, uint N)
 template<typename T>
 static T L1_norm(const T *a, uint N)
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i];
         return diff > 0 ? diff : -diff;
     });
@@ -296,7 +445,7 @@ static T L1_norm(const T *a, uint N)
 template<typename T>
 static T L2_norm(const T *a, uint N)
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i];
         return diff*diff;
     });
@@ -306,7 +455,7 @@ static T L2_norm(const T *a, uint N)
 template<typename T>
 static T Lmax_norm(const T *a, uint N)
 {
-    T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
         T diff = a[i];
         return diff > 0 ? diff : -diff;
     });
@@ -318,7 +467,7 @@ static T Lmax_norm(const T *a, uint N)
 template<typename T>
 static T L1_distance(const T *a, const T *b, uint N)
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
         return diff > 0 ? diff : -diff;
     });
@@ -328,7 +477,7 @@ static T L1_distance(const T *a, const T *b, uint N)
 template<typename T>
 static T L2_distance(const T *a, const T *b, uint N)
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
         return diff*diff;
     });
@@ -338,7 +487,7 @@ static T L2_distance(const T *a, const T *b, uint N)
 template<typename T>
 static T Lmax_distance(const T *a, const T *b, uint N)
 {
-    T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
         return diff > 0 ? diff : -diff;
     });
@@ -348,7 +497,7 @@ static T Lmax_distance(const T *a, const T *b, uint N)
 template<typename T>
 static T dot_product(const T *a, const T *b, uint N)
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(isize i){
+    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         return a[i] * b[i];
     });
     return output;
@@ -398,6 +547,26 @@ static __host__ __device__ __forceinline__ T _reduce(T a, T b)
         return Reduction::reduce(a, b);
 }
 
+template <class Reduction>
+static __host__ __device__ __forceinline__ const char* _name()
+{
+    if constexpr      (std::is_same_v<Reduction, Reduce::Add>)
+        return "Add";
+    else if constexpr (std::is_same_v<Reduction, Reduce::Mul>)
+        return "Mul";
+    else if constexpr (std::is_same_v<Reduction, Reduce::Min>)
+        return "Min";
+    else if constexpr (std::is_same_v<Reduction, Reduce::Max>)
+        return "Max";
+    else if constexpr (std::is_same_v<Reduction, Reduce::And>)
+        return "And";
+    else if constexpr (std::is_same_v<Reduction, Reduce::Or>)
+        return "Or";
+    else if constexpr (std::is_same_v<Reduction, Reduce::Xor>)
+        return "Xor";
+    else
+        return Reduction::name();
+}
 
 
 template <class Reduction, typename T>
@@ -569,10 +738,13 @@ static bool _is_approx_equal(T a, T b, double epsilon = sizeof(T) == 8 ? 1e-8 : 
 
 
 #include "cuda_random.cuh"
+#include "cuda_runtime.h"
 
 template<typename T>
 static void test_reduce_type(uint64_t seed)
 {
+        
+
     uint Ns[] = {0, 1, 5, 31, 32, 33, 64, 65, 256, 257, 512, 513, 1023, 1024, 1025, 256*256, 1024*1024 - 1, 1024*1024};
 
     //Find max size 

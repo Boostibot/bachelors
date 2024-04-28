@@ -5,9 +5,9 @@ HOST_FLAGS := -std=c++17 -g -ggdb -Wall -Wformat -Wfloat-conversion -Wlogical-op
 HOST_LINK  := -lm -rdynamic -lcuda -lcudart -lglfw -lGL -lnetcdf
 
 DEVICE_COMP  := nvcc
-DEVICE_FLAGS := -Xcudafe --display_error_number --extended-lambda --expt-relaxed-constexpr -std=c++17 -ccbin /usr/bin/g++-10 -O3
+DEVICE_FLAGS := -Xcudafe --display_error_number --extended-lambda --expt-relaxed-constexpr -use_fast_math -std=c++17 -ccbin /usr/bin/g++-10 -O3
 DEVICE_LINK  := -g -G -dlink
-# DEVICE_FLAGS := -g -G -Xcudafe --display_error_number --extended-lambda --expt-relaxed-constexpr -std=c++17 -ccbin /usr/bin/g++-10 
+# DEVICE_FLAGS := -g -G -Xcudafe --display_error_number --extended-lambda --expt-relaxed-constexpr -use_fast_math -std=c++17 -ccbin /usr/bin/g++-10 
 # DEVICE_LINK  := -g -G -dlink
 
 ALL_SOURCES = $(shell find -L -regex '.*/.*\.\(c\|h\|cpp\|hpp\|cu\|cuh\)$ ')

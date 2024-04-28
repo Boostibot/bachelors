@@ -44,6 +44,7 @@ Logger def_logger_make();
 //Logs a message. Does not get dissabled.
 #define LOG(module, log_type, format, ...)   log_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, ##__VA_ARGS__)
 #define VLOG(module, log_type, format, args) vlog_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, args)
+#define LOG_HERE() LOG("here", LOG_TRACE, "> %s %s:%i", __FUNCTION__, __FILE__, __LINE__)
 
 //Logs a message type into the provided module cstring.
 #define LOG_INFO(module, format, ...)  LOG(module, LOG_INFO,  format, ##__VA_ARGS__)
