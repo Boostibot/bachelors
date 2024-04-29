@@ -1,7 +1,7 @@
-#define COMPILE_BENCHMARKS
-#define COMPILE_TESTS
+// #define COMPILE_BENCHMARKS
+// #define COMPILE_TESTS
 #define COMPILE_SIMULATION
-#define COMPILE_THRUST
+// #define COMPILE_THRUST
 
 #ifdef COMPILE_TESTS
 #define TEST_CUDA_ALL
@@ -10,6 +10,7 @@
 #include "kernel.h"
 #include "cuda_util.cuh"
 #include "cuda_reduction.cuh"
+#include "cuda_for.cuh"
 
 #define PI          ((Real) 3.14159265359)
 #define TAU         (2*PI)
@@ -1690,9 +1691,6 @@ extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size
 #include "cuda_reduction.cuh"
 #include "cuda_random.cuh"
 
-
-#ifdef COMPILE_BENCHMARKS
-
 #include <chrono>
 static int64_t clock_ns()
 {
@@ -1710,6 +1708,7 @@ static double clock_s()
 }
 #endif
 
+#ifdef COMPILE_BENCHMARKS
 template <typename Func>
 static double benchmark(double time, double warmup, Func func)
 {
@@ -1810,9 +1809,11 @@ extern "C" bool run_benchmarks(int N)
 
 extern "C" bool run_tests()
 {
-    #ifdef TEST_CUDA_ALL
+    #ifdef TEST_CUDA_FOR_IMPL
     test_tiled_for((uint64_t) clock_ns());
     test_tiled_for_2D((uint64_t) clock_ns());
+    #endif
+    #ifdef TEST_CUDA_REDUCTION_IMPL
     test_reduce((uint64_t) clock_ns());
     #endif
 

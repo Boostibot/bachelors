@@ -217,7 +217,6 @@ int main()
     config.interactive_mode = false;
     #endif // COMPILE_GRAPHICS
 
-
     //OPENGL setup
     if(config.interactive_mode)
     {   

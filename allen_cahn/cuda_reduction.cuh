@@ -1,6 +1,8 @@
 #pragma once
 
 #include "cuda_util.cuh"
+#include "cuda_launch.cuh"
+#include "cuda_alloc.cuh"
 
 // This file provides state of the art generic reduction operations. 
 // The main kernel is fairly concice but the nature of the generic 
@@ -148,12 +150,12 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
         };
 
         static Cuda_Launch_Bounds bounds = {};
-        static Cuda_Launch_Query query = {};
+        static Cuda_Launch_Constraints constraints = {};
         if(bounds.max_block_size == 0)
         {
-            query = cuda_launch_query_from_kernel((void*) produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>);
-            query.used_shared_memory_per_thread = (double) sizeof(T)/WARP_SIZE;
-            bounds = cuda_query_launch_bounds(query);
+            constraints = cuda_constraints_launch_constraints((void*) produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>);
+            constraints.used_shared_memory_per_thread = (double) sizeof(T)/WARP_SIZE;
+            bounds = cuda_get_launch_bounds(constraints);
         }
 
         cpu_reduce = CLAMP(cpu_reduce, CPU_REDUCE_MIN, CPU_REDUCE_MAX);
@@ -669,7 +671,7 @@ static void test_reduce(uint64_t seed)
     test_identity();
     //When compiling with thrust enabled this thing completely halts
     // the compiler...
-    #ifndef USE_THRUST
+    #ifndef COMPILE_THRUST
     test_reduce_type<char>(seed, "char");
     test_reduce_type<unsigned char>(seed, "unsigned");
     test_reduce_type<short>(seed, "short");

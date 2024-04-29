@@ -1,5 +1,7 @@
 #pragma once
 #include "cuda_util.cuh"
+#include "cuda_device.cuh"
+#include "cuda_alloc.cuh"
 
 template <typename Function>
 static __global__ void cuda_for_kernel(csize from, csize item_count, Function func)
@@ -19,7 +21,7 @@ static __global__ void cuda_for_2D_kernel(csize from_x, csize x_size, csize from
 template <typename Function>
 static void cuda_for(csize from, csize to, Function func, Cuda_Launch_Params launch_params = {})
 {
-    static Cuda_Launch_Bounds bounds = cuda_query_launch_bounds(cuda_launch_query_from_kernel((void*) cuda_for_kernel<Function>));
+    static Cuda_Launch_Bounds bounds = cuda_get_launch_bounds(cuda_constraints_launch_constraints((void*) cuda_for_kernel<Function>));
 
     if(launch_params.preferd_block_size == 0)
         launch_params.preferd_block_size = 64;
@@ -32,7 +34,7 @@ static void cuda_for(csize from, csize to, Function func, Cuda_Launch_Params lau
 template <typename Function>
 static void cuda_for_2D(csize from_x, csize from_y, csize to_x, csize to_y, Function func, Cuda_Launch_Params launch_params = {})
 {
-    static Cuda_Launch_Bounds bounds = cuda_query_launch_bounds(cuda_launch_query_from_kernel((void*) cuda_for_2D_kernel<Function>));
+    static Cuda_Launch_Bounds bounds = cuda_get_launch_bounds(cuda_constraints_launch_constraints((void*) cuda_for_2D_kernel<Function>));
 
     csize volume = (to_x - from_x)*(to_y - from_y);
     if(launch_params.preferd_block_size == 0)
@@ -43,14 +45,18 @@ static void cuda_for_2D(csize from_x, csize from_y, csize to_x, csize to_y, Func
     CUDA_DEBUG_TEST(cudaGetLastError());
 }
 
-template <typename T, typename Gather, typename Function, csize static_r = -1>
-static void __global__ cuda_tiled_for_kernel(csize N, csize dynamic_r, Gather gather, Function func)
+enum {
+    TILED_FOR_DYNAMIC_RANGE = -1
+};
+
+template <typename T, typename Gather, typename Function, csize static_r>
+static void __global__ cuda_tiled_for_kernel(csize i_offset, csize N, csize dynamic_r, Gather gather, Function func)
 {
     extern __shared__ max_align_t shared_backing[];
     T* shared = (T*) (void*) shared_backing;
 
     csize r = 0;
-    if constexpr(static_r != -1)
+    if constexpr(static_r != TILED_FOR_DYNAMIC_RANGE)
         r = static_r;
     else
         r = dynamic_r;
@@ -64,34 +70,35 @@ static void __global__ cuda_tiled_for_kernel(csize N, csize dynamic_r, Gather ga
             break;
 
         csize i = i_base - r + ti;
-        T val = gather(i, N, r);
+        T val = gather(i, N, r); //gather is not offset!
 
         shared[ti] = val;
         __syncthreads();
 
         if(r <= ti && ti < tile_size-r && i < N)
-            func(i, ti, shared, tile_size, N, r);
+            func(i + i_offset, ti, tile_size, shared);
             
         __syncthreads();
     }
 }
 
-template <typename T, csize static_r = -1, typename Function = int, typename Gather = int>
-static void cuda_tiled_for(csize N, csize dynamic_r, Gather gather, Function func, Cuda_Launch_Params launch_params = {})
+template <csize static_r, typename T, typename Function, typename Gather>
+static void cuda_tiled_for(csize from_i, csize to_i, Gather gather, Function func, csize dynamic_r = 0, Cuda_Launch_Params launch_params = {})
 {
     static Cuda_Launch_Bounds bounds = {};
-    static Cuda_Launch_Query query = {};
+    static Cuda_Launch_Constraints constraints = {};
     if(bounds.max_block_size == 0)
     {
-        query = cuda_launch_query_from_kernel((void*) cuda_tiled_for_kernel<T, Gather, Function, static_r>);
-        query.used_shared_memory_per_thread = sizeof(T);
-        bounds = cuda_query_launch_bounds(query);
+        constraints = cuda_constraints_launch_constraints((void*) cuda_tiled_for_kernel<T, Gather, Function, static_r>);
+        constraints.used_shared_memory_per_thread = sizeof(T);
+        bounds = cuda_get_launch_bounds(constraints);
     }
 
     csize r = dynamic_r;
-    if constexpr(static_r != -1)
+    if constexpr(static_r != TILED_FOR_DYNAMIC_RANGE)
         r = static_r;
 
+    csize N = to_i - from_i;
     if(N <= 0)
         return;
 
@@ -108,28 +115,32 @@ static void cuda_tiled_for(csize N, csize dynamic_r, Gather gather, Function fun
     }
 
     cuda_tiled_for_kernel<T, Gather, Function, static_r>
-        <<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(N, dynamic_r, (Gather&&) gather, (Function&&) func);
+        <<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(from_i, N, dynamic_r, (Gather&&) gather, (Function&&) func);
     CUDA_DEBUG_TEST(cudaGetLastError());
 }
 
 
-template <typename T, csize static_r = -1, typename Function = int>
-static void cuda_tiled_for_bound(const T* data, csize N, csize dynamic_r, Function func, T out_of_bounds_val = T(), Cuda_Launch_Params launch_params = {})
+template <csize static_r, typename T, typename Function>
+static void cuda_tiled_for_bound(const T* data, csize from_i, csize to_i, Function func, csize dynamic_r = 0, T out_of_bounds_val = T(), Cuda_Launch_Params launch_params = {})
 {
-    cuda_tiled_for<T, static_r, Function>(N, dynamic_r, [=]SHARED(csize i, csize N, csize r){
+    //Gather is not offset!
+    const T* offset_data = data + from_i;
+    cuda_tiled_for<static_r, T, Function>(from_i, to_i, [=]SHARED(csize i, csize N, csize r){
         if(0 <= i && i < N)
-            return data[i];
+            return offset_data[i];
         else
             return out_of_bounds_val;
-    }, (Function&&) func, launch_params);
+    }, (Function&&) func, dynamic_r, launch_params);
 }
 
 
-template <typename T, csize static_r = -1, bool small_r = false, typename Function = int>
-static void cuda_tiled_for_periodic(const T* data, csize N, csize dynamic_r, Function func, T out_of_bounds_val = T(), Cuda_Launch_Params launch_params = {})
+template <csize static_r, bool small_r = false, typename T = int, typename Function = int>
+static void cuda_tiled_for_periodic(const T* data, csize from_i, csize to_i, Function func, csize dynamic_r = 0, Cuda_Launch_Params launch_params = {})
 {
-    cuda_tiled_for<T, static_r, Function>(N, dynamic_r, [=]SHARED(csize i, csize N, csize r){
-        (void) data;
+    //Gather is not offset!
+    const T* offset_data = data + from_i;
+    cuda_tiled_for<static_r, T, Function>(from_i, to_i, [=]SHARED(csize i, csize N, csize r){
+        (void) offset_data;
         if constexpr(small_r)
         {
             if(i < 0)
@@ -137,31 +148,30 @@ static void cuda_tiled_for_periodic(const T* data, csize N, csize dynamic_r, Fun
             else if(i >= N)
                 i -= N;
 
-            return data[i];
+            return offset_data[i];
         }
         else
-            return data[MOD(i, N)];
-    }, (Function&&) func, launch_params);
+            return offset_data[MOD(i, N)];
+    }, (Function&&) func, dynamic_r, launch_params);
 }
 
 template <typename T, typename Gather, typename Function, csize static_rx, csize static_ry>
-static void __global__ cuda_tiled_for_2D_kernel(csize nx, csize ny, csize dynamic_rx, csize dynamic_ry, Gather gather, Function func)
+static void __global__ cuda_tiled_for_2D_kernel(csize from_x, csize from_y, csize nx, csize ny, csize dynamic_rx, csize dynamic_ry, Gather gather, Function func)
 {
     extern __shared__ max_align_t shared_backing[];
     T* shared = (T*) (void*) shared_backing;
 
     csize rx = 0;
-    if constexpr(static_rx != -1)
+    if constexpr(static_rx != TILED_FOR_DYNAMIC_RANGE)
         rx = static_rx;
     else
         rx = dynamic_rx;
 
     csize ry = 0;
-    if constexpr(static_ry != -1)
+    if constexpr(static_ry != TILED_FOR_DYNAMIC_RANGE)
         ry = static_ry;
     else
         ry = dynamic_ry;
-
 
     csize tile_size_x = blockDim.x;
     csize tile_size_y = blockDim.y;
@@ -182,42 +192,43 @@ static void __global__ cuda_tiled_for_2D_kernel(csize nx, csize ny, csize dynami
 
             csize y = base_y - ry + ty;
             csize x = base_x - rx + tx;
-            T val = gather(x, y, nx, ny, rx, ry);
+            T val = gather(x, y, nx, ny, rx, ry); //gather is not offset!
 
             shared[tx + ty*tile_size_x] = val;
             __syncthreads();
 
             if(rx <= tx && tx < tile_size_x-rx && x < nx)
                 if(ry <= ty && ty < tile_size_y-ry && y < ny)
-                    func(x, y, tx, ty, shared, tile_size_x, tile_size_y, nx, ny, rx, ry);
+                    func(from_x+x, from_y+y, tx, ty, tile_size_x, tile_size_y, shared);
 
             __syncthreads();
         }
     }
 }
 
-
-template <typename T, csize static_rx = -1, csize static_ry = -1, typename Function = int, typename Gather = int>
-static void cuda_tiled_for_2D(csize nx, csize ny, csize dynamic_rx, csize dynamic_ry, Gather gather, Function func, Cuda_Launch_Params launch_params = {})
+template <csize static_rx, csize static_ry, typename T, typename Function, typename Gather>
+static void cuda_tiled_for_2D(csize from_x, csize from_y, csize to_x, csize to_y, Gather gather, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, Cuda_Launch_Params launch_params = {})
 {
     static Cuda_Launch_Bounds bounds = {};
-    static Cuda_Launch_Query query = {};
+    static Cuda_Launch_Constraints constraints = {};
     if(bounds.max_block_size == 0)
     {
-        query = cuda_launch_query_from_kernel((void*) cuda_tiled_for_2D_kernel<T, Gather, Function, static_rx, static_ry>);
-        query.used_shared_memory_per_thread = sizeof(T);
-        bounds = cuda_query_launch_bounds(query);
+        constraints = cuda_constraints_launch_constraints((void*) cuda_tiled_for_2D_kernel<T, Gather, Function, static_rx, static_ry>);
+        constraints.used_shared_memory_per_thread = sizeof(T);
+        bounds = cuda_get_launch_bounds(constraints);
     }
 
+    csize nx = to_x - from_x;
+    csize ny = to_y - from_y;
     if(nx <= 0 || ny <= 0)
         return;
 
     csize rx = dynamic_rx;
-    if constexpr(static_rx != -1)
+    if constexpr(static_rx != TILED_FOR_DYNAMIC_RANGE)
         rx = static_rx;
 
     csize ry = dynamic_ry;
-    if constexpr(static_ry != -1)
+    if constexpr(static_ry != TILED_FOR_DYNAMIC_RANGE)
         ry = static_ry;
 
     csize volume = nx*ny;
@@ -238,48 +249,68 @@ static void cuda_tiled_for_2D(csize nx, csize ny, csize dynamic_rx, csize dynami
     }
 
     cuda_tiled_for_2D_kernel<T, Gather, Function, static_rx, static_ry>
-        <<<launch.block_count, block_size3, launch.dynamic_shared_memory, launch_params.stream>>>(nx, ny, dynamic_rx, dynamic_ry, (Gather&&) gather, (Function&&) func);
+        <<<launch.block_count, block_size3, launch.dynamic_shared_memory, launch_params.stream>>>(from_x, from_y, nx, ny, dynamic_rx, dynamic_ry, (Gather&&) gather, (Function&&) func);
     CUDA_DEBUG_TEST(cudaGetLastError());
 }
 
-template <typename T, csize static_rx = -1, csize static_ry = -1, typename Function = int>
-static void cuda_tiled_for_2D_bound(const T* data, csize nx, csize ny, csize dynamic_rx, csize dynamic_ry, Function func, T out_of_bounds_val = T(), Cuda_Launch_Params launch_params = {})
+template <csize static_rx, csize static_ry, typename T, typename Function>
+static void cuda_tiled_for_2D_bound(const T* data, csize data_width, csize from_x, csize from_y, csize to_x, csize to_y, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, T out_of_bounds_val = T(), Cuda_Launch_Params launch_params = {})
 {
-    cuda_tiled_for_2D<T, static_rx, static_ry, Function>(nx, ny, dynamic_rx, dynamic_ry, [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry){
-        if(0 <= x && x < nx && 0 <= y && y < ny)
-            return data[x + y*nx];
-        else
-            return out_of_bounds_val;
-    }, (Function&&) func, launch_params);
+    //Gather is not offset!
+    const T* offset_data = data + (from_x + from_y*data_width);
+    cuda_tiled_for_2D<static_rx, static_ry, T, Function>(from_x, from_y, to_x, to_y, 
+        [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry){
+            if(0 <= x && x < nx && 0 <= y && y < ny)
+                return offset_data[x + y*data_width];
+            else
+                return out_of_bounds_val;
+        }, (Function&&) func, dynamic_rx, dynamic_ry, launch_params);
 }
 
-template <typename T, csize static_rx = -1, csize static_ry = -1, bool small_r = false, typename Function = int>
-static void cuda_tiled_for_2D_modular(const T* data, csize nx, csize ny, csize dynamic_rx, csize dynamic_ry, Function func, Cuda_Launch_Params launch_params = {})
+template <csize static_rx, csize static_ry, bool small_r = false, typename T = int, typename Function = int>
+static void cuda_tiled_for_2D_modular(const T* data, csize data_width, csize from_x, csize from_y, csize to_x, csize to_y, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, Cuda_Launch_Params launch_params = {})
 {
-    cuda_tiled_for_2D<T, static_rx, static_ry, Function>(nx, ny, dynamic_rx, dynamic_ry, [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry){
-        csize x_mod = 0;
-        csize y_mod = 0;
+    //Gather is not offset!
+    const T* offset_data = data + (from_x + from_y*data_width);
+    cuda_tiled_for_2D<static_rx, static_ry, T, Function>(from_x, from_y, to_x, to_y,  
+        [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry){
+            csize x_mod = 0;
+            csize y_mod = 0;
 
-        if constexpr(small_r)
-        {
-            if(x_mod < 0)
-                x_mod += nx;
-            else if(x_mod >= nx)
-                x_mod -= nx;
+            if constexpr(small_r)
+            {
+                if(x_mod < 0)
+                    x_mod += nx;
+                else if(x_mod >= nx)
+                    x_mod -= nx;
 
-            if(y_mod < 0)
-                y_mod += ny;
-            else if(y_mod >= ny)
-                y_mod -= ny;
-        }
-        else
-        {
-            x_mod = MOD(x, nx);
-            y_mod = MOD(y, ny);
-        }
+                if(y_mod < 0)
+                    y_mod += ny;
+                else if(y_mod >= ny)
+                    y_mod -= ny;
+            }
+            else
+            {
+                x_mod = MOD(x, nx);
+                y_mod = MOD(y, ny);
+            }
 
-        return data[x_mod + y_mod*nx];
-    }, (Function&&) func, launch_params);
+            return offset_data[x_mod + y_mod*data_width];
+        }, (Function&&) func, dynamic_rx, dynamic_ry, launch_params);
+}
+
+//================================= CONVENIENCE WRAPPERS FOR RANGE [0, N) =====================================================
+
+template <csize static_rx, csize static_ry, typename T, typename Function>
+static void cuda_tiled_for_2D_bound(const T* data, csize nx, csize ny, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, T out_of_bounds_val = T(), Cuda_Launch_Params launch_params = {})
+{
+    cuda_tiled_for_2D_bound<static_rx, static_ry, T, Function>(data, nx, 0, 0, nx, ny, (Function&&)func, dynamic_rx, dynamic_ry, out_of_bounds_val, launch_params);
+}
+
+template <csize static_rx, csize static_ry, bool small_r = false, typename T = int, typename Function = int>
+static void cuda_tiled_for_2D_modular(const T* data, csize nx, csize ny, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, Cuda_Launch_Params launch_params = {})
+{
+    cuda_tiled_for_2D_modular<static_rx, static_ry, small_r, T, Function>(data, nx, 0, 0, nx, ny, (Function&&)func, dynamic_rx, dynamic_ry, launch_params);
 }
 
 #if (defined(TEST_CUDA_ALL) || defined(TEST_CUDA_FOR)) && !defined(TEST_CUDA_FOR_IMPL)
@@ -434,7 +465,7 @@ static void test_tiled_for(uint64_t seed)
             cudaMemcpy(gpu_in, cpu_in, max_N_bytes, cudaMemcpyHostToDevice);
             cudaMemcpy(gpu_stencil, cpu_stencil, max_N_bytes, cudaMemcpyHostToDevice);
 
-            cuda_tiled_for_bound(gpu_in, N, r, [=]SHARED(csize i, csize ti, int* __restrict__ shared, csize block_size, csize N, csize r){
+            cuda_tiled_for_bound<TILED_FOR_DYNAMIC_RANGE>(gpu_in, 0, N, [=]SHARED(csize i, csize ti, csize block_size, int* __restrict__ shared){
                 int out = 0;
                 csize S = 2*r + 1;
                 USE_VARIABLE(S);
@@ -450,7 +481,8 @@ static void test_tiled_for(uint64_t seed)
 
                 assert(0 <= i && i < N);
                 gpu_out[i] = out;
-            });
+            }, r);
+
             cudaMemcpy(cpu_out_cuda, gpu_out, max_N_bytes, cudaMemcpyDeviceToHost);
 
             for(csize i = 0; i < N; i++)
@@ -525,34 +557,31 @@ static void test_tiled_for_2D(uint64_t seed)
                     CUDA_DEBUG_TEST(cudaMemcpy(gpu_in, cpu_in, N_bytes, cudaMemcpyHostToDevice));
                     CUDA_DEBUG_TEST(cudaMemcpy(gpu_stencil, cpu_stencil, sx*sy*sizeof(int), cudaMemcpyHostToDevice));
 
-                    cuda_tiled_for_2D_bound(gpu_in, nx, ny, rx, ry, [=]SHARED(
-                        csize x, csize y, csize tx, csize ty, 
-                        int* __restrict__ shared, csize tile_size_x, csize tile_size_y, 
-                        csize nx, csize ny, csize rx, csize ry){
+                    cuda_tiled_for_2D_bound<TILED_FOR_DYNAMIC_RANGE, TILED_FOR_DYNAMIC_RANGE>(gpu_in, nx, ny, 
+                        [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, int* __restrict__ shared){
+                            int out = 0;
+                            for(csize ix = -rx; ix <= rx; ix++)
+                                for(csize iy = -ry; iy <= ry; iy++)
+                                {
+                                    csize absolute_x = ix + x;
+                                    csize absolute_y = iy + y;
 
-                        int out = 0;
-                        for(csize ix = -rx; ix <= rx; ix++)
-                            for(csize iy = -ry; iy <= ry; iy++)
-                            {
-                                csize absolute_x = ix + x;
-                                csize absolute_y = iy + y;
+                                    assert(0 <= ix+tx && ix+tx <= tile_size_x);
+                                    assert(0 <= iy+ty && iy+ty <= tile_size_y);
+                                    
+                                    if(0 <= absolute_x && absolute_x < nx)
+                                        if(0 <= absolute_y && absolute_y < ny)
+                                        {
+                                            csize shared_i = (ix+tx) + (iy+ty)*tile_size_x;
+                                            assert(0 <= shared_i && shared_i < tile_size_x*tile_size_y);
+                                            out += shared[shared_i] * gpu_stencil[ix+rx + (iy+ry)*sx];
+                                        }
+                                }
 
-                                assert(0 <= ix+tx && ix+tx <= tile_size_x);
-                                assert(0 <= iy+ty && iy+ty <= tile_size_y);
-                                
-                                if(0 <= absolute_x && absolute_x < nx)
-                                    if(0 <= absolute_y && absolute_y < ny)
-                                    {
-                                        csize shared_i = (ix+tx) + (iy+ty)*tile_size_x;
-                                        assert(0 <= shared_i && shared_i < tile_size_x*tile_size_y);
-                                        out += shared[shared_i] * gpu_stencil[ix+rx + (iy+ry)*sx];
-                                    }
-                            }
-
-                        assert(0 <= x && x < nx);
-                        assert(0 <= y && y < ny);
-                        gpu_out[x+y*nx] = out;
-                    });
+                            assert(0 <= x && x < nx);
+                            assert(0 <= y && y < ny);
+                            gpu_out[x+y*nx] = out;
+                        }, rx, ry);
                     
                     CUDA_DEBUG_TEST(cudaMemcpy(cpu_out_cuda, gpu_out, N_bytes, cudaMemcpyDeviceToHost));
 
