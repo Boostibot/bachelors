@@ -1,4 +1,85 @@
 #pragma once
+
+//This file provids most basic paralelization primitives: paralel for loops. The basic versions are very simple
+// designed to be as convenient as possible. The smallest possible example being:
+// 
+// int* data = ...;
+// int size = 1024;
+// cuda_for(0, size, [=]SHARED(csize i){
+//      data[i] = data[i]*2 + 3;
+// });
+//
+// We also provide 2D and 3D (@TODO) version.
+//
+//
+// The other primitive defined here is "tiled for". It is an shared memory optimalization of cuda_for.
+// On GPUs access of main memory is very slow. This is even more pronounced when doing several input item
+// acesses per output item such as when performing covolution style operations. This also comes up in our code
+// when calculating the discretized laplacian. We need to perform:
+//      \laplacian_d p := (p_N + p_S + p_E + p_W - 4*p)/(h*h)
+// where p_N, p_S, p_E, p_W stand for the items to the North, South, East, West of item p.
+//
+// To optimize we first load an etire "tile" worth of input items into shared memory and then perform repeated 
+// reads there. This saves us for the operation above 4 global memory acesses per input item. A big optimalization.
+//
+// The implementation is a bit more complex due to the need to handle what happens at the borders of the tile. 
+// Of course we cannot index outside the tile as that would result in bad memory acesses. We solve this by
+// only performing the useful operation on the interior of the tile. The size of such safety boarded we donet 
+// 'r'. r corresponds the the maxmimum offset from the output item to the input item. In our laplacian case it is 1.
+// Its worth noting that r=0 makes sense and is useful for things like matrix matrix multiply.
+// The complete operation is depicted on the diagram below:
+//
+//                       -r        0                       tn-r     tn                 
+//                                           
+//                        <-------------tile size (tn)--------------->
+//                        <---r----><-----inner tile-------><---r---->
+//    global mem          |--------|------------------------|--------|
+//
+//                        vvvvvvvvvvvvvvv gather func vvvvvvvvvvvvvvvv
+//
+//    shared mem          |--------|------------------------|--------|
+//
+//                                 vvvvvvv user func vvvvvvvv
+//
+//    global mem                   |------------------------|
+//
+// Here we can see that we load values from the global memory using a custom provided gather func. This function can 
+// for example compress the data, pad the data with zeros, provide periodic boundary conditions etc. Then we
+// take the output of gather func in shared memory and feed it just for the inner tile into the user func which performs 
+// the useful computation. 
+//
+// As is apparent from the diagram above not all threads are used for execution of the user func. Only about
+// 30*30 out of 32*32 threads (= 87%) are used. Because of this for copute intensive operations tintermideate values 
+// should be saved to an auxiliary array and the actual useful result be obtained from launching a new kernel 
+// (which now uses 100% of the availibel threads) over the intermediate array.
+//
+// Example of 2D cuda_tiled_for used to calculate the laplacian as defined above:
+//
+// float* input = NULL;
+// float* output = NULL;
+// csize size_x = 1024;
+// csize size_y = 1024;
+// float h = 1/size_x;
+//
+// // Declare the value r in both directions to be 1 (at compile time!) through
+// // the template arguments
+// cuda_tiled_for_2D_bound<1, 1>(input, size_x, size_y, 
+//     [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, const int* shared){
+//         // No need to worry about overread here. 
+//         // The cuda_tiled_for_2D_bound loads 0 (configurable) to shared 
+//         // memory when loading out of bounds. 
+//         // Because we are only inside the inner region of the tile we dont need
+//         // to worry about reading out of bounds.
+//         float p_E = shared[tx+1 + ty*tile_size_x];
+//         float p_W = shared[tx-1 + ty*tile_size_x];
+//         float p_N = shared[tx   + (ty+1)*tile_size_x];
+//         float p_S = shared[tx   + (ty-1)*tile_size_x];
+//         float p = shared[tx + ty*tile_size_x];
+//
+//         output[x + y*size_x] = (p_N + p_S + p_E + p_W - 4*p)/(h*h);
+//     }
+// );
+
 #include "cuda_util.cuh"
 #include "cuda_device.cuh"
 #include "cuda_alloc.cuh"
@@ -45,8 +126,9 @@ static void cuda_for_2D(csize from_x, csize from_y, csize to_x, csize to_y, Func
     CUDA_DEBUG_TEST(cudaGetLastError());
 }
 
+//========================================== TILED FOR =====================================
 enum {
-    TILED_FOR_DYNAMIC_RANGE = -1
+    TILED_FOR_DYNAMIC_RANGE = -1 //Set the template arguments to this value to be able to specify the 'r' through function arguments 
 };
 
 template <typename T, typename Gather, typename Function, csize static_r>
@@ -313,6 +395,7 @@ static void cuda_tiled_for_2D_modular(const T* data, csize nx, csize ny, Functio
     cuda_tiled_for_2D_modular<static_rx, static_ry, small_r, T, Function>(data, nx, 0, 0, nx, ny, (Function&&)func, dynamic_rx, dynamic_ry, launch_params);
 }
 
+//================================================ TESTS ====================================================================
 #if (defined(TEST_CUDA_ALL) || defined(TEST_CUDA_FOR)) && !defined(TEST_CUDA_FOR_IMPL)
 #define TEST_CUDA_FOR_IMPL
 
