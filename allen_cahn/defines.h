@@ -37,6 +37,8 @@ typedef unsigned long long llu;
 #define MAX(a, b)   ((a) > (b) ? (a) : (b))
 #define CLAMP(value, low, high) MAX(low, MIN(value, high))
 #define DIV_CEIL(value, div_by) (((value) + (div_by) - 1) / (div_by))
+#define ROUND_UP(val, round_to_multiple) (DIV_CEIL((val), (round_to_multiple))*(round_to_multiple))
+#define ROUND_DOWN(val, round_to_multiple) ((val)/(round_to_multiple)*(round_to_multiple))
 #define MOD(val, range) (((val) % (range) + (range)) % (range))
 #define SWAP(a_ptr, b_ptr, Type) \
     do { \

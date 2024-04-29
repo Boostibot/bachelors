@@ -1,4 +1,5 @@
-// #define RUN_BENCH
+#define RUN_BENCH
+#define TEST_CUDA_ALL
 // #define USE_THRUST
 
 #include "kernel.h"
@@ -1746,8 +1747,11 @@ void cache_prepare(int count, int item_size, int N)
 
 extern "C" bool benchmark_reduce_kernels(int N)
 {
-    test_tiled_for((uint64_t) clock_ns(), true);
-    // test_reduce((uint64_t) clock_ns());
+    #ifdef TEST_CUDA_ALL
+    test_tiled_for((uint64_t) clock_ns());
+    test_tiled_for_2D((uint64_t) clock_ns());
+    test_reduce((uint64_t) clock_ns());
+    #endif
 
     Cache_Tag tag = cache_tag_make();
     uint* rand_state = cache_alloc(uint, N, &tag);

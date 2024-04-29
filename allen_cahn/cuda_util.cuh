@@ -16,6 +16,7 @@
 #include <device_launch_parameters.h>
 #include <cuda_runtime.h>
 
+// typedef int64_t csize;
 typedef int csize;
 
 //Can be defined to something else if we wish to for example use size_t or uint
@@ -64,8 +65,6 @@ enum {
 
     // Prior to launching the kernel we check if warpSize == WARP_SIZE. If it does not we error return.
 };
-
-
 
 struct Cuda_Info {
     int device_id;
@@ -175,10 +174,13 @@ struct Cuda_Launch_Params {
     // Value in range [0, 1] selecting on of the preferd sizes. 
     // Prefered sizes are valid sizes that achieve maximum utilization of hardware, usually powers of two.
     double preferd_block_size_ratio = 1; 
+    double3 preferd_block_size_ratio3 = {1, 1, 1};
 
     // If greater than zero and within the valid block size range used as the block size regardless of
     // anything else. If is not given or not within range block size is determined by preferd_block_size_ratio instead.
-    uint   preferd_block_size = 0;
+    // uint   preferd_block_size = 0;
+    uint preferd_block_size = {0};
+    dim3 preferd_block_size3 = {0};
 
     //The cap on number of blocks. Can be used to tune sheduler.
     uint   max_block_count = UINT_MAX;
@@ -225,7 +227,7 @@ struct Cuda_Launch_Query {
 };
 
 //Recalculates launch bounds using a different N
-Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bounds, Cuda_Launch_Params params)
+static Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bounds, Cuda_Launch_Params params)
 {
     Cuda_Info info = cuda_one_time_setup();
     Cuda_Launch_Config launch = {0};
@@ -254,13 +256,13 @@ Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bounds, Cu
     // Any more than that is pure overhead for the sheduler
     launch.desired_block_count = DIV_CEIL((uint) N, launch.block_size);
     launch.block_count = MIN(MIN(launch.desired_block_count, launch.max_concurent_blocks), params.max_block_count);
-    if(info.has_broken_driver && params.max_block_count_for_broken_drivers)
-        launch.block_count = MIN(launch.block_count, params.max_block_count_for_broken_drivers);
+    // if(info.has_broken_driver && params.max_block_count_for_broken_drivers)
+        // launch.block_count = MIN(launch.block_count, params.max_block_count_for_broken_drivers);
 
     return launch;
 }
 
-Cuda_Launch_Bounds cuda_query_launch_bounds(Cuda_Launch_Query query)
+static Cuda_Launch_Bounds cuda_query_launch_bounds(Cuda_Launch_Query query)
 {
     Cuda_Launch_Bounds out = {0};
     Cuda_Info info = cuda_one_time_setup();
@@ -272,8 +274,8 @@ Cuda_Launch_Bounds cuda_query_launch_bounds(Cuda_Launch_Query query)
     uint block_size_max = MIN(block_size_hw_upper_bound, query.max_block_size);
     uint block_size_min = MAX(block_size_hw_lower_bound, query.min_block_size);
     
-    block_size_max = (block_size_max/WARP_SIZE)*WARP_SIZE;
-    block_size_min = DIV_CEIL(block_size_min,WARP_SIZE)*WARP_SIZE;
+    block_size_max = ROUND_DOWN(block_size_max, WARP_SIZE);
+    block_size_min = ROUND_UP(block_size_min, WARP_SIZE);
 
     out.min_block_size = block_size_min;
     out.max_block_size = block_size_max;
@@ -294,7 +296,7 @@ Cuda_Launch_Bounds cuda_query_launch_bounds(Cuda_Launch_Query query)
     // 2) be divisible by warpSize (W) (to have good block utlization)
     // 3) be as big as possible (should be at least WARP_SIZE^2 = 1024 for maximum reduction (also right now 1024 is the max size of block on all cards))
     // 4) divide prop.maxThreadsPerMultiProcessor (to have good streaming multiprocessor utilization - requiring less SMs)
-    for(uint curr_size = out.max_block_size; curr_size >= out.min_block_size; curr_size -= WARP_SIZE)
+    for(uint curr_size = out.min_block_size; curr_size <= out.max_block_size; curr_size += WARP_SIZE)
     {
         if(info.prop.maxThreadsPerMultiProcessor % curr_size == 0)
         {   
@@ -313,7 +315,7 @@ Cuda_Launch_Bounds cuda_query_launch_bounds(Cuda_Launch_Query query)
     return out;
 }
 
-Cuda_Launch_Query cuda_launch_query_from_kernel(const void* kernel)
+static Cuda_Launch_Query cuda_launch_query_from_kernel(const void* kernel)
 {
     cudaFuncAttributes attributes = {};
     CUDA_TEST(cudaFuncGetAttributes(&attributes, kernel));
@@ -335,9 +337,9 @@ enum {
 static void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int flags, const char* file, const char* function, int line)
 {
     Cuda_Info info = cuda_one_time_setup();
-    LOG_INFO("CUDA", "realloc " MEMORY_FMT "-> " MEMORY_FMT " %s %s:%i\n",
-            MEMORY_PRINT(old_size), 
-            MEMORY_PRINT(new_size),
+    LOG_INFO("CUDA", "realloc %s-> %s %s %s:%i\n",
+            format_bytes(old_size).str, 
+            format_bytes(new_size).str,
             function, file, line);
 
     static int64_t used_bytes = 0;
@@ -345,10 +347,10 @@ static void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int 
     if(new_size != 0)
     {
         CUDA_TEST(cudaMalloc(&new_ptr, new_size), 
-            "Out of CUDA memory! Requested " MEMORY_FMT ". Using " MEMORY_FMT " / " MEMORY_FMT ". %s %s:%i", 
-            MEMORY_PRINT(new_size), 
-            MEMORY_PRINT(used_bytes), 
-            MEMORY_PRINT(info.prop.totalGlobalMem),
+            "Out of CUDA memory! Requested %s. Using %s / %s. %s %s:%i", 
+            format_bytes(new_size).str, 
+            format_bytes(used_bytes).str, 
+            format_bytes(info.prop.totalGlobalMem).str,
             function, file, line);
 
         size_t min_size = MIN(old_size, new_size);
@@ -457,7 +459,7 @@ static void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
     if(bucket_i == -1)
     {
         bucket_i = cache->bucket_count++;
-        LOG_INFO("CUDA", "Alloc cache made bucket [%i] " MEMORY_FMT, bucket_i, MEMORY_PRINT(bytes));
+        LOG_INFO("CUDA", "Alloc cache made bucket [%i] %s", bucket_i, format_bytes(bytes).str);
         TEST(cache->bucket_count < STATIC_ARRAY_SIZE(cache->buckets), "Unexepectedly high ammount of buckets");
         cache->buckets[bucket_i].bucket_size = bytes;
     }
@@ -477,7 +479,7 @@ static void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
             bucket->allocations = new_data;
         }
 
-        LOG_INFO("CUDA", "Alloc cache bucket [%i] allocated " MEMORY_FMT, bucket_i, MEMORY_PRINT(bytes));
+        LOG_INFO("CUDA", "Alloc cache bucket [%i] allocated %s", bucket_i, format_bytes(bytes).str);
         //Fill the allocation appropriately
         int alloc_index = bucket->allocations_size ++;
         Cache_Allocation* allocation = &bucket->allocations[alloc_index];

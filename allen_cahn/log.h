@@ -44,7 +44,8 @@ Logger def_logger_make();
 //Logs a message. Does not get dissabled.
 #define LOG(module, log_type, format, ...)   log_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, ##__VA_ARGS__)
 #define VLOG(module, log_type, format, args) vlog_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, args)
-#define LOG_HERE() LOG("here", LOG_TRACE, "> %s %s:%i", __FUNCTION__, __FILE__, __LINE__)
+#define _LOG_HERE(fmt_extra, ...) LOG("here", LOG_TRACE, "> %s %s:%i %s" fmt_extra, __FUNCTION__, __FILE__, __LINE__, ##__VA_ARGS__)
+#define LOG_HERE(...) _LOG_HERE("", ##__VA_ARGS__)
 
 //Logs a message type into the provided module cstring.
 #define LOG_INFO(module, format, ...)  LOG(module, LOG_INFO,  format, ##__VA_ARGS__)
@@ -55,25 +56,21 @@ Logger def_logger_make();
 #define LOG_DEBUG(module, format, ...) LOG(module, LOG_DEBUG, format, ##__VA_ARGS__)
 #define LOG_TRACE(module, format, ...) LOG(module, LOG_TRACE, format, ##__VA_ARGS__)
 
-typedef struct Memory_Format {
-    const char* unit;
-    size_t unit_value;
-    double fraction;
+typedef struct Str_Buffer32 {
+    char str[32];
+} Str_Buffer32;
 
-    int whole;
-    int remainder;
-} Memory_Format;
+typedef struct Str_Buffer16 {
+    char str[16];
+} Str_Buffer16;
 
-Memory_Format get_memory_format(size_t bytes);
+Str_Buffer16 format_bytes(size_t bytes);
 
 #define TIME_FMT "%02i:%02i:%02i %03i"
 #define TIME_PRINT(c) (int)(c).hour, (int)(c).minute, (int)(c).second, (int)(c).millisecond
 
 #define STRING_FMT "%.*s"
 #define STRING_PRINT(string) (int) (string).size, (string).data
-
-#define MEMORY_FMT "%.2lf%s"
-#define MEMORY_PRINT(bytes) get_memory_format((bytes)).fraction, get_memory_format((bytes)).unit
 
 #define DO_LOG
 #endif
@@ -239,7 +236,7 @@ void assertion_report(const char* expression, int line, const char* file, const 
     log_flush();
 }
 
-Memory_Format get_memory_format(size_t bytes)
+Str_Buffer16 format_bytes(size_t bytes)
 {
     size_t B  = (size_t) 1;
     size_t KB = (size_t) 1024;
@@ -247,41 +244,38 @@ Memory_Format get_memory_format(size_t bytes)
     size_t GB = (size_t) 1024*1024*1024;
     size_t TB = (size_t) 1024*1024*1024*1024;
 
-    Memory_Format out = {0};
-    out.unit = "";
-    out.unit_value = 1;
+    const char* unit = "";
+    size_t unit_value = 1;
     if(bytes >= TB)
     {
-        out.unit = "TB";
-        out.unit_value = TB;
+        unit = "TB";
+        unit_value = TB;
     }
     else if(bytes >= GB)
     {
-        out.unit = "GB";
-        out.unit_value = GB;
+        unit = "GB";
+        unit_value = GB;
     }
     else if(bytes >= MB)
     {
-        out.unit = "MB";
-        out.unit_value = MB;
+        unit = "MB";
+        unit_value = MB;
     }
     else if(bytes >= KB)
     {
-        out.unit = "KB";
-        out.unit_value = KB;
+        unit = "KB";
+        unit_value = KB;
     }
     else
     {
-        out.unit = "B";
-        out.unit_value = B;
+        unit = "B";
+        unit_value = B;
     }
 
-    out.fraction = (double) bytes / (double) out.unit_value;
-    out.whole = (int) (bytes / out.unit_value);
-    out.remainder = (int) (bytes / out.unit_value);
-
+    Str_Buffer16 out = {0};
+    double value = (double) bytes / (double) unit_value;
+    snprintf(out.str, sizeof(out.str), "%.2lf%s", value, unit);
     return out;
 }
-
 
 #endif
