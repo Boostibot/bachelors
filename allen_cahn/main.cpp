@@ -22,7 +22,7 @@ const double FREE_RUN_SYM_FPS = 200;
 #define WINDOW_TITLE        "sim"
 #define DEF_WINDOW_WIDTH	800 
 #define DEF_WINDOW_HEIGHT	800
-#define DO_GRAPHICAL_BUILD  
+#define COMPILE_GRAPHICS  
 
 static double clock_s();
 static void wait_s(double seconds);
@@ -149,7 +149,7 @@ void simulation_state_reload(App_State* app, Allen_Cahn_Config config)
 }
 
 
-#ifdef DO_GRAPHICAL_BUILD
+#ifdef COMPILE_GRAPHICS
 #include "gl.h"
 #include <GLFW/glfw3.h>
 // #include "external/glfw/glfw3.h"
@@ -167,6 +167,13 @@ int main()
     Allen_Cahn_Config config = {0};
     if(allen_cahn_read_config("config.ini", &config) == false)
         return 1;
+
+    if(config.run_tests)
+        run_tests();
+    if(config.run_benchmarks)
+        run_benchmarks(config.params.m * config.params.n);
+    if(config.run_simulation == false)
+        return 0;
 
     App_State app_ = {0};
     App_State* app = (App_State*) &app_;
@@ -206,17 +213,15 @@ int main()
     #undef LOG_INFO_CONFIG_REAL
     #undef LOG_INFO_CONFIG_INT
 
-    #ifndef DO_GRAPHICAL_BUILD
+    #ifndef COMPILE_GRAPHICS
     config.interactive_mode = false;
-    #endif // DO_GRAPHICAL_BUILD
+    #endif // COMPILE_GRAPHICS
 
-    if(benchmark_reduce_kernels(config.params.m * config.params.n))
-        return 0;
 
     //OPENGL setup
     if(config.interactive_mode)
     {   
-        #ifdef DO_GRAPHICAL_BUILD
+        #ifdef COMPILE_GRAPHICS
         TEST(glfwInit(), "Failed to init glfw");
 
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -422,7 +427,7 @@ int main()
     return 0;    
 }
 
-#ifdef DO_GRAPHICAL_BUILD
+#ifdef COMPILE_GRAPHICS
 
 void glfw_resize_func(GLFWwindow* window, int width, int heigth)
 {

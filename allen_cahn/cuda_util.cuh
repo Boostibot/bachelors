@@ -46,6 +46,8 @@ static bool _test_cuda_(cudaError_t error, const char* expression, int line, con
     #define CUDA_DEBUG_TEST(status, ...) CUDA_TEST(status, __VA_ARGS__)
 #endif
 
+//prevents unused variable type warnings messages on nvcc
+#define USE_VARIABLE(x) if(&(x));
 
 enum {
     WARP_SIZE = 32
@@ -184,9 +186,6 @@ struct Cuda_Launch_Params {
 
     //The cap on number of blocks. Can be used to tune sheduler.
     uint   max_block_count = UINT_MAX;
-    
-    //when greater then zero caps on number of blocks used for drivers with broken sheduler (such as the MX450).
-    uint   max_block_count_for_broken_drivers = 0;
 
     //The stream used for the launch
     cudaStream_t stream = 0;
@@ -256,8 +255,6 @@ static Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bou
     // Any more than that is pure overhead for the sheduler
     launch.desired_block_count = DIV_CEIL((uint) N, launch.block_size);
     launch.block_count = MIN(MIN(launch.desired_block_count, launch.max_concurent_blocks), params.max_block_count);
-    // if(info.has_broken_driver && params.max_block_count_for_broken_drivers)
-        // launch.block_count = MIN(launch.block_count, params.max_block_count_for_broken_drivers);
 
     return launch;
 }

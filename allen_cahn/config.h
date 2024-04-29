@@ -41,6 +41,10 @@ typedef struct Allen_Cahn_Config{
 
     std::string entire_config_file;
 
+    bool run_simulation;
+    bool run_tests;
+    bool run_benchmarks;
+
     double stop_after;
     bool interactive_mode;
     bool linear_filtering;
@@ -432,6 +436,9 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             ;
 
         uint8_t matched_program = true
+            & (uint8_t) key_value_get_bool(pairs, &config->run_simulation, "program", "run_simulation")
+            & (uint8_t) key_value_get_bool(pairs, &config->run_tests, "program", "run_tests")
+            & (uint8_t) key_value_get_bool(pairs, &config->run_benchmarks, "program", "run_benchmarks")
             & (uint8_t) key_value_get_solver_type(pairs, &config->solver, "program", "solver")
             & (uint8_t) key_value_get_double(pairs, &config->stop_after, "program", "stop_after")
             & (uint8_t) key_value_get_bool(pairs, &config->interactive_mode, "program", "interactive")

@@ -157,9 +157,6 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
         }
 
         cpu_reduce = CLAMP(cpu_reduce, CPU_REDUCE_MIN, CPU_REDUCE_MAX);
-        if(launch_params.max_block_count_for_broken_drivers == 0)
-            launch_params.max_block_count_for_broken_drivers = 100;
-            
         Cache_Tag tag = cache_tag_make();
         T* partials[2] = {NULL, NULL};
 
@@ -437,11 +434,7 @@ static __device__ __forceinline__ T _warp_reduce(unsigned int mask, T value)
     }
 }
 
-//============================= TESTS =================================
-#if (defined(TEST_CUDA_ALL) || defined(TEST_CUDA_REDUCTION)) && !defined(TEST_CUDA_REDUCTION_IMPL)
-#define TEST_CUDA_REDUCTION_IMPL
-
-#ifdef USE_THRUST
+#ifdef COMPILE_THRUST
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
@@ -497,6 +490,10 @@ static T cpu_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
     return sum;
 }
 
+//============================= TESTS =================================
+#if (defined(TEST_CUDA_ALL) || defined(TEST_CUDA_REDUCTION)) && !defined(TEST_CUDA_REDUCTION_IMPL)
+#define TEST_CUDA_REDUCTION_IMPL
+
 template<class Reduction, typename T>
 static T cpu_fold_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
 {
@@ -526,7 +523,6 @@ static T cpu_fold_reduce(const T *input, int n, Reduction reduce_tag = Reduction
 
     return sum;
 }
-
 
 static bool is_near(double a, double b, double epsilon = 1e-8)
 {

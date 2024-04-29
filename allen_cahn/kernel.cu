@@ -1,6 +1,11 @@
-#define RUN_BENCH
+#define COMPILE_BENCHMARKS
+#define COMPILE_TESTS
+#define COMPILE_SIMULATION
+#define COMPILE_THRUST
+
+#ifdef COMPILE_TESTS
 #define TEST_CUDA_ALL
-// #define USE_THRUST
+#endif
 
 #include "kernel.h"
 #include "cuda_util.cuh"
@@ -8,9 +13,8 @@
 
 #define PI          ((Real) 3.14159265359)
 #define TAU         (2*PI)
-#define ECHOF(x)    printf(#x ": %e\n", (x))
 
-#ifndef RUN_BENCH
+#ifdef COMPILE_SIMULATION
 
 #ifdef USE_THRUST
 #include <thrust/inner_product.h>
@@ -1156,7 +1160,8 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
     
     Real step_residual_avg_error = 0;
     Real step_residual_max_error = 0;
-    bool converged = false; (void) converged;
+    bool converged = false;
+    USE_VARIABLE(converged);
     
     int k = 0;
     int max_iters = params.corrector_max_iters;
@@ -1409,6 +1414,7 @@ void semi_implicit_coupled_solver_step(Semi_Implicit_Coupled_Solver* solver, Sem
     A_U.U = -dt/(dy*dy);
     A_U.D = -dt/(dy*dy);
 
+    #define ECHOF(x)    printf(#x ": %e\n", (x))
     Real B_U_norm = vector_dot_product(B_U, B_U, N);
     B_U_norm = sqrt(B_U_norm / N);
     ECHOF(B_U_norm);
@@ -1669,15 +1675,7 @@ extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int s
 }
 
 
-extern "C" bool benchmark_reduce_kernels(int N)
-{
-    (void) N;
-    return false;
-}
 #else
-
-#include "cuda_reduction.cuh"
-#include "cuda_random.cuh"
 
 extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m) {}
 extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m) {}
@@ -1687,6 +1685,13 @@ extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int sta
 extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify) {}
 extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify) {}
 extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t size, Sim_Modify modify) {}
+#endif
+
+#include "cuda_reduction.cuh"
+#include "cuda_random.cuh"
+
+
+#ifdef COMPILE_BENCHMARKS
 
 #include <chrono>
 static int64_t clock_ns()
@@ -1694,6 +1699,7 @@ static int64_t clock_ns()
     return std::chrono::high_resolution_clock::now().time_since_epoch().count();
 }
 
+#if 0
 static double clock_s()
 {
     static int64_t init_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -1702,10 +1708,10 @@ static double clock_s()
     double clock = (double) (now - init_time) / unit;
     return clock;
 }
-
+#endif
 
 template <typename Func>
-double benchmark(double time, double warmup, Func func)
+static double benchmark(double time, double warmup, Func func)
 {
     int64_t sec_to_ns = 1000000000;
     int64_t start_time = clock_ns();
@@ -1732,12 +1738,12 @@ double benchmark(double time, double warmup, Func func)
 }
 
 template <typename Func>
-double benchmark(double time, Func func)
+static double benchmark(double time, Func func)
 {
     return benchmark(time, time / 10.0, func);
 }
 
-void cache_prepare(int count, int item_size, int N)
+static void cache_prepare(int count, int item_size, int N)
 {
     Cache_Tag tag = cache_tag_make();
     for(int i = 0; i < count; i++)
@@ -1745,13 +1751,11 @@ void cache_prepare(int count, int item_size, int N)
     cache_free(&tag);
 }
 
-extern "C" bool benchmark_reduce_kernels(int N)
+extern "C" bool run_benchmarks(int N)
 {
-    #ifdef TEST_CUDA_ALL
-    test_tiled_for((uint64_t) clock_ns());
-    test_tiled_for_2D((uint64_t) clock_ns());
-    test_reduce((uint64_t) clock_ns());
-    #endif
+    cache_prepare(3, sizeof(int), N);
+    cache_prepare(3, sizeof(float), N);
+    cache_prepare(3, sizeof(double), N);
 
     Cache_Tag tag = cache_tag_make();
     uint* rand_state = cache_alloc(uint, N, &tag);
@@ -1762,35 +1766,55 @@ extern "C" bool benchmark_reduce_kernels(int N)
         double* rand_map = cache_alloc(double, N, &tag);
         random_map_32(rand_map, rand_state, N);
         
-        double cpu_time = benchmark(3, [=]{ cpu_fold_reduce(rand_map, N, Reduce::ADD); });
+        double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_map, N, Reduce::ADD); });
         double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_map, N, Reduce::ADD); });
         double custom_time = benchmark(3, [=]{ reduce(rand_map, N, Reduce::ADD); });
         double total_gb = (double) N / GB * sizeof(double);
-        LOG_INFO("BENCH", "double (gb/s): cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (%i:%lfGB)", total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, total_gb);
-        LOG_INFO("BENCH", "double (time): cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
+        LOG_OKAY("BENCH", "double (gb/s): cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
+            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes(N * sizeof(double)).str);
+        LOG_OKAY("BENCH", "double (time): cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
     }
     {
         float* rand_map = cache_alloc(float, N, &tag);
         random_map_32(rand_map, rand_state, N);
         
-        double cpu_time = benchmark(3, [=]{ cpu_fold_reduce(rand_map, N, Reduce::ADD); });
+        double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_map, N, Reduce::ADD); });
         double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_map, N, Reduce::ADD); });
         double custom_time = benchmark(3, [=]{ reduce(rand_map, N, Reduce::ADD); });
         double total_gb = (double) N / GB * sizeof(float);
-        LOG_INFO("BENCH", "float (gb/s) : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (%i:%lfGB)", total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, total_gb);
-        LOG_INFO("BENCH", "float (time) : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
+        LOG_OKAY("BENCH", "float (gb/s) : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
+            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes(N * sizeof(float)).str);
+        LOG_OKAY("BENCH", "float (time) : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
     }
 
     {
-        double cpu_time = benchmark(3, [=]{ cpu_fold_reduce(rand_state, N, Reduce::ADD); });
+        double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_state, N, Reduce::ADD); });
         double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_state, N, Reduce::ADD); });
         double custom_time = benchmark(3, [=]{ reduce(rand_state, N, Reduce::ADD); });
         double total_gb = (double) N / GB * sizeof(uint);
-        LOG_INFO("BENCH", "uint (gb/s)  : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (%i:%lfGB)", total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, total_gb);
-        LOG_INFO("BENCH", "uint (time)  : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
+        LOG_OKAY("BENCH", "uint (gb/s)  : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
+            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes(N * sizeof(uint)).str);
+        LOG_OKAY("BENCH", "uint (time)  : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
     }
 
     cache_free(&tag);
     return true;
 }
+#else
+extern "C" bool run_benchmarks(int N)
+{
+    (void) N;
+    return false;
+}
 #endif
+
+extern "C" bool run_tests()
+{
+    #ifdef TEST_CUDA_ALL
+    test_tiled_for((uint64_t) clock_ns());
+    test_tiled_for_2D((uint64_t) clock_ns());
+    test_reduce((uint64_t) clock_ns());
+    #endif
+
+    return true;
+}

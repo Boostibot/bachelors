@@ -252,7 +252,8 @@ extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, 
 extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify);
 extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t size, Sim_Modify modify);
 
-extern "C" bool benchmark_reduce_kernels(int N);
+extern "C" bool run_tests();
+extern "C" bool run_benchmarks(int N);
 
 // solver -> init to some concrete solver
 // solver has to have internal state for caching CACHING! CACHING! its all about caching! We dont even have to have a solver

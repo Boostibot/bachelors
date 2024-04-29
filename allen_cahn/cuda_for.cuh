@@ -23,14 +23,10 @@ static void cuda_for(csize from, csize to, Function func, Cuda_Launch_Params lau
 
     if(launch_params.preferd_block_size == 0)
         launch_params.preferd_block_size = 64;
-    if(launch_params.max_block_count_for_broken_drivers == 0)
-        launch_params.max_block_count_for_broken_drivers = 500;
     Cuda_Launch_Config launch = cuda_get_launch_config(to - from, bounds, launch_params);
 
     cuda_for_kernel<<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(from, to-from, (Function&&) func);
     CUDA_DEBUG_TEST(cudaGetLastError());
-    // if(launch_params.stream != 0)
-        // CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 }
 
 template <typename Function>
@@ -41,8 +37,6 @@ static void cuda_for_2D(csize from_x, csize from_y, csize to_x, csize to_y, Func
     csize volume = (to_x - from_x)*(to_y - from_y);
     if(launch_params.preferd_block_size == 0)
         launch_params.preferd_block_size = 64;
-    if(launch_params.max_block_count_for_broken_drivers == 0)
-        launch_params.max_block_count_for_broken_drivers = 500;
     Cuda_Launch_Config launch = cuda_get_launch_config(volume, bounds, launch_params);
 
     cuda_for_2D_kernel<<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(from_x, to_x-from_x, from_y, to_y-from_y, (Function&&) func);
@@ -100,9 +94,6 @@ static void cuda_tiled_for(csize N, csize dynamic_r, Gather gather, Function fun
 
     if(N <= 0)
         return;
-
-    if(launch_params.max_block_count_for_broken_drivers == 0)
-        launch_params.max_block_count_for_broken_drivers = 50;
 
     Cuda_Launch_Config launch = cuda_get_launch_config(N, bounds, launch_params);
     if(launch.block_size == 0)
@@ -229,10 +220,6 @@ static void cuda_tiled_for_2D(csize nx, csize ny, csize dynamic_rx, csize dynami
     if constexpr(static_ry != -1)
         ry = static_ry;
 
-    CUDA_DEBUG_TEST(cudaGetLastError());
-    if(launch_params.max_block_count_for_broken_drivers == 0)
-        launch_params.max_block_count_for_broken_drivers = 50;
-
     csize volume = nx*ny;
     Cuda_Launch_Config launch = cuda_get_launch_config(volume, bounds, launch_params);
 
@@ -335,9 +322,13 @@ static __host__ __device__ void print_int_array_2d(const char* before, const int
     printf("%s", after);
 }
 
+
+#define CATCH_INTERNAL_START_WARNINGS_SUPPRESSION _Pragma( "nv_diag_suppress 177" ) _Pragma( "nv_diag_suppress 550" )
+#define CATCH_INTERNAL_STOP_WARNINGS_SUPPRESSION  _Pragma( "nv_diag_default 177" ) _Pragma( "nv_diag_suppress 550" )
 static void cpu_convolution(const int* input, const int* stencil, int* output, csize N, csize r, int out_of_bounds_val)
 {   
     csize sx = 2*r + 1;
+    USE_VARIABLE(sx);
     for(csize i = 0; i < N; i++)
     {
         int out = 0;
@@ -360,6 +351,9 @@ static void cpu_convolution_2D(const int* input, const int* stencil, int* output
 {   
     csize sx = 2*rx + 1;
     csize sy = 2*ry + 1;
+
+    USE_VARIABLE(sx);
+    USE_VARIABLE(sy);
     for(csize y = 0; y < ny; y++)
         for(csize x = 0; x < nx; x++)
         {
@@ -437,15 +431,13 @@ static void test_tiled_for(uint64_t seed)
 
             cpu_convolution(cpu_in, cpu_stencil, cpu_out, N, r, 0);
 
-            Cuda_Launch_Params params = {};
-            params.max_block_count_for_broken_drivers = 1000;
-            
             cudaMemcpy(gpu_in, cpu_in, max_N_bytes, cudaMemcpyHostToDevice);
             cudaMemcpy(gpu_stencil, cpu_stencil, max_N_bytes, cudaMemcpyHostToDevice);
 
             cuda_tiled_for_bound(gpu_in, N, r, [=]SHARED(csize i, csize ti, int* __restrict__ shared, csize block_size, csize N, csize r){
                 int out = 0;
                 csize S = 2*r + 1;
+                USE_VARIABLE(S);
                 for(csize iter = -r; iter <= r; iter++)
                 {
                     csize i_shared = iter + ti;
@@ -458,11 +450,13 @@ static void test_tiled_for(uint64_t seed)
 
                 assert(0 <= i && i < N);
                 gpu_out[i] = out;
-            }, 0, params);
+            });
             cudaMemcpy(cpu_out_cuda, gpu_out, max_N_bytes, cudaMemcpyDeviceToHost);
 
             for(csize i = 0; i < N; i++)
-                TEST(cpu_out[i] == cpu_out_cuda[i], "test_tiled_for failed! N:%lli i:%lli seed:%lli TEST(%i == %i)", (lli)N, (lli)i, seed, cpu_out[i], cpu_out_cuda[i]);
+                TEST(cpu_out[i] == cpu_out_cuda[i], 
+                    "test_tiled_for failed! N:%lli i:%lli seed:%lli TEST(%i == %i)", 
+                    (lli)N, (lli)i, (lli)seed, cpu_out[i], cpu_out_cuda[i]);
         }
     }
 
@@ -531,8 +525,6 @@ static void test_tiled_for_2D(uint64_t seed)
                     CUDA_DEBUG_TEST(cudaMemcpy(gpu_in, cpu_in, N_bytes, cudaMemcpyHostToDevice));
                     CUDA_DEBUG_TEST(cudaMemcpy(gpu_stencil, cpu_stencil, sx*sy*sizeof(int), cudaMemcpyHostToDevice));
 
-                    Cuda_Launch_Params params = {};
-                    params.max_block_count_for_broken_drivers = 1000;
                     cuda_tiled_for_2D_bound(gpu_in, nx, ny, rx, ry, [=]SHARED(
                         csize x, csize y, csize tx, csize ty, 
                         int* __restrict__ shared, csize tile_size_x, csize tile_size_y, 
@@ -560,7 +552,7 @@ static void test_tiled_for_2D(uint64_t seed)
                         assert(0 <= x && x < nx);
                         assert(0 <= y && y < ny);
                         gpu_out[x+y*nx] = out;
-                    }, 0, params);
+                    });
                     
                     CUDA_DEBUG_TEST(cudaMemcpy(cpu_out_cuda, gpu_out, N_bytes, cudaMemcpyDeviceToHost));
 
@@ -568,7 +560,9 @@ static void test_tiled_for_2D(uint64_t seed)
                         for(csize y = 0; y < ny; y++)
                         {
                             csize i = x + y*nx;
-                            TEST(cpu_out[i] == cpu_out_cuda[i], "test_tiled_for_2D failed! nx:%lli ny:%lli seed:%lli x:%lli y:%lli TEST(%i == %i)", (lli)nx, (lli)ny, (lli)seed, (lli)x, (lli)y, cpu_out[i], cpu_out_cuda[i]);
+                            TEST(cpu_out[i] == cpu_out_cuda[i], 
+                                "test_tiled_for_2D failed! nx:%lli ny:%lli seed:%lli x:%lli y:%lli TEST(%i == %i)", 
+                                (lli)nx, (lli)ny, (lli)seed, (lli)x, (lli)y, cpu_out[i], cpu_out_cuda[i]);
                         }
                 }
 
