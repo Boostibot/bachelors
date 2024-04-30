@@ -3,6 +3,9 @@
 #define COMPILE_SIMULATION
 // #define COMPILE_THRUST
 
+#define USE_CUSTOM_REDUCE
+#define USE_TILED_FOR 
+
 #ifdef COMPILE_TESTS
 #define TEST_CUDA_ALL
 #endif
@@ -17,7 +20,7 @@
 
 #ifdef COMPILE_SIMULATION
 
-#ifdef USE_THRUST
+#ifndef USE_CUSTOM_REDUCE
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
@@ -25,7 +28,7 @@
 
 Real vector_dot_product(const Real *a, const Real *b, int n)
 {
-    #ifndef USE_THRUST
+    #ifdef USE_CUSTOM_REDUCE
     return dot_product(a, b, n);
     #else
     // wrap raw pointers to device memory with device_ptr
@@ -39,7 +42,7 @@ Real vector_dot_product(const Real *a, const Real *b, int n)
 
 Real vector_max(const Real *a, int N)
 {
-    #ifndef USE_THRUST
+    #ifdef USE_CUSTOM_REDUCE
     return max(a, N);
     #else
     thrust::device_ptr<const Real> d_a(a);
@@ -49,7 +52,7 @@ Real vector_max(const Real *a, int N)
 
 Real vector_get_l2_dist(const Real* a, const Real* b, int N)
 {
-    #ifndef USE_THRUST
+    #ifdef USE_CUSTOM_REDUCE
     return L2_distance(a, b, N)/ sqrt((Real) N);
     #else
     Cache_Tag tag = cache_tag_make();
@@ -67,7 +70,7 @@ Real vector_get_l2_dist(const Real* a, const Real* b, int N)
 
 Real vector_get_max_dist(const Real* a, const Real* b, int N)
 {
-    #ifndef USE_THRUST
+    #ifdef USE_CUSTOM_REDUCE
     return L2_distance(a, b, N);
     #else
     Cache_Tag tag = cache_tag_make();
@@ -86,7 +89,7 @@ Real vector_get_max_dist(const Real* a, const Real* b, int N)
 
 Real vector_euclid_norm(const Real* vector, int N)
 {
-    #ifndef USE_THRUST
+    #ifdef USE_CUSTOM_REDUCE
     return L2_norm(vector, N)/ sqrt((Real) N);
     #else
     Real dot = vector_dot_product(vector, vector, N);
@@ -950,6 +953,10 @@ void semi_implicit_solver_resize(Semi_Implicit_Solver* solver, int n, int m)
     }
 }
 
+struct Bundled {
+    Real Phi;
+    Real T;
+};
 void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real* U, Real* U_base, Semi_Implicit_State next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
 {
     Real dx = (Real) params.L0 / solver->m;
@@ -997,6 +1004,116 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
     A_U.n = n;
 
     bool do_corrector_guess = params.do_corrector_guess;
+    bool is_tiled = false;
+    
+    static cudaEvent_t start = NULL;
+    static cudaEvent_t stop = NULL;
+    if(start == NULL || stop == NULL)
+    {
+        CUDA_TEST(cudaEventCreate(&start));
+        CUDA_TEST(cudaEventCreate(&stop));
+    }
+    CUDA_TEST(cudaEventRecord(start, 0));
+
+    #ifdef USE_TILED_FOR
+    is_tiled = true;
+    Real S0 = params.S; 
+    if(do_corrector_guess)
+    {
+        cuda_tiled_for_2D<1, 1, Bundled>(0, 0, m, n,
+            [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Bundled{
+                csize x_mod = x;
+                csize y_mod = y;
+
+                if(x_mod < 0)
+                    x_mod += nx;
+                else if(x_mod >= nx)
+                    x_mod -= nx;
+
+                if(y_mod < 0)
+                    y_mod += ny;
+                else if(y_mod >= ny)
+                    y_mod -= ny;
+
+                Real T = U[x_mod + y_mod*nx];
+                Real Phi = F[x_mod + y_mod*ny];
+                return Bundled{Phi, T};
+            },
+            [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, Bundled* shared){
+                Bundled K = shared[tx   + ty*tile_size_x];
+                Bundled E = shared[tx+1 + ty*tile_size_x];
+                Bundled W = shared[tx-1 + ty*tile_size_x];
+                Bundled N = shared[tx   + (ty+1)*tile_size_x];
+                Bundled S = shared[tx   + (ty-1)*tile_size_x];
+
+                Real grad_Phi_x = (E.Phi - W.Phi)/(2*dx);
+                Real grad_Phi_y = (N.Phi - S.Phi)/(2*dy);
+                Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+
+                Real theta = atan2(grad_Phi_y, grad_Phi_x);
+                Real g_theta = (Real) 1 - S0*cosf(m0*theta + theta0);
+
+                Real laplace_Phi = (W.Phi - 2*K.Phi + E.Phi)/(dx*dx) + (S.Phi - 2*K.Phi + N.Phi)/(dy*dy);
+                Real laplace_T =   (W.T - 2*K.T + E.T)/(dx*dx) +       (S.T - 2*K.T + N.T)/(dy*dy);
+
+                Real k0 = g_theta*a*f0(K.Phi)/(xi*xi * alpha);
+                Real k2 = b*beta/alpha*grad_Phi_norm;
+                Real k1 = g_theta/alpha;
+                Real corr = 1 + k2*dt*L;
+
+                Real right = 0;
+                Real factor = 0;
+
+                if(do_corrector_guess)
+                {
+                    right = K.Phi + dt/corr*((1-gamma)*k1*laplace_Phi + k0 - k2*(K.T - Tm + dt*laplace_T));
+                    factor = gamma/corr*k1; 
+                }
+                else
+                {
+                    right = K.Phi + dt*((1-gamma)*k1*laplace_Phi + k0 - k2*(K.T - Tm));
+                    factor = gamma*k1; 
+                }
+
+                A_F.anisotrophy[x+y*m] = factor;
+                b_F[x + y*m] = right;
+            }
+        );
+    }
+    else
+    {
+        cuda_tiled_for_2D_modular<1, 1, TILED_FOR_PERIODIC_SMALL_R>(F, m, n,
+            [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, Real* shared){
+                Real K_T   = U[x + y*m];
+                Real K_Phi = shared[tx   + ty*tile_size_x];
+                Real E_Phi = shared[tx+1 + ty*tile_size_x];
+                Real W_Phi = shared[tx-1 + ty*tile_size_x];
+                Real N_Phi = shared[tx   + (ty+1)*tile_size_x];
+                Real S_Phi = shared[tx   + (ty-1)*tile_size_x];
+
+                Real grad_Phi_x = (E_Phi - W_Phi)/(2*dx);
+                Real grad_Phi_y = (N_Phi - S_Phi)/(2*dy);
+                Real grad_Phi_norm = hypotf(grad_Phi_x, grad_Phi_y);
+
+                Real theta = atan2(grad_Phi_y, grad_Phi_x);
+                Real g_theta = (Real) 1 - S0*cosf(m0*theta + theta0);
+
+                Real laplace_Phi = (W_Phi - 2*K_Phi + E_Phi)/(dx*dx) + (S_Phi - 2*K_Phi + N_Phi)/(dy*dy);
+
+                Real k0 = g_theta*a*f0(K_Phi)/(xi*xi * alpha);
+                Real k2 = b*beta/alpha*grad_Phi_norm;
+                Real k1 = g_theta/alpha;
+                Real corr = 1 + k2*dt*L;
+
+                Real right = K_Phi + dt*((1-gamma)*k1*laplace_Phi + k0 - k2*(K_T - Tm));;
+                Real factor = gamma*k1;
+
+                A_F.anisotrophy[x+y*m] = factor;
+                b_F[x + y*m] = right;
+            }
+        );
+    }
+    #else
     cuda_for_2D(0, 0, m, n, [=]SHARED(int x, int y){
         Real T = U[x + y*m];
         Real Phi = F[x + y*m];
@@ -1042,6 +1159,16 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
         A_F.anisotrophy[x+y*m] = factor;
         b_F[x + y*m] = right;
     });
+    #endif
+
+    CUDA_TEST(cudaEventRecord(stop, 0));
+    CUDA_TEST(cudaEventSynchronize(stop));
+
+    float time = 0;
+    CUDA_TEST(cudaEventElapsedTime(&time, start, stop));
+    LOG_DEBUG("SOLVER", "Prepare kernel time %.2ems corrector_guess:%s tiled:%s", (double)time, 
+        do_corrector_guess ? "true" : "false", 
+        is_tiled ? "true" : "false");
 
     Conjugate_Gardient_Params solver_params = {0};
     solver_params.epsilon = (Real) 1.0e-12;
