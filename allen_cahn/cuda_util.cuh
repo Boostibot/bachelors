@@ -68,3 +68,53 @@ enum {
 
     // Prior to launching the kernel we check if warpSize == WARP_SIZE. If it does not we error return.
 };
+
+
+#include <chrono>
+static int64_t clock_ns()
+{
+    return std::chrono::high_resolution_clock::now().time_since_epoch().count();
+}
+
+static double clock_s()
+{
+    static int64_t init_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    int64_t now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    double unit = (double) std::chrono::high_resolution_clock::period::den;
+    double clock = (double) (now - init_time) / unit;
+    return clock;
+}
+
+template <typename Func>
+static double benchmark(double time, double warmup, Func func)
+{
+    int64_t sec_to_ns = 1000000000;
+    int64_t start_time = clock_ns();
+    int64_t time_ns = (int64_t)(time * sec_to_ns);
+    int64_t warmup_ns = (int64_t)(warmup * sec_to_ns);
+
+    int64_t sum = 0;
+    int64_t iters = 0;
+    int64_t start = clock_ns();
+    int64_t before = 0;
+    int64_t after = start;
+    for(; after < start + time_ns; iters ++)
+    {
+        before = clock_ns();
+        func();
+        after = clock_ns();
+
+        if(after >= start + warmup_ns)
+            sum += after - before;
+    }
+
+    double avg = (double) sum / (double) iters / (double) sec_to_ns; 
+    return avg;
+}
+
+template <typename Func>
+static double benchmark(double time, Func func)
+{
+    return benchmark(time, time / 10.0, func);
+}
+
