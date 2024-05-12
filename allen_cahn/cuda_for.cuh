@@ -60,7 +60,7 @@
 // csize size_x = 1024;
 // csize size_y = 1024;
 // float h = 1/size_x;
-//
+
 // // Declare the value r in both directions to be 1 (at compile time!) through
 // // the template arguments
 // cuda_tiled_for_2D_bound<1, 1>(input, size_x, size_y, 
@@ -75,7 +75,7 @@
 //         float p_N = shared[tx   + (ty+1)*tile_size_x];
 //         float p_S = shared[tx   + (ty-1)*tile_size_x];
 //         float p = shared[tx + ty*tile_size_x];
-//
+
 //         output[x + y*size_x] = (p_N + p_S + p_E + p_W - 4*p)/(h*h);
 //     }
 // );

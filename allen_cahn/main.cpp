@@ -17,7 +17,7 @@ const double FPS_DISPLAY_FREQ = 50000;
 const double RENDER_FREQ = 30;
 const double IDLE_RENDER_FREQ = 20;
 const double POLL_FREQ = 30;
-const double FREE_RUN_SYM_FPS = 200;
+const double FREE_RUN_SYM_FPS = 200000000;
 
 #define WINDOW_TITLE        "sim"
 #define DEF_WINDOW_WIDTH	800 
