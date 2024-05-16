@@ -19,15 +19,22 @@
 #include "cuda_reduction.cuh"
 #include "cuda_for.cuh"
 
-#define PI          ((Real) 3.14159265359)
-#define TAU         (2*PI) 
-
 #ifdef COMPILE_SIMULATION
 
 #ifndef USE_CUSTOM_REDUCE
 #include <thrust/inner_product.h>
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
+#endif
+
+#if 1
+SHARED Real custom_hypot(Real y, Real x) { return (Real) hypotf((float)y, (float)x); }
+SHARED Real custom_atan2(Real y, Real x) { return (Real) atan2f((float) y, (float) x); }
+SHARED Real custom_cos(Real theta) { return (Real) cosf((float)theta); }
+#else
+SHARED Real custom_hypot(Real y, Real x) { return hypot(y, x); }
+SHARED Real custom_atan2(Real y, Real x) { return atan2(y, x); }
+SHARED Real custom_cos(Real theta) { return cos(theta); }
 #endif
 
 Real vector_dot_product(const Real *a, const Real *b, int ny)
@@ -260,10 +267,10 @@ extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_St
 
             Real grad_Phi_x = (E.Phi - W.Phi)*one_over_2dx;
             Real grad_Phi_y = (N.Phi - S.Phi)*one_over_2dx;
-            Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+            Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
-            Real theta = atan2(grad_Phi_y, grad_Phi_x);
-            Real g_theta = (Real) 1 - S0*cos(m0*theta + theta0);
+            Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+            Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
             Real laplace_Phi = (W.Phi - 2*C.Phi + E.Phi)*one_over_dx2 + (S.Phi - 2*C.Phi + N.Phi)*one_over_dy2;
             Real laplace_T = (W.T - 2*C.T + E.T)*one_over_dx2 +     (S.T - 2*C.T + N.T)*one_over_dy2;
@@ -369,10 +376,10 @@ void explicit_solver_solve_lin_combination(Explicit_State* out, Allen_Cahn_Param
 
             Real grad_Phi_x = (E.Phi - W.Phi)*one_over_2dx;
             Real grad_Phi_y = (N.Phi - S.Phi)*one_over_2dx;
-            Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+            Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
-            Real theta = atan2(grad_Phi_y, grad_Phi_x);
-            Real g_theta = (Real) 1 - S0*cos(m0*theta + theta0);
+            Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+            Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
             Real laplace_Phi = (W.Phi - 2*C.Phi + E.Phi)*one_over_dx2 + (S.Phi - 2*C.Phi + N.Phi)*one_over_dy2;
             Real laplace_T = (W.T - 2*C.T + E.T)*one_over_dx2 +     (S.T - 2*C.T + N.T)*one_over_dy2;
@@ -454,13 +461,13 @@ void explicit_solver_solve_lin_combination(Explicit_State* out, Allen_Cahn_Param
 
         Real grad_Phi_x = grad_F_x_2dx[i]*one_over_2dx;
         Real grad_Phi_y = grad_F_y_2dy[i]*one_over_2dy;
-        Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+        Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
         Real laplace_Phi = laplace_F[i];
         Real laplace_T = laplace_U[i];
 
-        Real theta = atan2(grad_Phi_y, grad_Phi_x);
-        Real g_theta = (Real) 1 - S0*cosf(m0*theta + theta0);
+        Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+        Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
         Real k0 = g_theta*f0(Phi)*k0_factor;
         Real k2 = grad_Phi_norm*k2_factor;
@@ -510,14 +517,14 @@ void explicit_solver_debug_step(Explicit_Solver* solver, Explicit_State state, A
 
         Real grad_Phi_x = (Phi_R - Phi_L);
         Real grad_Phi_y = (Phi_U - Phi_D);
-        Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+        Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
         Real grad_T_x = (T_R - T_L);
         Real grad_T_y = (T_U - T_D);
-        Real grad_T_norm = hypot(grad_T_x, grad_T_y);
+        Real grad_T_norm = custom_hypot(grad_T_x, grad_T_y);
         
-        Real theta = atan2(grad_Phi_y, grad_Phi_x);
-        Real g_theta = (Real) 1 - S0*cos(m0*theta + theta0);
+        Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+        Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
         grad_F[x + y*nx] = grad_Phi_norm;
         grad_U[x + y*nx] = grad_T_norm;
@@ -1084,7 +1091,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
     if(do_corrector_guess)
     {
-        #if 0
+        #if 1
         Real* laplace_U = cache_alloc(Real, N, &tag);
         Real* laplace_F = cache_alloc(Real, N, &tag);
         Real* grad_F_x_2dx = cache_alloc(Real, N, &tag);
@@ -1121,19 +1128,19 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
                 grad_F_y_2dy[i] = (N.Phi - S.Phi);
                 laplace_F[i] = (W.Phi - 2*C.Phi + E.Phi)*one_over_dx2 + (S.Phi - 2*C.Phi + N.Phi)*one_over_dy2;
                 laplace_U[i] = (W.T - 2*C.T + E.T)*one_over_dx2 +       (S.T - 2*C.T + N.T)*one_over_dy2;
-            }, 
+            }
         );
-
+        
         cuda_for(0, N, [=]SHARED(csize i){
             Real T =  U_base[i];
             Real Phi = F[i];
 
             Real grad_Phi_x = grad_F_x_2dx[i]*one_over_2dx;
             Real grad_Phi_y = grad_F_y_2dy[i]*one_over_2dy;
-            Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+            Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
-            Real theta = atan2(grad_Phi_y, grad_Phi_x);
-            Real g_theta = (Real) 1 - S0*cosf(m0*theta + theta0);
+            Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+            Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
             Real k0 = g_theta*f0(Phi)*k0_factor;
             Real k2 = grad_Phi_norm*k2_factor;
@@ -1146,6 +1153,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
             A_F.anisotrophy[i] = (Real) factor;
             b_F[i] = (Real) right;
         });
+        
         #else
         cuda_tiled_for_2D<1, 1, Bundled>(0, 0, nx, ny,
             [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Bundled{
@@ -1175,10 +1183,10 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
                 Real grad_Phi_x = (E.Phi - W.Phi)*one_over_2dx;
                 Real grad_Phi_y = (N.Phi - S.Phi)*one_over_2dy;
-                Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+                Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
-                Real theta = atan2(grad_Phi_y, grad_Phi_x);
-                Real g_theta = (Real) 1 - S0*cos(m0*theta + theta0);
+                Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+                Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
                 Real laplace_Phi = (W.Phi - 2*C.Phi + E.Phi)*one_over_dx2 + (S.Phi - 2*C.Phi + N.Phi)*one_over_dy2;
                 Real laplace_T =   (W.T - 2*C.T + E.T)*one_over_dx2 +       (S.T - 2*C.T + N.T)*one_over_dy2;
@@ -1210,11 +1218,11 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
                 Real grad_Phi_x = (E_Phi - W_Phi)/(2*dx);
                 Real grad_Phi_y = (N_Phi - S_Phi)/(2*dy);
-                Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+                Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
 
-                Real theta = atan2(grad_Phi_y, grad_Phi_x);
-                Real g_theta = (Real) 1 - S0*cos(m0*theta + theta0);
+                Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+                Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
                 Real laplace_Phi = (W_Phi - 2*C_Phi + E_Phi)*one_over_dx2 + (S_Phi - 2*C_Phi + N_Phi)*one_over_dy2;
 
@@ -1306,11 +1314,11 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
             Real grad_Phi_x = (Phi_R - Phi_L);
             Real grad_Phi_y = (Phi_U - Phi_D);
-            Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+            Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
 
             Real grad_T_x = (T_R - T_L);
             Real grad_T_y = (T_U - T_D);
-            Real grad_T_norm = hypot(grad_T_x, grad_T_y);
+            Real grad_T_norm = custom_hypot(grad_T_x, grad_T_y);
             
             grad_F[x + y*nx] = grad_Phi_norm;
             grad_U[x + y*nx] = grad_T_norm;
@@ -1580,12 +1588,12 @@ void semi_implicit_coupled_solver_step(Semi_Implicit_Coupled_Solver* solver, Sem
 
         Real grad_Phi_x = (Phi_R - Phi_L)/(2*dx);
         Real grad_Phi_y = (Phi_U - Phi_D)/(2*dy);
-        Real grad_Phi_norm = hypot(grad_Phi_x, grad_Phi_y);
+        Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
  
         Real g_theta = 1;
         {
-            Real theta = atan2(grad_Phi_y, grad_Phi_x);
-            g_theta = 1.0f - S*cos(m0*theta + theta0);
+            Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
+            g_theta = 1.0f - S*custom_cos(m0*theta + theta0);
         }
 
         // g_theta = 1;
