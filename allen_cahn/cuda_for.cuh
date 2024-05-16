@@ -326,13 +326,13 @@ static void cuda_tiled_for_2D(csize from_x, csize from_y, csize to_x, csize to_y
     if(rx == ry)
     {
         block_size3.x = (uint) round(sqrt(launch.block_size));
-        block_size3.y = launch.block_size / block_size3.x;
+        block_size3.y = (uint) launch.block_size / block_size3.x;
     }
     else
     {
-        block_size3.x = ROUND_UP(2*rx+1, WARP_SIZE);
-        block_size3.y = launch.block_size / block_size3.x;
-        if(block_size3.y < 2*ry+1)
+        block_size3.x = (uint) ROUND_UP(2*rx+1, WARP_SIZE);
+        block_size3.y = (uint) launch.block_size / block_size3.x;
+        if((int) block_size3.y < 2*ry+1)
         {
             LOG_ERROR("kernel", "couldnt find appropriate config parameters to launch '%s' with nx:%lli ny:%lli rx:%lli ry:%lli", __FUNCTION__, (lli)nx, (lli)ny, (lli)rx, (lli)ry);
             return;

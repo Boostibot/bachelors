@@ -97,16 +97,24 @@ static SHARED uint64_t random_splitmix_64(uint64_t* state)
 
 static SHARED float _make_f32(uint32_t sign, uint32_t expoment, uint32_t mantissa)
 {
-    uint32_t composite = (sign << 31) | (expoment << 23) | mantissa;
-    float out = *(float*) (void*) &composite;
-    return out;
+    union {
+        uint32_t u32;
+        float f32;
+    } caster = {0};
+
+    caster.u32 = (sign << 31) | (expoment << 23) | mantissa;
+    return caster.f32;
 }
 
 static SHARED double _make_f64(uint64_t sign, uint64_t expoment, uint64_t mantissa)
 {
-    uint64_t composite = (sign << 63) | (expoment << 52) | mantissa;
-    double out = *(double*) (void*) &composite;
-    return out;
+    union {
+        uint64_t u64;
+        double f64;
+    } caster = {0};
+
+    caster.u64 = (sign << 63) | (expoment << 52) | mantissa;
+    return caster.f64;
 }
 
 static SHARED float random_bits_to_f32(uint32_t bits)

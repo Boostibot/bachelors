@@ -1,22 +1,22 @@
 #pragma once
-#include "kernel.h"
+#include "simulation.h"
 #include <string>
 
 typedef struct Vec2{
-    Real x;
-    Real y;
+    double x;
+    double y;
 } Vec2;
 
 typedef struct Allen_Cahn_Initial_Conditions{
-    Real inside_phi;
-    Real inside_T;
+    double inside_phi;
+    double inside_T;
 
-    Real outside_phi;
-    Real outside_T;
+    double outside_phi;
+    double outside_T;
 
     Vec2 circle_center;
-    Real circle_inner_radius;
-    Real circle_outer_radius;
+    double circle_inner_radius;
+    double circle_outer_radius;
 
     Vec2 square_from;
     Vec2 square_to;
@@ -48,8 +48,8 @@ typedef struct Allen_Cahn_Config{
     double stop_after;
     bool interactive_mode;
     bool linear_filtering;
-    Real display_min;
-    Real display_max;
+    double display_min;
+    double display_max;
 
     Solver_Type solver;
 } Allen_Cahn_Config;
@@ -253,7 +253,7 @@ bool key_value_get_vec2(const Key_Value& map, Vec2* out, const char* section, co
     else
     {
         const char* val = found->second.c_str();  
-        state = sscanf(val, REAL_FMT " " REAL_FMT, &out->x, &out->y) == 2;
+        state = sscanf(val, "%lf %lf", &out->x, &out->y) == 2;
         if(state == false)
             LOG_ERROR("config", "Couldnt match Vec2. Got: '%s'. While parsing value '%s'", val, str);
     }
@@ -263,11 +263,6 @@ bool key_value_get_vec2(const Key_Value& map, Vec2* out, const char* section, co
 bool key_value_get_int(const Key_Value& map, int* out, const char* section, const char* str)
 {
     return key_value_get_any(map, out, section, str, "%i", "int");
-}
-
-bool key_value_get_real(const Key_Value& map, Real* out, const char* section, const char* str)
-{
-    return key_value_get_any(map, out, section, str, REAL_FMT, "Real");
 }
 
 bool key_value_get_float(const Key_Value& map, float* out, const char* section, const char* str)
@@ -384,45 +379,45 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
 
 
         uint8_t matched_params = true
-            & (uint8_t) key_value_get_real(pairs, &params->L0, "params", "L0")
-            & (uint8_t) key_value_get_real(pairs, &params->L, "params", "L")
-            & (uint8_t) key_value_get_real(pairs, &params->xi, "params", "xi")
-            & (uint8_t) key_value_get_real(pairs, &params->a, "params", "a")
-            & (uint8_t) key_value_get_real(pairs, &params->b, "params", "b")
-            & (uint8_t) key_value_get_real(pairs, &params->alpha, "params", "alpha")
-            & (uint8_t) key_value_get_real(pairs, &params->beta, "params", "beta")
-            & (uint8_t) key_value_get_real(pairs, &params->Tm, "params", "Tm")
-            & (uint8_t) key_value_get_real(pairs, &params->Tinit, "params", "Tini")
-            & (uint8_t) key_value_get_real(pairs, &params->S, "params", "S")
-            & (uint8_t) key_value_get_real(pairs, &params->m0, "params", "m")
-            & (uint8_t) key_value_get_real(pairs, &params->theta0, "params", "theta0")
+            & (uint8_t) key_value_get_double(pairs, &params->L0, "params", "L0")
+            & (uint8_t) key_value_get_double(pairs, &params->L, "params", "L")
+            & (uint8_t) key_value_get_double(pairs, &params->xi, "params", "xi")
+            & (uint8_t) key_value_get_double(pairs, &params->a, "params", "a")
+            & (uint8_t) key_value_get_double(pairs, &params->b, "params", "b")
+            & (uint8_t) key_value_get_double(pairs, &params->alpha, "params", "alpha")
+            & (uint8_t) key_value_get_double(pairs, &params->beta, "params", "beta")
+            & (uint8_t) key_value_get_double(pairs, &params->Tm, "params", "Tm")
+            & (uint8_t) key_value_get_double(pairs, &params->Tinit, "params", "Tini")
+            & (uint8_t) key_value_get_double(pairs, &params->S, "params", "S")
+            & (uint8_t) key_value_get_double(pairs, &params->m0, "params", "m")
+            & (uint8_t) key_value_get_double(pairs, &params->theta0, "params", "theta0")
             & (uint8_t) key_value_get_bool(pairs, &params->do_anisotropy, "params", "do_anisotropy")
-            & (uint8_t) key_value_get_real(pairs, &params->gamma, "simulation", "gamma")
+            & (uint8_t) key_value_get_double(pairs, &params->gamma, "simulation", "gamma")
             & (uint8_t) key_value_get_bool(pairs, &params->do_stats, "program", "collect_stats")
             & (uint8_t) key_value_get_bool(pairs, &params->do_stats_step_residual, "program", "collect_step_residual")
             ;
 
         uint8_t matched_simulation = true
-            & (uint8_t) key_value_get_int(pairs, &params->m, "simulation", "mesh_size_x")
-            & (uint8_t) key_value_get_int(pairs, &params->n, "simulation", "mesh_size_y")
-            & (uint8_t) key_value_get_real(pairs, &params->T_tolerance, "simulation", "T_tolerance")
-            & (uint8_t) key_value_get_real(pairs, &params->Phi_tolerance, "simulation", "Phi_tolerance")
-            & (uint8_t) key_value_get_real(pairs, &params->corrector_tolerance, "simulation", "corrector_tolerance")
+            & (uint8_t) key_value_get_int(pairs, &params->nx, "simulation", "mesh_size_x")
+            & (uint8_t) key_value_get_int(pairs, &params->ny, "simulation", "mesh_size_y")
+            & (uint8_t) key_value_get_double(pairs, &params->T_tolerance, "simulation", "T_tolerance")
+            & (uint8_t) key_value_get_double(pairs, &params->Phi_tolerance, "simulation", "Phi_tolerance")
+            & (uint8_t) key_value_get_double(pairs, &params->corrector_tolerance, "simulation", "corrector_tolerance")
             & (uint8_t) key_value_get_int(pairs, &params->T_max_iters, "simulation", "T_max_iters")
             & (uint8_t) key_value_get_int(pairs, &params->Phi_max_iters, "simulation", "Phi_max_iters")
             & (uint8_t) key_value_get_int(pairs, &params->corrector_max_iters, "simulation", "corrector_max_iters")
             & (uint8_t) key_value_get_bool(pairs, &params->do_corrector_loop, "simulation", "do_corrector_loop")
             & (uint8_t) key_value_get_bool(pairs, &params->do_corrector_guess, "simulation", "do_corrector_guess")
-            & (uint8_t) key_value_get_real(pairs, &params->dt, "simulation", "dt");
+            & (uint8_t) key_value_get_double(pairs, &params->dt, "simulation", "dt");
             
         uint8_t matched_initial = true
-            & (uint8_t) key_value_get_real(pairs, &initial->inside_phi, "initial", "inside_phi")
-            & (uint8_t) key_value_get_real(pairs, &initial->inside_T, "initial", "inside_T")
-            & (uint8_t) key_value_get_real(pairs, &initial->outside_phi, "initial", "outside_phi")
-            & (uint8_t) key_value_get_real(pairs, &initial->outside_T, "initial", "outside_T")
+            & (uint8_t) key_value_get_double(pairs, &initial->inside_phi, "initial", "inside_phi")
+            & (uint8_t) key_value_get_double(pairs, &initial->inside_T, "initial", "inside_T")
+            & (uint8_t) key_value_get_double(pairs, &initial->outside_phi, "initial", "outside_phi")
+            & (uint8_t) key_value_get_double(pairs, &initial->outside_T, "initial", "outside_T")
             & (uint8_t) key_value_get_vec2(pairs, &initial->circle_center, "initial", "circle_center")
-            & (uint8_t) key_value_get_real(pairs, &initial->circle_inner_radius, "initial", "circle_inner_radius")
-            & (uint8_t) key_value_get_real(pairs, &initial->circle_outer_radius, "initial", "circle_outer_radius")
+            & (uint8_t) key_value_get_double(pairs, &initial->circle_inner_radius, "initial", "circle_inner_radius")
+            & (uint8_t) key_value_get_double(pairs, &initial->circle_outer_radius, "initial", "circle_outer_radius")
             & (uint8_t) key_value_get_vec2(pairs, &initial->square_from, "initial", "square_from")
             & (uint8_t) key_value_get_vec2(pairs, &initial->square_to, "initial", "square_to");
 
@@ -443,12 +438,10 @@ bool allen_cahn_read_config(const char* path, Allen_Cahn_Config* config)
             & (uint8_t) key_value_get_double(pairs, &config->stop_after, "program", "stop_after")
             & (uint8_t) key_value_get_bool(pairs, &config->interactive_mode, "program", "interactive")
             & (uint8_t) key_value_get_bool(pairs, &config->linear_filtering, "program", "linear_filtering")
-            & (uint8_t) key_value_get_real(pairs, &config->display_min, "program", "display_min")
-            & (uint8_t) key_value_get_real(pairs, &config->display_max, "program", "display_max")
+            & (uint8_t) key_value_get_double(pairs, &config->display_min, "program", "display_min")
+            & (uint8_t) key_value_get_double(pairs, &config->display_max, "program", "display_max")
             ;
             
-
-
         state = matched_initial && matched_snaps && matched_simulation && matched_params && matched_program;
         if(state == false)
             LOG_ERROR("config", "couldnt find or parse some config entries. Config is only partially loaded!");

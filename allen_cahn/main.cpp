@@ -1,8 +1,7 @@
-
 #define JOT_ALL_IMPL
 #include "config.h"
 #include "integration_methods.h"
-#include "kernel.h"
+#include "simulation.h"
 #include "log.h"
 #include "assert.h"
 
@@ -13,15 +12,15 @@
 #include <cuda_runtime.h> 
 #include <netcdf.h>
 
-const double FPS_DISPLAY_FREQ = 50000;
-const double RENDER_FREQ = 30;
-const double IDLE_RENDER_FREQ = 20;
-const double POLL_FREQ = 30;
-const double FREE_RUN_SYM_FPS = 200000000;
-
 #define WINDOW_TITLE        "sim"
 #define DEF_WINDOW_WIDTH	800 
 #define DEF_WINDOW_HEIGHT	800
+
+#define FPS_DISPLAY_FREQ    (double) 50000
+#define RENDER_FREQ         (double) 30
+#define IDLE_RENDER_FREQ    (double) 20
+#define POLL_FREQ           (double) 30
+#define FREE_RUN_SYM_FPS    (double) 200000000
 #define COMPILE_GRAPHICS  
 
 static double clock_s();
@@ -53,35 +52,34 @@ void sim_make_initial_conditions(Real* initial_phi_map, Real* initial_T_map, All
 {
     Allen_Cahn_Params params = config.params;
     Allen_Cahn_Initial_Conditions initial = config.initial_conditions;
-    for(size_t y = 0; y < (size_t) params.n; y++)
+    for(size_t y = 0; y < (size_t) params.ny; y++)
     {
-        for(size_t x = 0; x < (size_t) params.m; x++)
+        for(size_t x = 0; x < (size_t) params.nx; x++)
         {
-            Vec2 pos = Vec2{((Real) (x+0.5)) / params.m * params.L0, ((Real) (y+0.5)) / params.n * params.L0}; 
-            size_t i = x + y*(size_t) params.m;
+            Vec2 pos = Vec2{((x+0.5)) / params.nx * params.L0, ((y+0.5)) / params.ny * params.L0}; 
+            size_t i = x + y*(size_t) params.nx;
 
-            Real center_dist = (Real) hypot(initial.circle_center.x - pos.x, initial.circle_center.y - pos.y);
+            double center_dist = hypot(initial.circle_center.x - pos.x, initial.circle_center.y - pos.y);
 
             bool is_within_cube = (initial.square_from.x <= pos.x && pos.x < initial.square_to.x) && 
 			    (initial.square_from.y <= pos.y && pos.y < initial.square_to.y);
 
-            Real circle_normed_sdf = (initial.circle_outer_radius - center_dist) / (initial.circle_outer_radius - initial.circle_inner_radius);
+            double circle_normed_sdf = (initial.circle_outer_radius - center_dist) / (initial.circle_outer_radius - initial.circle_inner_radius);
             if(circle_normed_sdf > 1)
                 circle_normed_sdf = 1;
             if(circle_normed_sdf < 0)
                 circle_normed_sdf = 0;
 
-            Real cube_sdf = is_within_cube ? 1 : 0;
-            Real factor = cube_sdf > circle_normed_sdf ? cube_sdf : circle_normed_sdf;
+            double cube_sdf = is_within_cube ? 1 : 0;
+            double factor = cube_sdf > circle_normed_sdf ? cube_sdf : circle_normed_sdf;
 
-            initial_phi_map[i] = factor*initial.inside_phi + (1 - factor)*initial.outside_phi;
-            initial_T_map[i] = factor*initial.inside_T + (1 - factor)*initial.outside_T;
+            initial_phi_map[i] = (Real) (factor*initial.inside_phi + (1 - factor)*initial.outside_phi);
+            initial_T_map[i] = (Real) (factor*initial.inside_T + (1 - factor)*initial.outside_T);
         }
     }
 }
 
 #include <filesystem>
-
 
 template <typename Func>
 struct Defered
@@ -108,7 +106,6 @@ int maps_find(const Sim_Map* maps, int map_count, const char* name)
                 return i;
         }
     }
-
     return -1;
 }
 
@@ -118,18 +115,18 @@ void simulation_state_reload(App_State* app, Allen_Cahn_Config config)
     // so here goes something harmless.
     cudaGetErrorString(cudaSuccess);
     
-    int n = config.params.n;
-    int m = config.params.m;
+    int ny = config.params.ny;
+    int nx = config.params.nx;
 
-    size_t bytes_size = (size_t) (n * m) * sizeof(Real);
+    size_t bytes_size = (size_t) (ny * nx) * sizeof(Real);
     Real* initial_F = (Real*) malloc(bytes_size);
     Real* initial_U = (Real*) malloc(bytes_size);
     defer(free(initial_F));
     defer(free(initial_U));
 
     app->used_states = solver_type_required_history(config.solver);
-    sim_solver_reinit(&app->solver, config.solver, n, m);
-    sim_states_reinit(app->states, app->used_states, config.solver, n, m);
+    sim_solver_reinit(&app->solver, config.solver, nx, ny);
+    sim_states_reinit(app->states, app->used_states, config.solver, nx, ny);
     sim_make_initial_conditions(initial_F, initial_U, config);
     
     Sim_Map maps[SIM_MAPS_MAX] = {0};
@@ -163,7 +160,6 @@ bool save_netcfd_file(App_State* app);
 
 int main()
 {
-    //Read config
     Allen_Cahn_Config config = {0};
     if(allen_cahn_read_config("config.ini", &config) == false)
         return 1;
@@ -171,12 +167,12 @@ int main()
     if(config.run_tests)
         run_tests();
     if(config.run_benchmarks)
-        run_benchmarks(config.params.m * config.params.n);
+        run_benchmarks(config.params.nx * config.params.ny);
     if(config.run_simulation == false)
         return 0;
 
-    App_State app_ = {0};
-    App_State* app = (App_State*) &app_;
+    App_State app_data = {0};
+    App_State* app = (App_State*) &app_data;
     app->is_in_step_mode = true;
     app->remaining_steps = 0;
     app->step_by = 1;
@@ -186,31 +182,29 @@ int main()
     if(config.snapshots.snapshot_initial_conditions)
         save_netcfd_file(app);
 
-    #define LOG_INFO_CONFIG_REAL(var) LOG_INFO("config", #var " = " REAL_FMT_LOW_PREC, config.params.var);
-    #define LOG_INFO_CONFIG_INT(var) LOG_INFO("config", #var " = %i", config.params.var);
+    #define LOG_INFO_CONFIG_FLOAT(var) LOG_INFO("config", #var " = %.2lf", (double) config.params.var);
+    #define LOG_INFO_CONFIG_INT(var) LOG_INFO("config", #var " = %i", (int) config.params.var);
 
     LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.solver));
 
-    LOG_INFO_CONFIG_INT(m);
-    LOG_INFO_CONFIG_INT(n);
-    LOG_INFO_CONFIG_REAL(L0);
+    LOG_INFO_CONFIG_INT(nx);
+    LOG_INFO_CONFIG_INT(ny);
+    LOG_INFO_CONFIG_FLOAT(L0);
 
-    LOG_INFO_CONFIG_REAL(dt); 
-    LOG_INFO_CONFIG_REAL(L);  
-    LOG_INFO_CONFIG_REAL(xi); 
-    LOG_INFO_CONFIG_REAL(a);  
-    LOG_INFO_CONFIG_REAL(b);
-    LOG_INFO_CONFIG_REAL(alpha);
-    LOG_INFO_CONFIG_REAL(beta);
-    LOG_INFO_CONFIG_REAL(Tm);
-    LOG_INFO_CONFIG_REAL(Tinit);
+    LOG_INFO_CONFIG_FLOAT(dt); 
+    LOG_INFO_CONFIG_FLOAT(L);  
+    LOG_INFO_CONFIG_FLOAT(xi); 
+    LOG_INFO_CONFIG_FLOAT(a);  
+    LOG_INFO_CONFIG_FLOAT(b);
+    LOG_INFO_CONFIG_FLOAT(alpha);
+    LOG_INFO_CONFIG_FLOAT(beta);
+    LOG_INFO_CONFIG_FLOAT(Tm);
+    LOG_INFO_CONFIG_FLOAT(Tinit);
 
-    LOG_INFO_CONFIG_REAL(S);
-    LOG_INFO_CONFIG_REAL(m);
-    LOG_INFO_CONFIG_REAL(theta0);
-    LOG_INFO("config", "do_anisotropy = %s", config.params.do_anisotropy ? "true" : "false");
+    LOG_INFO_CONFIG_FLOAT(S);
+    LOG_INFO_CONFIG_FLOAT(theta0);
 
-    #undef LOG_INFO_CONFIG_REAL
+    #undef LOG_INFO_CONFIG_FLOAT
     #undef LOG_INFO_CONFIG_INT
 
     #ifndef COMPILE_GRAPHICS
@@ -305,7 +299,7 @@ int main()
                 if(0 <= target && target < SIM_MAPS_MAX)
                     selected_map = maps[target];
 
-                draw_sci_cuda_memory("main", selected_map.m, selected_map.n, (float) app->config.display_min, (float) app->config.display_max, config.linear_filtering, selected_map.data);
+                draw_sci_cuda_memory("main", selected_map.nx, selected_map.ny, (float) app->config.display_min, (float) app->config.display_max, config.linear_filtering, selected_map.data);
                 glfwSwapBuffers(window);
             }
 
@@ -481,15 +475,15 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
         {
             LOG_INFO("APP", "Input range to display in form 'MIN space MAX'");
 
-            Real new_display_max = app->config.display_max;
-            Real new_display_min = app->config.display_min;
-            if(scanf(REAL_FMT " " REAL_FMT, &new_display_min, &new_display_max) != 2)
+            double new_display_max = app->config.display_max;
+            double new_display_min = app->config.display_min;
+            if(scanf("%lf %lf", &new_display_min, &new_display_max) != 2)
             {
                 LOG_INFO("APP", "Bad range syntax!");
             }
             else
             {
-                LOG_INFO("APP", "displaying range [" REAL_FMT_LOW_PREC ", " REAL_FMT_LOW_PREC "]", new_display_min, new_display_max);
+                LOG_INFO("APP", "displaying range [%.2lf, %.2lf]", new_display_min, new_display_max);
                 app->config.display_max = (Real) new_display_max;
                 app->config.display_min = (Real) new_display_min;
             }
@@ -675,8 +669,8 @@ bool save_netcfd_file(App_State* app)
         return false;
     }
 
-    nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "x", (size_t) params.m, dim_ids + 0);
-    nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "y", (size_t) params.n, dim_ids + 1);
+    nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "x", (size_t) params.nx, dim_ids + 0);
+    nc_error = NC_ERROR_AND(nc_error) nc_def_dim (dataset_ID, "y", (size_t) params.ny, dim_ids + 1);
     if(nc_error != NC_NOERR) {
         LOG_INFO("APP", "NetCDF define dim error: %s.", nc_strerror(nc_error));
         return false;
@@ -684,8 +678,8 @@ bool save_netcfd_file(App_State* app)
 
     int real_type = sizeof(Real) == sizeof(double) ? NC_DOUBLE : NC_FLOAT;
 
-    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_x", NC_INT, 1, &params.m);
-    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_y", NC_INT, 1, &params.n);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_x", NC_INT, 1, &params.nx);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_y", NC_INT, 1, &params.ny);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "L0", NC_INT, 1, &params.L0);
 
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "iter", NC_INT, 1, &iter);
@@ -701,7 +695,7 @@ bool save_netcfd_file(App_State* app)
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tm", real_type, 1, &params.Tm);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tinit", real_type, 1, &params.Tinit);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "S", real_type, 1, &params.S);
-    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "m", real_type, 1, &params.m);
+    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "nx", real_type, 1, &params.nx);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "theta0", real_type, 1, &params.theta0);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "do_anisotropy", NC_BYTE, 1, &params.do_anisotropy);
 
@@ -717,7 +711,7 @@ bool save_netcfd_file(App_State* app)
     nc_error = NC_ERROR_AND(nc_error) nc_def_var(dataset_ID, "Phi", real_type, NDIMS, dim_ids, &Phi_ID);
     nc_error = NC_ERROR_AND(nc_error) nc_def_var(dataset_ID, "T", real_type, NDIMS, dim_ids, &T_ID);
 
-    size_t copy_size = (size_t) params.m * (size_t) params.n*sizeof(Real);
+    size_t copy_size = (size_t) params.nx * (size_t) params.ny*sizeof(Real);
     Real* F = (Real*) malloc(copy_size);
     Real* U = (Real*) malloc(copy_size);
 

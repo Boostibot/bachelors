@@ -25,11 +25,10 @@ struct Cuda_Launch_Params {
 
     // If greater than zero and within the valid block size range used as the block size regardless of
     // anything else. If is not given or not within range block size is determined by preferd_block_size_ratio instead.
-    // uint   preferd_block_size = 0;
-    uint preferd_block_size = {0};
+    csize   preferd_block_size = 0;
 
     //The cap on number of blocks. Can be used to tune sheduler.
-    uint   max_block_count = UINT_MAX;
+    csize   max_block_count = INT_MAX;
 
     //The stream used for the launch
     cudaStream_t stream = 0;
@@ -46,25 +45,25 @@ struct Cuda_Launch_Config {
 };  
 
 struct Cuda_Launch_Bounds {
-    uint min_block_size;
-    uint max_block_size;
-    uint preferd_block_sizes[12];
-    uint preferd_block_sizes_count;
+    csize min_block_size;
+    csize max_block_size;
+    csize preferd_block_sizes[12];
+    csize preferd_block_sizes_count;
 
     double used_shared_memory_per_thread;
-    uint used_shared_memory_per_block;
+    csize used_shared_memory_per_block;
 };  
 
 struct Cuda_Launch_Constraints {
     double used_shared_memory_per_thread = 0;
-    uint used_shared_memory_per_block = 0;
+    csize used_shared_memory_per_block = 0;
     
-    uint used_register_count_per_block = 0;
-    uint used_constant_memory = 0;
+    csize used_register_count_per_block = 0;
+    csize used_constant_memory = 0;
 
-    uint max_shared_mem = UINT_MAX;
-    uint max_block_size = UINT_MAX;
-    uint min_block_size = 0;
+    csize max_shared_mem = INT_MAX;
+    csize max_block_size = INT_MAX;
+    csize min_block_size = 0;
 
     cudaFuncAttributes attributes;
 };
@@ -76,28 +75,28 @@ static Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bou
     if(params.preferd_block_size > 0)
     {
         if(bounds.min_block_size <= params.preferd_block_size && params.preferd_block_size <= bounds.max_block_size)
-            launch.block_size = params.preferd_block_size;
+            launch.block_size = (uint) params.preferd_block_size;
     }
 
     if(launch.block_size == 0)
     {
         ASSERT(bounds.preferd_block_sizes_count >= 1);
         ASSERT(0 <= params.preferd_block_size_ratio && params.preferd_block_size_ratio <= 1);
-        uint index = (uint) round(params.preferd_block_size_ratio*(bounds.preferd_block_sizes_count - 1));
-        launch.block_size = bounds.preferd_block_sizes[index];
+        csize index = (csize) round(params.preferd_block_size_ratio*(bounds.preferd_block_sizes_count - 1));
+        launch.block_size = (uint) bounds.preferd_block_sizes[index];
     }
 
-    launch.dynamic_shared_memory = (uint) (bounds.used_shared_memory_per_thread*launch.block_size + 0.5);
-    launch.shared_memory = launch.dynamic_shared_memory + bounds.used_shared_memory_per_block;
+    launch.dynamic_shared_memory = (uint) (bounds.used_shared_memory_per_thread*(csize)launch.block_size + 0.5);
+    launch.shared_memory = launch.dynamic_shared_memory + (uint)bounds.used_shared_memory_per_block;
     
-    launch.max_concurent_blocks = UINT_MAX;
+    launch.max_concurent_blocks = INT_MAX;
     if(launch.shared_memory > 0)
-        launch.max_concurent_blocks = info.prop.multiProcessorCount*(info.prop.sharedMemPerMultiprocessor/launch.shared_memory); 
+        launch.max_concurent_blocks = (uint)info.prop.multiProcessorCount*(uint)(info.prop.sharedMemPerMultiprocessor/launch.shared_memory); 
 
     //Only fire as many blocks as the hardware could ideally support at once. 
     // Any more than that is pure overhead for the sheduler
     launch.desired_block_count = DIV_CEIL((uint) N, launch.block_size);
-    launch.block_count = MIN(MIN(launch.desired_block_count, launch.max_concurent_blocks), params.max_block_count);
+    launch.block_count = MIN(MIN(launch.desired_block_count, launch.max_concurent_blocks), (uint) params.max_block_count);
 
     return launch;
 }
@@ -107,12 +106,12 @@ static Cuda_Launch_Bounds cuda_get_launch_bounds(Cuda_Launch_Constraints constra
     Cuda_Launch_Bounds out = {0};
     Cuda_Info info = cuda_one_time_setup();
 
-    uint max_shared_mem = MIN(info.prop.sharedMemPerBlock, constraints.max_shared_mem);
-    uint block_size_hw_upper_bound = info.prop.maxThreadsPerBlock;
-    uint block_size_hw_lower_bound = DIV_CEIL(info.prop.maxThreadsPerMultiProcessor + 1, info.prop.maxBlocksPerMultiProcessor + 1);
+    csize max_shared_mem = MIN((csize) info.prop.sharedMemPerBlock, constraints.max_shared_mem);
+    csize block_size_hw_upper_bound = (csize) info.prop.maxThreadsPerBlock;
+    csize block_size_hw_lower_bound = DIV_CEIL(info.prop.maxThreadsPerMultiProcessor + 1, info.prop.maxBlocksPerMultiProcessor + 1);
 
-    uint block_size_max = MIN(block_size_hw_upper_bound, constraints.max_block_size);
-    uint block_size_min = MAX(block_size_hw_lower_bound, constraints.min_block_size);
+    csize block_size_max = MIN(block_size_hw_upper_bound, constraints.max_block_size);
+    csize block_size_min = MAX(block_size_hw_lower_bound, constraints.min_block_size);
     
     block_size_max = ROUND_DOWN(block_size_max, WARP_SIZE);
     block_size_min = ROUND_UP(block_size_min, WARP_SIZE);
@@ -121,7 +120,7 @@ static Cuda_Launch_Bounds cuda_get_launch_bounds(Cuda_Launch_Constraints constra
     out.max_block_size = block_size_max;
     if(constraints.used_shared_memory_per_thread > 0)
     {
-        uint shared_memory_max_block_size = (max_shared_mem - constraints.used_shared_memory_per_block)/constraints.used_shared_memory_per_thread;
+        csize shared_memory_max_block_size = (csize) ((max_shared_mem - constraints.used_shared_memory_per_block)/constraints.used_shared_memory_per_thread);
         out.max_block_size = MIN(out.max_block_size, shared_memory_max_block_size);
     }
 
@@ -135,11 +134,11 @@ static Cuda_Launch_Bounds cuda_get_launch_bounds(Cuda_Launch_Constraints constra
     // 1) be twithin range [block_size_min, block_size_max] (to be feasible)
     // 2) be divisible by warpSize (W) (to have good block utlization)
     // 3) divide prop.maxThreadsPerMultiProcessor (to have good streaming multiprocessor utilization - requiring less SMs)
-    for(uint curr_size = out.min_block_size; curr_size <= out.max_block_size; curr_size += WARP_SIZE)
+    for(csize curr_size = out.min_block_size; curr_size <= out.max_block_size; curr_size += WARP_SIZE)
     {
         if(info.prop.maxThreadsPerMultiProcessor % curr_size == 0)
         {   
-            if(out.preferd_block_sizes_count < STATIC_ARRAY_SIZE(out.preferd_block_sizes))
+            if(out.preferd_block_sizes_count < (csize) STATIC_ARRAY_SIZE(out.preferd_block_sizes))
                 out.preferd_block_sizes[out.preferd_block_sizes_count++] = curr_size;
             else
                 out.preferd_block_sizes[out.preferd_block_sizes_count - 1] = curr_size;

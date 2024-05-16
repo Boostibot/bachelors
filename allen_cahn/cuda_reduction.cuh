@@ -195,8 +195,8 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
             CUDA_DEBUG_TEST(cudaGetLastError());
             // CUDA_DEBUG_TEST(cudaDeviceSynchronize());
 
-            uint G = MIN(N_curr, launch.block_size*launch.block_count);
-            uint N_next = DIV_CEIL(G, WARP_SIZE*WARP_SIZE); 
+            csize G = MIN(N_curr, (csize) launch.block_size* (csize)launch.block_count);
+            csize N_next = DIV_CEIL(G, WARP_SIZE*WARP_SIZE); 
             N_curr = N_next;
         }   
 
@@ -209,8 +209,8 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
                 last_input = produce;
 
         T cpu[CPU_REDUCE_MAX];
-        cudaMemcpy(cpu, last_input, sizeof(T)*N_curr, cudaMemcpyDeviceToHost);
-        for(uint i = 0; i < N_curr; i++)
+        cudaMemcpy(cpu, last_input, sizeof(T)*(size_t)N_curr, cudaMemcpyDeviceToHost);
+        for(csize i = 0; i < N_curr; i++)
             reduced = _reduce<Reduction, T>(reduced, cpu[i]);
 
         cache_free(&tag);
@@ -222,7 +222,7 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
 //============================== IMPLEMENTATION OF MORE SPECIFIC REDUCTIONS ===================================
 
 template<class Reduction, typename T, typename Map_Func>
-static T map_reduce(const T *input, uint N, Map_Func map, Reduction reduce_tag = Reduction())
+static T map_reduce(const T *input, csize N, Map_Func map, Reduction reduce_tag = Reduction())
 {
     T output = produce_reduce<T, Reduction>(N, [=]SHARED(csize i){
         return map(input[i]);
@@ -231,35 +231,35 @@ static T map_reduce(const T *input, uint N, Map_Func map, Reduction reduce_tag =
 }
 
 template<class Reduction, typename T>
-static T reduce(const T *input, uint N, Reduction reduce_tag = Reduction())
+static T reduce(const T *input, csize N, Reduction reduce_tag = Reduction())
 {
     T output = produce_reduce<T, Reduction, const T* __restrict__, true>(N, input);
     return output;
 }
 
 template<typename T>
-static T sum(const T *input, uint N)
+static T sum(const T *input, csize N)
 {
     T output = produce_reduce<T, Reduce::Add, const T* __restrict__, true>(N, input);
     return output;
 }
 
 template<typename T>
-static T min(const T *input, uint N)
+static T min(const T *input, csize N)
 {
     T output = produce_reduce<T, Reduce::Min, const T* __restrict__, true>(N, input);
     return output;
 }
 
 template<typename T>
-static T max(const T *input, uint N)
+static T max(const T *input, csize N)
 {
     T output = produce_reduce<T, Reduce::Max, const T* __restrict__, true>(N, input);
     return output;
 }
 
 template<typename T>
-static T L1_norm(const T *a, uint N)
+static T L1_norm(const T *a, csize N)
 {
     T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i];
@@ -269,7 +269,7 @@ static T L1_norm(const T *a, uint N)
 }
 
 template<typename T>
-static T L2_norm(const T *a, uint N)
+static T L2_norm(const T *a, csize N)
 {
     T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i];
@@ -279,7 +279,7 @@ static T L2_norm(const T *a, uint N)
 }
 
 template<typename T>
-static T Lmax_norm(const T *a, uint N)
+static T Lmax_norm(const T *a, csize N)
 {
     T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
         T diff = a[i];
@@ -291,7 +291,7 @@ static T Lmax_norm(const T *a, uint N)
 // more complex binary reductions...
 
 template<typename T>
-static T L1_distance(const T *a, const T *b, uint N)
+static T L1_distance(const T *a, const T *b, csize N)
 {
     T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
@@ -301,7 +301,7 @@ static T L1_distance(const T *a, const T *b, uint N)
 }
 
 template<typename T>
-static T L2_distance(const T *a, const T *b, uint N)
+static T L2_distance(const T *a, const T *b, csize N)
 {
     T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
@@ -311,7 +311,7 @@ static T L2_distance(const T *a, const T *b, uint N)
 }
 
 template<typename T>
-static T Lmax_distance(const T *a, const T *b, uint N)
+static T Lmax_distance(const T *a, const T *b, csize N)
 {
     T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
@@ -321,7 +321,7 @@ static T Lmax_distance(const T *a, const T *b, uint N)
 }
 
 template<typename T>
-static T dot_product(const T *a, const T *b, uint N)
+static T dot_product(const T *a, const T *b, csize N)
 {
     T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         return a[i] * b[i];

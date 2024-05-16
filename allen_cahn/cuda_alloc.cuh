@@ -95,8 +95,8 @@ static void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
     if(bucket_i == -1)
     {
         bucket_i = cache->bucket_count++;
-        LOG_INFO("CUDA", "Alloc cache made bucket [%i] %s", bucket_i, format_bytes(bytes).str);
-        TEST(cache->bucket_count < STATIC_ARRAY_SIZE(cache->buckets), "Unexepectedly high ammount of buckets");
+        LOG_INFO("CUDA", "Alloc cache made bucket [%i] %s", bucket_i, format_bytes((size_t) bytes).str);
+        TEST(cache->bucket_count < (int) STATIC_ARRAY_SIZE(cache->buckets), "Unexepectedly high ammount of buckets");
         cache->buckets[bucket_i].bucket_size = bytes;
     }
 
@@ -107,19 +107,19 @@ static void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
         //If is missing free slot grow slots
         if(bucket->allocations_size >= bucket->allocations_capacity)
         {
-            size_t count = MAX(16, bucket->allocations_capacity*4/3 + 8);
+            int64_t count = MAX(16, bucket->allocations_capacity*4/3 + 8);
             LOG_INFO("CUDA", "Alloc cache bucket [%i] growing slots %i -> %i", bucket_i, (int) bucket->allocations_capacity, (int) count);
-            Cache_Allocation* new_data = (Cache_Allocation*) realloc(bucket->allocations, count*sizeof(Cache_Allocation));
+            Cache_Allocation* new_data = (Cache_Allocation*) realloc(bucket->allocations, (size_t) count*sizeof(Cache_Allocation));
             TEST(new_data);
             bucket->allocations_capacity = count;
             bucket->allocations = new_data;
         }
 
-        LOG_INFO("CUDA", "Alloc cache bucket [%i] allocated %s", bucket_i, format_bytes(bytes).str);
+        LOG_INFO("CUDA", "Alloc cache bucket [%i] allocated %s", bucket_i, format_bytes((size_t) bytes).str);
         //Fill the allocation appropriately
         int alloc_index = bucket->allocations_size ++;
         Cache_Allocation* allocation = &bucket->allocations[alloc_index];
-        CUDA_TEST(cudaMalloc(&allocation->ptr, bytes));
+        CUDA_TEST(cudaMalloc(&allocation->ptr, (size_t) bytes));
         bucket->used_count += 1;
         cache->max_alloced_bytes += bytes;
 
@@ -178,37 +178,37 @@ static void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int 
 {
     Cuda_Info info = cuda_one_time_setup();
     LOG_INFO("CUDA", "realloc %s-> %s %s %s:%i\n",
-            format_bytes(old_size).str, 
-            format_bytes(new_size).str,
+            format_bytes((size_t) old_size).str, 
+            format_bytes((size_t) new_size).str,
             function, file, line);
 
-    static int64_t used_bytes = 0;
+    static size_t used_bytes = 0;
     void* new_ptr = NULL;
     if(new_size != 0)
     {
-        CUDA_TEST(cudaMalloc(&new_ptr, new_size), 
+        CUDA_TEST(cudaMalloc(&new_ptr, (size_t) new_size), 
             "Out of CUDA memory! Requested %s. Using %s / %s. %s %s:%i", 
-            format_bytes(new_size).str, 
-            format_bytes(used_bytes).str, 
-            format_bytes(info.prop.totalGlobalMem).str,
+            format_bytes((size_t) new_size).str, 
+            format_bytes((size_t) used_bytes).str, 
+            format_bytes((size_t) info.prop.totalGlobalMem).str,
             function, file, line);
 
         size_t min_size = MIN(old_size, new_size);
         if((flags & REALLOC_ZERO) && !(flags & REALLOC_COPY))
-            CUDA_DEBUG_TEST(cudaMemset(new_ptr, 0, new_size));
+            CUDA_DEBUG_TEST(cudaMemset(new_ptr, 0, (size_t)new_size));
         else
         {
             if(flags & REALLOC_COPY)
-                CUDA_DEBUG_TEST(cudaMemcpy(new_ptr, old_ptr, min_size, cudaMemcpyDeviceToDevice));
+                CUDA_DEBUG_TEST(cudaMemcpy(new_ptr, old_ptr, (size_t) min_size, cudaMemcpyDeviceToDevice));
             if(flags & REALLOC_ZERO)
-                CUDA_DEBUG_TEST(cudaMemset((uint8_t*) new_ptr + min_size, 0, new_size - min_size));
+                CUDA_DEBUG_TEST(cudaMemset((uint8_t*) new_ptr + min_size, 0, (size_t) (new_size - min_size)));
         }
     }
 
     CUDA_DEBUG_TEST(cudaFree(old_ptr), 
         "Invalid pointer passed to cuda_realloc! %s:%i", file, line);
 
-    used_bytes += (int64_t) new_size - (int64_t) old_size;
+    used_bytes += new_size - old_size;
     assert(used_bytes >= 0);
     return new_ptr;
 }

@@ -17,6 +17,7 @@
 
 // typedef int64_t csize;
 typedef int csize;
+#define isizeof(type) (csize) sizeof(type) 
 
 //Can be defined to something else if we wish to for example use size_t or uint
 static bool _test_cuda_(cudaError_t error, const char* expression, int line, const char* file, const char* function, const char* format, ...)

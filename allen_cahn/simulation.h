@@ -16,46 +16,47 @@
 //   throught the maps and display/serialize only the desired one in solver agnostic way. We use this
 //   to quickly define new debug maps without having to change almost anything.
 
-
 // #define DO_FLOATS 
 
 #include <stddef.h>
 
 #ifdef DO_FLOATS
     typedef float Real;
-    #define REAL_FMT "%f"
-    #define REAL_FMT_LOW_PREC "%.3f"
 #else
     typedef double Real;
-    #define REAL_FMT "%lf"
-    #define REAL_FMT_LOW_PREC "%.3lf"
 #endif
 
+typedef struct Sim_Real_Vector {
+    Real* data;
+    int nx;
+    int ny;
+} Sim_Real_Vector; 
+
 typedef struct Allen_Cahn_Params{
-    int m;
-    int n;
+    int nx;
+    int ny;
 
-    Real L0; //simulation region size in real units
+    double L0; //simulation region size in real units
 
-    Real dt; //time step
-    Real L;  //latent heat
-    Real xi; //boundary thickness
-    Real a;  //
-    Real b;
-    Real alpha;
-    Real beta;
-    Real Tm; //melting point
-    Real Tinit; //currenlty unsused
-    Real gamma; //Crank-Nicolson factor: 
+    double dt; //time step
+    double L;  //latent heat
+    double xi; //boundary thickness
+    double a;  //
+    double b;
+    double alpha;
+    double beta;
+    double Tm; //melting point
+    double Tinit; //currenlty unsused
+    double gamma; //Crank-Nicolson factor: 
 
-    Real S; //anisotrophy strength
-    Real m0; //anisotrophy frequency (?)
-    Real theta0; //anisotrophy orientation
+    double S; //anisotrophy strength
+    double m0; //anisotrophy frequency (?)
+    double theta0; //anisotrophy orientation
     bool do_anisotropy;
 
-    Real T_tolerance;
-    Real Phi_tolerance;
-    Real corrector_tolerance;
+    double T_tolerance;
+    double Phi_tolerance;
+    double corrector_tolerance;
     
     int T_max_iters;
     int Phi_max_iters;
@@ -64,20 +65,20 @@ typedef struct Allen_Cahn_Params{
     bool do_corrector_loop;
     bool do_corrector_guess;
 
-    Real noise_T_strength;
-    Real noise_T_min;      
-    Real noise_T_max;
-    Real noise_T_timestep; //Regenerates a new noise map ever 
+    double noise_T_strength;
+    double noise_T_min;      
+    double noise_T_max;
+    double noise_T_timestep; //Regenerates a new noise map ever 
 
-    Real noise_Phi_strength;
-    Real noise_Phi_min;      
-    Real noise_Phi_max;
+    double noise_Phi_strength;
+    double noise_Phi_min;      
+    double noise_Phi_max;
 
-    Real noise_der_Phi_strength;
-    Real noise_der_Phi_min;      
-    Real noise_der_Phi_max;
+    double noise_der_Phi_strength;
+    double noise_der_Phi_min;      
+    double noise_der_Phi_max;
 
-    Real noise_Phi_timestep; //Regenerates a new noise map ever 
+    double noise_Phi_timestep; //Regenerates a new noise map ever 
     bool do_debug;
     bool do_noise;
     bool do_stats;
@@ -149,16 +150,16 @@ typedef struct Explicit_Solver {
         Real* step_residual;
     } debug_maps;
 
-    int m;
-    int n;
+    int nx;
+    int ny;
 } Explicit_Solver;
 
 typedef struct Explicit_State{
     Real* F;
     Real* U;
 
-    int m;
-    int n;
+    int nx;
+    int ny;
 } Explicit_State;
 
 typedef Explicit_State Explicit_RK4_Solver;
@@ -183,16 +184,16 @@ typedef struct Semi_Implicit_Solver {
         Real* step_residuals[3];
     } debug_maps;
 
-    int m;
-    int n;
+    int nx;
+    int ny;
 } Semi_Implicit_Solver;
 
 //Semi implicit coupled
 typedef struct Semi_Implicit_Coupled_State{
     Real* C;
 
-    int m;
-    int n;
+    int nx;
+    int ny;
 } Semi_Implicit_Coupled_State;
 
 typedef struct Semi_Implicit_Coupled_Solver {
@@ -201,14 +202,14 @@ typedef struct Semi_Implicit_Coupled_Solver {
     Real* aniso; //size N
     Real* B_U; //size N
 
-    int m;
-    int n;
+    int nx;
+    int ny;
 } Semi_Implicit_Coupled_Solver;
 
 //Polymorphic
 typedef struct Sim_State {
-    int m;
-    int n;
+    int nx;
+    int ny;
     Solver_Type type;
 
     union {
@@ -219,8 +220,8 @@ typedef struct Sim_State {
 } Sim_State;
 
 typedef struct Sim_Solver  {
-    int m;
-    int n;
+    int nx;
+    int ny;
     Solver_Type type;
 
     union {
@@ -234,12 +235,12 @@ typedef struct Sim_Map {
     const char* name;
     Real* data;
 
-    int m;
-    int n;
+    int nx;
+    int ny;
 } Sim_Map;
 
-extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int n, int m);
-extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int n, int m);
+extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int nx, int ny);
+extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int nx, int ny);
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count);
 extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, Allen_Cahn_Stats* stats_or_null);
 
@@ -271,17 +272,17 @@ static void sim_example()
     Sim_Solver solver = {0};
     Sim_State states[SIM_HISTORY_MAX] = {0};
     
-    int m = 20;
-    int n = 20;
+    int nx = 20;
+    int ny = 20;
     Solver_Type type = SOLVER_TYPE_EXPLICIT; 
     (void) type; //for some reason we get unreferenced variable warning here even though it clearly is used (?)
     
     //Init solver. It returns the MINIMAL number of states it requires
     // to work properly.
-    sim_solver_reinit(&solver, type, m, n);
+    sim_solver_reinit(&solver, type, nx, ny);
     int state_count = solver_type_required_history(type);
     //Init the states 
-    sim_states_reinit(states, state_count, type, m, n);
+    sim_states_reinit(states, state_count, type, nx, ny);
 
     //Loop simulation
     for(int i = 0; i < 1000; i++)
@@ -296,14 +297,14 @@ static void sim_example()
         {
             if(strcmp(maps[map_i].name, "T")) {
                 float* visualisation_storage = NULL; //pretend this points to something
-                sim_modify_float(maps[map_i].data, visualisation_storage, (size_t) (n*m), MODIFY_DOWNLOAD);
+                sim_modify_float(maps[map_i].data, visualisation_storage, (size_t) (ny*nx), MODIFY_DOWNLOAD);
 
                 //... print map inside visualisation_storage ...
             }
         }
     }
 
-    //deinit solver and states by initing them to SOLVER_TYPE_NONE (m, n is ignored)
+    //deinit solver and states by initing them to SOLVER_TYPE_NONE (nx, ny is ignored)
     sim_solver_reinit(&solver, SOLVER_TYPE_NONE, 0, 0);
     sim_states_reinit(states, state_count, SOLVER_TYPE_NONE, 0, 0);
 }
