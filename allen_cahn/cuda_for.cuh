@@ -518,11 +518,11 @@ static void test_tiled_for(uint64_t seed)
     csize rs[] = {0, 1, 2, 3, 10, 15};
 
     csize max_N = 0;
-    for(csize Ni = 0; Ni < STATIC_ARRAY_SIZE(Ns); Ni++)
+    for(csize Ni = 0; Ni < (csize) STATIC_ARRAY_SIZE(Ns); Ni++)
         if(max_N < Ns[Ni])
             max_N = Ns[Ni];
 
-    csize max_N_bytes = max_N*sizeof(int);
+    size_t max_N_bytes = (size_t) max_N*sizeof(int);
     int* allocation = (int*) malloc(max_N_bytes*4);
 
     Cache_Tag tag = cache_tag_make();
@@ -533,9 +533,9 @@ static void test_tiled_for(uint64_t seed)
     int input_range = 100;
     int stencil_range = 10;
     srand(seed);
-    for(csize Ni = 0; Ni < STATIC_ARRAY_SIZE(Ns); Ni++)
+    for(csize Ni = 0; Ni < (csize) STATIC_ARRAY_SIZE(Ns); Ni++)
     {
-        for(csize ri = 0; ri < STATIC_ARRAY_SIZE(rs); ri++)
+        for(csize ri = 0; ri < (csize) STATIC_ARRAY_SIZE(rs); ri++)
         {
             csize N = Ns[Ni];
             csize r = rs[ri];
@@ -601,12 +601,12 @@ static void test_tiled_for_2D(uint64_t seed)
     csize rs[] = {0, 1, 2, 3};
 
     csize max_N = 0;
-    for(csize Ni = 0; Ni < STATIC_ARRAY_SIZE(ns); Ni++)
+    for(csize Ni = 0; Ni < (csize) STATIC_ARRAY_SIZE(ns); Ni++)
         if(max_N < ns[Ni])
             max_N = ns[Ni];
 
     max_N = max_N*max_N;
-    csize max_N_bytes = max_N*sizeof(int);
+    size_t max_N_bytes = (size_t)max_N*sizeof(int);
     int* allocation = (int*) malloc(max_N_bytes*4);
 
     Cache_Tag tag = cache_tag_make();
@@ -618,10 +618,10 @@ static void test_tiled_for_2D(uint64_t seed)
     int stencil_range = 10;
 
     srand(seed);
-    for(csize niy = 0; niy < STATIC_ARRAY_SIZE(ns); niy++)
-        for(csize nix = 0; nix < STATIC_ARRAY_SIZE(ns); nix++)
-            for(csize riy = 0; riy < STATIC_ARRAY_SIZE(rs); riy++)
-                for(csize rix = 0; rix < STATIC_ARRAY_SIZE(rs); rix++)
+    for(csize niy = 0; niy < (csize) STATIC_ARRAY_SIZE(ns); niy++)
+        for(csize nix = 0; nix < (csize) STATIC_ARRAY_SIZE(ns); nix++)
+            for(csize riy = 0; riy < (csize) STATIC_ARRAY_SIZE(rs); riy++)
+                for(csize rix = 0; rix < (csize) STATIC_ARRAY_SIZE(rs); rix++)
                 {
                     csize nx = ns[nix];
                     csize ny = ns[niy];
@@ -631,7 +631,7 @@ static void test_tiled_for_2D(uint64_t seed)
                     csize sx = 2*rx+1;
                     csize sy = 2*ry+1;
 
-                    csize N_bytes = nx*ny*sizeof(int);
+                    size_t N_bytes = (size_t) (nx*ny)*sizeof(int);
                     
                     LOG_INFO("kernel", "test_tiled_for_2D: nx:%i ny:%i rx:%i ry:%i\n", nx, ny, rx, ry);
 
@@ -652,7 +652,7 @@ static void test_tiled_for_2D(uint64_t seed)
                     cpu_convolution_2D(cpu_in, cpu_stencil, cpu_out, nx, ny, rx, ry, 0);
 
                     CUDA_DEBUG_TEST(cudaMemcpy(gpu_in, cpu_in, N_bytes, cudaMemcpyHostToDevice));
-                    CUDA_DEBUG_TEST(cudaMemcpy(gpu_stencil, cpu_stencil, sx*sy*sizeof(int), cudaMemcpyHostToDevice));
+                    CUDA_DEBUG_TEST(cudaMemcpy(gpu_stencil, cpu_stencil, (size_t) (sx*sy)*sizeof(int), cudaMemcpyHostToDevice));
 
                     cuda_tiled_for_2D_bound<TILED_FOR_DYNAMIC_RANGE, TILED_FOR_DYNAMIC_RANGE>(gpu_in, nx, ny, 
                         [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, int* __restrict__ shared){

@@ -10,14 +10,14 @@
 // We achive greater or equal performance then cuda thrust on all benchmarks I have run.
 // The algorhitm is tested on various sizes and random data ensuring functioning implementation.  
 
-//The main function in this file is produce_reduce which is a generalized map_reduce. 
-// produce_reduce takes a function (index)->(value) which can be easily customized to pull 
+//The main function in this file is cuda_produce_reduce which is a generalized map_reduce. 
+// cuda_produce_reduce takes a function (index)->(value) which can be easily customized to pull 
 // from different sources of data at the same time making for very easy implementation of 
 //  vector dot product, efficient normed distances and other functions that would normally need zipping.
 //If you are not convinced this is in fact simpler approach then the traditional map_reduce
 // interface compare https://github.com/NVIDIA/thrust/blob/main/examples/dot_products_with_zip.cu with our dot_product function
 template <typename T, class Reduction, typename Producer, bool has_trivial_producer = false>
-static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy = Reduction(), csize cpu_reduce = 128, Cuda_Launch_Params launch_params = {});
+static T cuda_produce_reduce(csize N, Producer produce, Reduction reduce_dummy = Reduction(), Cuda_Launch_Params launch_params = {}, csize cpu_reduce = 128);
 
 //Predefined reduction functions. These are defined in special ways because:
 // 1. They can be used with any type (that suports them!). No need to template them => simpler outside interface.
@@ -66,8 +66,8 @@ struct Example_Custom_Reduce_Operation
 };
 
 //Then call like so (both lines work): 
-// produce_reduce(N, produce, Example_Custom_Reduce_Operation<T>())
-// produce_reduce<Example_Custom_Reduce_Operation<T>>(N, produce)
+// cuda_produce_reduce(N, produce, Example_Custom_Reduce_Operation<T>())
+// cuda_produce_reduce<Example_Custom_Reduce_Operation<T>>(N, produce)
 
 //Returns the identity elemt of the Reduction operation
 template <class Reduction, typename T>
@@ -88,7 +88,7 @@ static __device__ __forceinline__ T _warp_reduce(unsigned int mask, T value) ;
 
 
 template <class Reduction, typename T, typename Producer, bool is_trivial_producer>
-static __global__ void produce_reduce_kernel(T* __restrict__ output, Producer produce, csize N) 
+static __global__ void cuda_produce_reduce_kernel(T* __restrict__ output, Producer produce, csize N) 
 {
     assert(blockDim.x > WARP_SIZE && blockDim.x % WARP_SIZE == 0 && "we expect the block dim to be chosen sainly");
     uint shared_size = blockDim.x / WARP_SIZE;
@@ -125,18 +125,11 @@ static __global__ void produce_reduce_kernel(T* __restrict__ output, Producer pr
         output[blockIdx.x] = reduced;
 }
 
-template <size_t size_per_elem>
-size_t reduce_block_size_to_shared_mem_size(int block_size)
-{
-    return DIV_CEIL(block_size, WARP_SIZE)*size_per_elem;
-
-}
-
 #include <cuda_occupancy.h>
 #include <cuda_runtime.h>
 
 template <typename T, class Reduction, typename Producer, bool has_trivial_producer>
-static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize cpu_reduce, Cuda_Launch_Params launch_params)
+static T cuda_produce_reduce(csize N, Producer produce, Reduction reduce_dummy, Cuda_Launch_Params launch_params, csize cpu_reduce)
 {
     (void) reduce_dummy;
     
@@ -153,7 +146,7 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
         static Cuda_Launch_Constraints constraints = {};
         if(bounds.max_block_size == 0)
         {
-            constraints = cuda_constraints_launch_constraints((void*) produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>);
+            constraints = cuda_constraints_launch_constraints((void*) cuda_produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>);
             constraints.used_shared_memory_per_thread = (double) sizeof(T)/WARP_SIZE;
             bounds = cuda_get_launch_bounds(constraints);
         }
@@ -183,12 +176,12 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
             T* __restrict__ curr_output = partials[i_next];
             if(iter ==  0)
             {
-                produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>
+                cuda_produce_reduce_kernel<Reduction, T, Producer, has_trivial_producer>
                     <<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(curr_output, (Producer&&) produce, N_curr);
             }
             else
             {
-                produce_reduce_kernel<Reduction, T, const T* __restrict__, true>
+                cuda_produce_reduce_kernel<Reduction, T, const T* __restrict__, true>
                     <<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(curr_output, curr_input, N_curr);
             }
 
@@ -222,110 +215,117 @@ static T produce_reduce(csize N, Producer produce, Reduction reduce_dummy, csize
 //============================== IMPLEMENTATION OF MORE SPECIFIC REDUCTIONS ===================================
 
 template<class Reduction, typename T, typename Map_Func>
-static T map_reduce(const T *input, csize N, Map_Func map, Reduction reduce_tag = Reduction())
+static T cuda_map_reduce(const T *input, csize N, Map_Func map, Reduction reduce_tag = Reduction(), Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduction>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduction>(N, [=]SHARED(csize i){
         return map(input[i]);
-    });
+    }, reduce_tag, launch_params);
     return output;
 }
 
 template<class Reduction, typename T>
-static T reduce(const T *input, csize N, Reduction reduce_tag = Reduction())
+static T cuda_reduce(const T *input, csize N, Reduction reduce_tag = Reduction(), Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduction, const T* __restrict__, true>(N, input);
+    T output = cuda_produce_reduce<T, Reduction, const T* __restrict__, true>(N, input, reduce_tag, launch_params);
     return output;
 }
 
 template<typename T>
-static T sum(const T *input, csize N)
+static T cuda_sum(const T *input, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Add, const T* __restrict__, true>(N, input);
+    T output = cuda_produce_reduce<T, Reduce::Add, const T* __restrict__, true>(N, input, Reduce::ADD, launch_params);
     return output;
 }
 
 template<typename T>
-static T min(const T *input, csize N)
+static T cuda_product(const T *input, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Min, const T* __restrict__, true>(N, input);
+    T output = cuda_produce_reduce<T, Reduce::Mul, const T* __restrict__, true>(N, input, Reduce::MUL, launch_params);
     return output;
 }
 
 template<typename T>
-static T max(const T *input, csize N)
+static T cuda_min(const T *input, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Max, const T* __restrict__, true>(N, input);
+    T output = cuda_produce_reduce<T, Reduce::Min, const T* __restrict__, true>(N, input, Reduce::MIN, launch_params);
     return output;
 }
 
 template<typename T>
-static T L1_norm(const T *a, csize N)
+static T cuda_max(const T *input, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduce::Max, const T* __restrict__, true>(N, input, Reduce::MAX, launch_params);
+    return output;
+}
+
+template<typename T>
+static T cuda_L1_norm(const T *a, csize N, Cuda_Launch_Params launch_params = {})
+{
+    T output = cuda_produce_reduce<T>(N, [=]SHARED(csize i){
         T diff = a[i];
         return diff > 0 ? diff : -diff;
-    });
+    }, Reduce::ADD, launch_params);
     return output;
 }
 
 template<typename T>
-static T L2_norm(const T *a, csize N)
+static T cuda_L2_norm(const T *a, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i];
         return diff*diff;
-    });
+    }, Reduce::ADD, launch_params);
     return (T) sqrt(output);
 }
 
 template<typename T>
-static T Lmax_norm(const T *a, csize N)
+static T cuda_Lmax_norm(const T *a, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
         T diff = a[i];
         return diff > 0 ? diff : -diff;
-    });
+    }, Reduce::MAX, launch_params);
     return output;
 }
 
 // more complex binary reductions...
 
 template<typename T>
-static T L1_distance(const T *a, const T *b, csize N)
+static T cuda_L1_distance(const T *a, const T *b, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
         return diff > 0 ? diff : -diff;
-    });
+    }, Reduce::ADD, launch_params);
     return output;
 }
 
 template<typename T>
-static T L2_distance(const T *a, const T *b, csize N)
+static T cuda_L2_distance(const T *a, const T *b, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
         return diff*diff;
-    });
+    }, Reduce::ADD, launch_params);
     return (T) sqrt(output);
 }
 
 template<typename T>
-static T Lmax_distance(const T *a, const T *b, csize N)
+static T cuda_Lmax_distance(const T *a, const T *b, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduce::Max>(N, [=]SHARED(csize i){
         T diff = a[i] - b[i];
         return diff > 0 ? diff : -diff;
-    });
+    }, Reduce::MAX, launch_params);
     return output;
 }
 
 template<typename T>
-static T dot_product(const T *a, const T *b, csize N)
+static T cuda_dot_product(const T *a, const T *b, csize N, Cuda_Launch_Params launch_params = {})
 {
-    T output = produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
+    T output = cuda_produce_reduce<T, Reduce::Add>(N, [=]SHARED(csize i){
         return a[i] * b[i];
-    });
+    }, Reduce::ADD, launch_params);
     return output;
 }
 
@@ -473,19 +473,19 @@ static T thrust_reduce(const T *input, int N, Reduction reduce_tag = Reduction()
 #endif
 
 template<class Reduction, typename T>
-static T cpu_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
+static T cpu_reduce(const T *input, csize n, Reduction reduce_tag = Reduction())
 {
     enum {COPY_AT_ONCE = 256};
     T cpu[COPY_AT_ONCE] = {0};
     T sum = _identity<Reduction, T>();
 
-    for(int k = 0; k < n; k += COPY_AT_ONCE)
+    for(csize k = 0; k < n; k += COPY_AT_ONCE)
     {
-        int from = k;
-        int to = MIN(k + COPY_AT_ONCE, n);
-        cudaMemcpy(cpu, input + from, sizeof(T)*(to - from), cudaMemcpyDeviceToHost);
+        csize from = k;
+        csize to = MIN(k + COPY_AT_ONCE, n);
+        cudaMemcpy(cpu, input + from, sizeof(T)*(size_t)(to - from), cudaMemcpyDeviceToHost);
         
-        for(int i = 0; i < to - from; i++)
+        for(csize i = 0; i < to - from; i++)
             sum = _reduce<Reduction, T>(sum, cpu[i]);
     }
 
@@ -497,23 +497,23 @@ static T cpu_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
 #define TEST_CUDA_REDUCTION_IMPL
 
 template<class Reduction, typename T>
-static T cpu_fold_reduce(const T *input, int n, Reduction reduce_tag = Reduction())
+static T cpu_fold_reduce(const T *input, csize n, Reduction reduce_tag = Reduction())
 {
     T sum = _identity<Reduction, T>();
     if(n > 0)
     {
         static T* copy = 0;
-        static int local_capacity = 0;
+        static csize local_capacity = 0;
         if(local_capacity < n)
         {
-            copy = (T*) realloc(copy, n*sizeof(T));
+            copy = (T*) realloc(copy, (size_t)n*sizeof(T));
             local_capacity = n;
         }
 
-        cudaMemcpy(copy, input, sizeof(T)*n, cudaMemcpyDeviceToHost);
-        for(int range = n; range > 1; range /= 2)
+        cudaMemcpy(copy, input, (size_t)n*sizeof(T), cudaMemcpyDeviceToHost);
+        for(csize range = n; range > 1; range /= 2)
         {
-            for(int i = 0; i < range/2 ; i ++)
+            for(csize i = 0; i < range/2 ; i ++)
                 copy[i] = _reduce<Reduction, T>(copy[2*i], copy[2*i + 1]);
 
             if(range%2)
@@ -560,11 +560,11 @@ static bool _is_approx_equal(T a, T b, double epsilon = sizeof(T) == 8 ? 1e-8 : 
 template<typename T>
 static void test_reduce_type(uint64_t seed, const char* type_name)
 {
-    uint Ns[] = {0, 1, 5, 31, 32, 33, 64, 65, 256, 257, 512, 513, 1023, 1024, 1025, 256*256, 1024*1024 - 1, 1024*1024};
+    csize Ns[] = {0, 1, 5, 31, 32, 33, 64, 65, 256, 257, 512, 513, 1023, 1024, 1025, 256*256, 1024*1024 - 1, 1024*1024};
 
     //Find max size 
-    uint N = 0;
-    for(int i = 0; i < STATIC_ARRAY_SIZE(Ns); i++)
+    csize N = 0;
+    for(csize i = 0; i < (csize) STATIC_ARRAY_SIZE(Ns); i++)
         if(N < Ns[i])
             N = Ns[i];
 
@@ -576,15 +576,15 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
     random_map_64(rand, rand_state, N);
 
     //test each size on radom data.
-    for(int i = 0; i < STATIC_ARRAY_SIZE(Ns); i++)
+    for(csize i = 0; i < (csize) STATIC_ARRAY_SIZE(Ns); i++)
     {
-        uint n = Ns[i];
+        csize n = Ns[i];
         LOG_INFO("kernel", "test_reduce_type<%s>: n:%lli", type_name, (lli)n);
 
         T sum0 = cpu_reduce(rand, n, Reduce::ADD);
         T sum1 = cpu_fold_reduce(rand, n, Reduce::ADD);
         T sum2 = thrust_reduce(rand, n, Reduce::ADD);
-        T sum3 = reduce(rand, n, Reduce::ADD);
+        T sum3 = cuda_reduce(rand, n, Reduce::ADD);
 
         //naive cpu sum reduce diverges from the true values for large n due to
         // floating point rounding
@@ -596,7 +596,7 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
         T min0 = cpu_reduce(rand, n, Reduce::MIN);
         T min1 = cpu_fold_reduce(rand, n, Reduce::MIN);
         T min2 = thrust_reduce(rand, n, Reduce::MIN);
-        T min3 = reduce(rand, n, Reduce::MIN);
+        T min3 = cuda_reduce(rand, n, Reduce::MIN);
 
         TEST(_is_approx_equal(min1, min0));
         TEST(_is_approx_equal(min1, min2));
@@ -605,7 +605,7 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
         T max0 = cpu_reduce(rand, n, Reduce::MAX);
         T max1 = cpu_fold_reduce(rand, n, Reduce::MAX);
         T max2 = thrust_reduce(rand, n, Reduce::MAX);
-        T max3 = reduce(rand, n, Reduce::MAX);
+        T max3 = cuda_reduce(rand, n, Reduce::MAX);
 
         TEST(_is_approx_equal(max1, max0));
         TEST(_is_approx_equal(max1, max2));
@@ -616,7 +616,7 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
             T and0 = cpu_reduce(rand, n, Reduce::AND);
             T and1 = cpu_fold_reduce(rand, n, Reduce::AND);
             T and2 = thrust_reduce(rand, n, Reduce::AND);
-            T and3 = reduce(rand, n, Reduce::AND);
+            T and3 = cuda_reduce(rand, n, Reduce::AND);
 
             TEST(and1 == and0);
             TEST(and1 == and2);
@@ -625,7 +625,7 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
             T or0 = cpu_reduce(rand, n, Reduce::OR);
             T or1 = cpu_fold_reduce(rand, n, Reduce::OR);
             T or2 = thrust_reduce(rand, n, Reduce::OR);
-            T or3 = reduce(rand, n, Reduce::OR);
+            T or3 = cuda_reduce(rand, n, Reduce::OR);
 
             TEST(or1 == or0);
             TEST(or1 == or2);
@@ -634,7 +634,7 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
             T xor0 = cpu_reduce(rand, n, Reduce::XOR);
             T xor1 = cpu_fold_reduce(rand, n, Reduce::XOR);
             T xor2 = thrust_reduce(rand, n, Reduce::XOR);
-            T xor3 = reduce(rand, n, Reduce::XOR);
+            T xor3 = cuda_reduce(rand, n, Reduce::XOR);
 
             TEST(xor1 == xor0);
             TEST(xor1 == xor2);

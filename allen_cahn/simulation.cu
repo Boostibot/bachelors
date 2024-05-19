@@ -1,9 +1,9 @@
 // ==================== SWITCHES ==========================
 
-// #define COMPILE_BENCHMARKS
-// #define COMPILE_TESTS
+#define COMPILE_BENCHMARKS
+#define COMPILE_TESTS
 #define COMPILE_SIMULATION
-// #define COMPILE_THRUST
+#define COMPILE_THRUST
 
 #define USE_CUSTOM_REDUCE
 #define USE_TILED_FOR 
@@ -40,7 +40,7 @@ SHARED Real custom_cos(Real theta) { return cos(theta); }
 Real vector_dot_product(const Real *a, const Real *b, int ny)
 {
     #ifdef USE_CUSTOM_REDUCE
-    return dot_product(a, b, ny);
+    return cuda_dot_product(a, b, ny);
     #else
     // wrap raw pointers to device memory with device_ptr
     thrust::device_ptr<const Real> d_a(a);
@@ -54,7 +54,7 @@ Real vector_dot_product(const Real *a, const Real *b, int ny)
 Real vector_max(const Real *a, int N)
 {
     #ifdef USE_CUSTOM_REDUCE
-    return max(a, N);
+    return cuda_max(a, N);
     #else
     thrust::device_ptr<const Real> d_a(a);
     return *(thrust::max_element(d_a, d_a + N));
@@ -64,7 +64,7 @@ Real vector_max(const Real *a, int N)
 Real vector_get_l2_dist(const Real* a, const Real* b, int N)
 {
     #ifdef USE_CUSTOM_REDUCE
-    return L2_distance(a, b, N)/ sqrt((Real) N);
+    return cuda_L2_distance(a, b, N)/ sqrt((Real) N);
     #else
     Cache_Tag tag = cache_tag_make();
     Real* temp = cache_alloc(Real, N, &tag);
@@ -82,7 +82,7 @@ Real vector_get_l2_dist(const Real* a, const Real* b, int N)
 Real vector_get_max_dist(const Real* a, const Real* b, int N)
 {
     #ifdef USE_CUSTOM_REDUCE
-    return L2_distance(a, b, N);
+    return cuda_L2_distance(a, b, N);
     #else
     Cache_Tag tag = cache_tag_make();
     Real* temp = cache_alloc(Real, N, &tag);
@@ -101,7 +101,7 @@ Real vector_get_max_dist(const Real* a, const Real* b, int N)
 Real vector_euclid_norm(const Real* vector, int N)
 {
     #ifdef USE_CUSTOM_REDUCE
-    return L2_norm(vector, N)/ sqrt((Real) N);
+    return cuda_L2_norm(vector, N)/ sqrt((Real) N);
     #else
     Real dot = vector_dot_product(vector, vector, N);
     return sqrt(dot / N);
@@ -1901,12 +1901,13 @@ static void cache_prepare(int count, int item_size, int N)
 {
     Cache_Tag tag = cache_tag_make();
     for(int i = 0; i < count; i++)
-        _cache_alloc(item_size*N, &tag, SOURCE_INFO());
+        _cache_alloc((size_t) (item_size*N), &tag, SOURCE_INFO());
     cache_free(&tag);
 }
 
-extern "C" bool run_benchmarks(int N)
+extern "C" bool run_benchmarks(int N_)
 {
+    csize N = (csize) N_;
     cache_prepare(3, sizeof(int), N);
     cache_prepare(3, sizeof(float), N);
     cache_prepare(3, sizeof(double), N);
@@ -1922,10 +1923,10 @@ extern "C" bool run_benchmarks(int N)
         
         double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_map, N, Reduce::ADD); });
         double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_map, N, Reduce::ADD); });
-        double custom_time = benchmark(3, [=]{ reduce(rand_map, N, Reduce::ADD); });
+        double custom_time = benchmark(3, [=]{ cuda_reduce(rand_map, N, Reduce::ADD); });
         double total_gb = (double) N / GB * sizeof(double);
         LOG_OKAY("BENCH", "double (gb/s): cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
-            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes(N * sizeof(double)).str);
+            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes((size_t)N * sizeof(double)).str);
         LOG_OKAY("BENCH", "double (time): cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
     }
     {
@@ -1934,20 +1935,20 @@ extern "C" bool run_benchmarks(int N)
         
         double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_map, N, Reduce::ADD); });
         double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_map, N, Reduce::ADD); });
-        double custom_time = benchmark(3, [=]{ reduce(rand_map, N, Reduce::ADD); });
+        double custom_time = benchmark(3, [=]{ cuda_reduce(rand_map, N, Reduce::ADD); });
         double total_gb = (double) N / GB * sizeof(float);
         LOG_OKAY("BENCH", "float (gb/s) : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
-            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes(N * sizeof(float)).str);
+            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes((size_t)N * sizeof(float)).str);
         LOG_OKAY("BENCH", "float (time) : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
     }
 
     {
         double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_state, N, Reduce::ADD); });
         double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_state, N, Reduce::ADD); });
-        double custom_time = benchmark(3, [=]{ reduce(rand_state, N, Reduce::ADD); });
+        double custom_time = benchmark(3, [=]{ cuda_reduce(rand_state, N, Reduce::ADD); });
         double total_gb = (double) N / GB * sizeof(uint);
         LOG_OKAY("BENCH", "uint (gb/s)  : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
-            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes(N * sizeof(uint)).str);
+            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes((size_t)N * sizeof(uint)).str);
         LOG_OKAY("BENCH", "uint (time)  : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
     }
 

@@ -47,7 +47,7 @@ static bool _test_cuda_(cudaError_t error, const char* expression, int line, con
 #endif
 
 //prevents unused variable type warnings messages on nvcc
-#define USE_VARIABLE(x) if(&(x));
+#define USE_VARIABLE(x) if((size_t) &(x) != sizeof(x));
 
 #define SHARED __host__ __device__
 
