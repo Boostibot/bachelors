@@ -94,7 +94,6 @@ static SHARED uint64_t random_splitmix_64(uint64_t* state)
     return z ^ (z >> 31);
 }
 
-
 static SHARED float _make_f32(uint32_t sign, uint32_t expoment, uint32_t mantissa)
 {
     union {
@@ -162,6 +161,39 @@ static SHARED T random_bits_to_value_64(uint64_t bits)
             "(sizeof(T) == 0 is always false but due to how c++ works its necessary)");
 }
 
+
+static thread_local uint64_t global_random_state = (uint64_t) clock_ns();
+static float random_f32(float from, float to)
+{
+    uint64_t bits = random_splitmix_64(&global_random_state);
+    return random_bits_to_f32(bits)*(to - from) + from;
+}
+
+static int random_int(int from, int to)
+{
+    if(from >= to)
+        return from;
+
+    uint64_t bits = random_splitmix_64(&global_random_state);
+    return (int) (bits % (uint64_t) (to - from)) + from;
+}
+
+//has 20% chance of returning one of the extremes. Both are equally likely. 
+static int random_int_with_high_chance_of_extremes(int from, int to)
+{
+    if(from >= to)
+        return from;
+
+    uint64_t bits = random_splitmix_64(&global_random_state);
+    if(bits % 5 == 0)
+    {
+        if(bits % 2 == 0)
+            return from;
+        else
+            return to;
+    }
+    return (int) (bits % (uint64_t) (to - from)) + from;
+}
 
 static void random_map_seed_32(uint32_t* rand_state, csize N, uint32_t seed)
 {

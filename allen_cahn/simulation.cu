@@ -1132,7 +1132,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
         );
         
         cuda_for(0, N, [=]SHARED(csize i){
-            Real T =  U_base[i];
+            Real T =  U[i];
             Real Phi = F[i];
 
             Real grad_Phi_x = grad_F_x_2dx[i]*one_over_2dx;
@@ -1229,10 +1229,9 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
                 Real k0 = g_theta*f0(C_Phi)*k0_factor;
                 Real k2 = grad_Phi_norm*k2_factor;
                 Real k1 = g_theta*k1_factor;
-                Real corr = 1 + k2*dt_L;
 
-                Real right = C_Phi + dt/corr*((1-gamma)*k1*laplace_Phi + k0 - k2*(C_T - Tm));
-                Real factor = gamma/corr*k1; 
+                Real right = C_Phi + dt*((1-gamma)*k1*laplace_Phi + k0 - k2*(C_T - Tm));
+                Real factor = gamma*k1; 
 
                 A_F.anisotrophy[x+y*nx] = (Real) factor;
                 b_F[x + y*nx] = (Real) right;
@@ -1270,7 +1269,7 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
     solver_params.tolerance = (Real) params.T_tolerance;
     solver_params.max_iters = params.T_max_iters;
-    solver_params.initial_value_or_null = U_base;
+    solver_params.initial_value_or_null = U;
 
     //Solve A_U*U_next = b_U
     Conjugate_Gardient_Convergence U_converged = conjugate_gradient_solve(&A_U, U_next, b_U, N, cross_matrix_static_multiply, &solver_params);
@@ -1378,6 +1377,8 @@ void semi_implicit_solver_step_corrector(Semi_Implicit_Solver* solver, Semi_Impl
     bool do_debug = false;
     if(max_iters == 0)
         do_debug = params.do_debug;
+
+    //Perform first step
     semi_implicit_solver_step(solver, state, steps[0], params, iter, do_debug);
     for(; k < max_iters; k++)
     {
@@ -1963,8 +1964,10 @@ extern "C" bool run_benchmarks(int N)
 }
 #endif
 
+#include "cuda_examples.cuh"
 extern "C" bool run_tests()
 {
+    test_all_examples(3);
     #ifdef TEST_CUDA_FOR_IMPL
     test_tiled_for((uint64_t) clock_ns());
     test_tiled_for_2D((uint64_t) clock_ns());

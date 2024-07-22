@@ -209,7 +209,6 @@ static void* _cuda_realloc(void* old_ptr, size_t new_size, size_t old_size, int 
         "Invalid pointer passed to cuda_realloc! %s:%i", file, line);
 
     used_bytes += new_size - old_size;
-    assert(used_bytes >= 0);
     return new_ptr;
 }
 

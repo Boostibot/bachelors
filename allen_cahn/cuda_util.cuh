@@ -38,7 +38,7 @@ static bool _test_cuda_(cudaError_t error, const char* expression, int line, con
     return error == cudaSuccess;
 }
 
-#define CUDA_TEST(status, ...) (_test_cuda_((status), #status,  __LINE__, __FUNCTION__, __FILE__, "" __VA_ARGS__) ? (void) 0 : abort())
+#define CUDA_TEST(status, ...) (_test_cuda_((status), #status,  __LINE__, __FILE__, __FUNCTION__, "" __VA_ARGS__) ? (void) 0 : abort())
 
 #ifdef DO_DEBUG
     #define CUDA_DEBUG_TEST(status, ...) (0 ? printf("" __VA_ARGS__) : (status))
