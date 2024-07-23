@@ -108,6 +108,7 @@ static void cuda_for(csize from, csize to, Function func, Cuda_Launch_Params lau
         launch_params.preferd_block_size = 64;
     Cuda_Launch_Config launch = cuda_get_launch_config(to - from, bounds, launch_params);
 
+    CUDA_DEBUG_TEST(cudaGetLastError());
     cuda_for_kernel<<<launch.block_count, launch.block_size, launch.dynamic_shared_memory, launch_params.stream>>>(from, to-from, (Function&&) func);
     CUDA_DEBUG_TEST(cudaGetLastError());
 }

@@ -85,10 +85,9 @@ typedef struct Allen_Cahn_Params{
     bool do_stats_step_residual;
 } Allen_Cahn_Params;
 
-#define STEP_RESIDUALS_MAX 10
 typedef struct Allen_Cahn_Stats{
-    Real L2_step_residuals[10];
-    Real Lmax_step_residuals[10];
+    Real L2_step_residuals[20];
+    Real Lmax_step_residuals[20];
     int step_residuals;
 
     int T_iters;
@@ -148,8 +147,11 @@ typedef struct Explicit_Solver {
         Real* reaction;
         Real* aniso_factor;
         Real* step_residual;
+        Real* perlin;
+        Real* simplex;
     } debug_maps;
 
+    void* pad;
     int nx;
     int ny;
 } Explicit_Solver;

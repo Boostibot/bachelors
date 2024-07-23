@@ -160,9 +160,6 @@ bool save_netcfd_file(App_State* app);
 
 int main()
 {
-    run_tests();
-    exit(0);
-    
     Allen_Cahn_Config config = {0};
     if(allen_cahn_read_config("config.ini", &config) == false)
         return 1;

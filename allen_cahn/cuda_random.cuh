@@ -228,3 +228,137 @@ static void random_map_64(T* output, uint64_t* rand_state, csize N)
         output[i] = random_bits_to_value_64<T>(random_bits);
     });
 }
+
+static SHARED float lerp(float x, float y, float s)
+{
+    return x + s * (y-x);
+}
+
+static SHARED float smooth_lerp(float x, float y, float s)
+{
+    return lerp(x, y, s * s * (3-2*s));
+}
+
+static SHARED uint32_t hash_2d(uint32_t ix, uint32_t iy, uint32_t seed)
+{
+    uint32_t w = 8 * sizeof(uint32_t);
+    uint32_t s = w / 2; // rotation width
+    uint32_t a = ix ^ seed; 
+    uint32_t b = iy ^ seed;
+    a *= 3284157443; b ^= a << s | a >> w-s;
+    b *= 1911520717; a ^= b << s | b >> w-s;
+    a *= 2048419325;
+    return a;
+}
+
+static SHARED float _perlin2d_gradient(float x, float y, uint32_t ix, uint32_t iy, uint32_t seed)
+{
+    // uint32_t rand = hash_mix32(x ^ seed, y) ^ seed;
+    // uint32_t rand = hash_mix32(hash_pcg_32(ix), hash_pcg_32(iy ^ seed)) ^ seed;
+    uint32_t rand = hash_2d(ix, iy, seed);
+    float rotation = random_bits_to_f32(rand)*2*3.14159265f;
+    float grad_x = cosf(rotation);
+    float grad_y = sinf(rotation);
+
+    float dx = x - (float)ix;
+    float dy = y - (float)iy;
+
+    return dx*grad_x + dy*grad_y;
+}
+
+static SHARED float perlin2d(float x, float y, uint32_t seed)
+{
+    uint32_t xi = (uint32_t) (int) x;
+    uint32_t yi = (uint32_t) (int) y;
+    float sx = x - xi;
+    float sy = y - yi;
+    
+    float s = _perlin2d_gradient(x, y, xi,   yi,   seed);
+    float t = _perlin2d_gradient(x, y, xi+1, yi,   seed);
+    float u = _perlin2d_gradient(x, y, xi,   yi+1, seed);
+    float v = _perlin2d_gradient(x, y, xi+1, yi+1, seed);
+
+    float top = smooth_lerp(s, t, sx);
+    float bot = smooth_lerp(u, v, sx);
+    return (smooth_lerp(top, bot, sy) + 1)/2;
+}
+
+static SHARED float simplex2d(float x, float y, uint32_t seed)
+{
+    uint32_t xi = (uint32_t) (int) x;
+    uint32_t yi = (uint32_t) (int) y;
+    float sx = x - xi;
+    float sy = y - yi;
+    
+    float s = random_bits_to_f32(hash_2d(xi,   yi,   seed));
+    float t = random_bits_to_f32(hash_2d(xi+1, yi,   seed));
+    float u = random_bits_to_f32(hash_2d(xi,   yi+1, seed));
+    float v = random_bits_to_f32(hash_2d(xi+1, yi+1, seed));
+
+    float top = smooth_lerp(s, t, sx);
+    float bot = smooth_lerp(u, v, sx);
+    return smooth_lerp(top, bot, sy);
+}
+
+static SHARED float perlin2d_depth(float x, float y, int depth, uint32_t seed)
+{
+    float amplitude = 1.0;
+    float sum = 0;
+    float div = 0;
+    for(int i = 0; i < depth; i++)
+    {
+        div += amplitude;
+        sum += perlin2d(x/amplitude, y/amplitude, seed) * amplitude;
+        amplitude /= 2;
+    }
+
+    return sum/div;
+}
+
+static SHARED float simplex2d_depth(float x, float y, int depth, uint32_t seed)
+{
+    float amplitude = 1.0;
+    float sum = 0;
+    float div = 0;
+    for(int i = 0; i < depth; i++)
+    {
+        div += amplitude;
+        sum += simplex2d(x/amplitude, y/amplitude, seed) * amplitude;
+        amplitude /= 2;
+    }
+
+    return sum/div;
+}
+
+template<typename T>
+static void perlin2d_generate(T* values, csize nx, csize ny, float freq_x, float freq_y, int depth, uint32_t seed)
+{
+    if(depth <= 0)
+        depth = 1;
+
+    cuda_for_2D(0, 0, nx, ny, [=]SHARED(int x, int y){
+        values[x + y*nx] = (T) perlin2d_depth((float) x*freq_x/nx, (float) y*freq_y/ny, depth, seed);
+    });
+
+    //remap to [0, 1]
+    T min = cuda_min(values, nx*ny);
+    T max = cuda_max(values, nx*ny);
+
+    if(min < max)
+    {
+        cuda_for_2D(0, 0, nx, ny, [=]SHARED(int x, int y){
+            values[x + y*nx] = (values[x + y*nx] - min) / (max - min);
+        });
+    }
+}
+
+template<typename T>
+static void simplex2d_generate(T* values, csize nx, csize ny, float freq_x, float freq_y, int depth, uint32_t seed)
+{
+    if(depth <= 0)
+        depth = 1;
+
+    cuda_for_2D(0, 0, nx, ny, [=]SHARED(int x, int y){
+        values[x + y*nx] = (T) simplex2d_depth((float) x*freq_x/nx, (float) y*freq_y/ny, depth, seed);
+    });
+}

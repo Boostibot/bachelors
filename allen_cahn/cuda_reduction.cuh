@@ -24,7 +24,7 @@ static T cuda_produce_reduce(csize N, Producer produce, Reduction reduce_dummy =
 // 2. They can be tested for and thus the implementation can and does take advantage of custom intrinsics.
 //
 //Others can be defined from within custom struct types see Example_Custom_Reduce_Operation below.
-struct Reduce {
+namespace Reduce {
     struct Add {};
     struct Mul {};
     struct Min {};
@@ -71,14 +71,14 @@ struct Example_Custom_Reduce_Operation
 
 //Returns the identity elemt of the Reduction operation
 template <class Reduction, typename T>
-static __host__ __device__ __forceinline__ T _identity();
+static __host__ __device__ __forceinline__ T _reduce_indentity();
 
 //Returns the result of redeuction using the Reduction operation
 template <class Reduction, typename T>
-static __host__ __device__ __forceinline__ T _reduce(T a, T b);
+static __host__ __device__ __forceinline__ T _reduce_reduce(T a, T b);
 
 template <class Reduction>
-static __host__ __device__ __forceinline__ const char* _name();
+static __host__ __device__ __forceinline__ const char* _reduce_name();
 
 //Performs reduction operation within lanes of warp enabled by mask. 
 //If mask includes lanes which do not participate within the reduction 
@@ -96,7 +96,7 @@ static __global__ void cuda_produce_reduce_kernel(T* __restrict__ output, Produc
     extern __shared__ max_align_t shared_backing[];
     T* shared = (T*) (void*) shared_backing;
 
-    T reduced = _identity<Reduction, T>();
+    T reduced = _reduce_indentity<Reduction, T>();
     for(int i = (int) blockIdx.x*blockDim.x + threadIdx.x; i < N; i += blockDim.x*gridDim.x)
     {
         T produced;
@@ -105,7 +105,7 @@ static __global__ void cuda_produce_reduce_kernel(T* __restrict__ output, Produc
         else 
             produced = produce(i);
 
-        reduced = _reduce<Reduction, T>(produced, reduced);
+        reduced = _reduce_reduce<Reduction, T>(produced, reduced);
     }
 
     reduced = _warp_reduce<Reduction, T>(0xffffffffU, reduced);
@@ -133,8 +133,8 @@ static T cuda_produce_reduce(csize N, Producer produce, Reduction reduce_dummy, 
 {
     (void) reduce_dummy;
     
-    // LOG_INFO("reduce", "Reduce %s N:%i", _name<Reduction>(), (int) N);
-    T reduced = _identity<Reduction, T>();
+    // LOG_INFO("reduce", "Reduce %s N:%i", _reduce_name<Reduction>(), (int) N);
+    T reduced = _reduce_indentity<Reduction, T>();
     if(N > 0)
     {
         enum {
@@ -204,7 +204,7 @@ static T cuda_produce_reduce(csize N, Producer produce, Reduction reduce_dummy, 
         T cpu[CPU_REDUCE_MAX];
         cudaMemcpy(cpu, last_input, sizeof(T)*(size_t)N_curr, cudaMemcpyDeviceToHost);
         for(csize i = 0; i < N_curr; i++)
-            reduced = _reduce<Reduction, T>(reduced, cpu[i]);
+            reduced = _reduce_reduce<Reduction, T>(reduced, cpu[i]);
 
         cache_free(&tag);
     }
@@ -330,9 +330,8 @@ static T cuda_dot_product(const T *a, const T *b, csize N, Cuda_Launch_Params la
 }
 
 //============================== TEMPLATE MADNESS BELOW ===================================
-
 template <class Reduction, typename T>
-static __host__ __device__ __forceinline__ T _identity()
+static __host__ __device__ __forceinline__ T _reduce_indentity()
 {
     if constexpr      (std::is_same_v<Reduction, Reduce::Add>)
         return (T) 0;
@@ -353,7 +352,7 @@ static __host__ __device__ __forceinline__ T _identity()
 }
 
 template <class Reduction, typename T>
-static __host__ __device__ __forceinline__ T _reduce(T a, T b)
+static __host__ __device__ __forceinline__ T _reduce_reduce(T a, T b)
 {
     if constexpr      (std::is_same_v<Reduction, Reduce::Add>)
         return a + b;
@@ -374,7 +373,7 @@ static __host__ __device__ __forceinline__ T _reduce(T a, T b)
 }
 
 template <class Reduction>
-static __host__ __device__ __forceinline__ const char* _name()
+static __host__ __device__ __forceinline__ const char* _reduce_name()
 {
     if constexpr      (std::is_same_v<Reduction, Reduce::Add>)
         return "Add";
@@ -423,13 +422,13 @@ static __device__ __forceinline__ T _warp_reduce(unsigned int mask, T value)
         //Otherwiese when sizeof(T) > 8 we will need to change to algorhimt to do only shared memory reduction
         #if 1
         for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) 
-            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, offset), value);
+            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, offset), value);
         #else
-            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 16), value);
-            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 8), value);
-            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 4), value);
-            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 2), value);
-            value = _reduce<Reduction, T>(__shfl_down_sync(mask, value, 1), value);
+            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 16), value);
+            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 8), value);
+            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 4), value);
+            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 2), value);
+            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 1), value);
         #endif
 
         return value;
@@ -447,7 +446,7 @@ static T thrust_reduce(const T *input, int n, Reduction reduce_tag = Reduction()
     // wrap raw pointers to device memory with device_ptr
     thrust::device_ptr<const T> d_input(input);
 
-    T id = _identity<Reduction, T>();
+    T id = _reduce_indentity<Reduction, T>();
     if constexpr(std::is_same_v<Reduction, Reduce::Add>)
         return thrust::reduce(d_input, d_input+n, id, thrust::plus<T>());
     else if constexpr(std::is_same_v<Reduction, Reduce::Min>)
@@ -468,7 +467,7 @@ static T thrust_reduce(const T *input, int n, Reduction reduce_tag = Reduction()
 template<class Reduction, typename T>
 static T thrust_reduce(const T *input, int N, Reduction reduce_tag = Reduction())
 {
-    return reduce<Reduction, T>(input, N, reduce_tag);
+    return cuda_reduce<Reduction, T>(input, N, reduce_tag);
 }
 #endif
 
@@ -477,7 +476,7 @@ static T cpu_reduce(const T *input, csize n, Reduction reduce_tag = Reduction())
 {
     enum {COPY_AT_ONCE = 256};
     T cpu[COPY_AT_ONCE] = {0};
-    T sum = _identity<Reduction, T>();
+    T sum = _reduce_indentity<Reduction, T>();
 
     for(csize k = 0; k < n; k += COPY_AT_ONCE)
     {
@@ -486,7 +485,7 @@ static T cpu_reduce(const T *input, csize n, Reduction reduce_tag = Reduction())
         cudaMemcpy(cpu, input + from, sizeof(T)*(size_t)(to - from), cudaMemcpyDeviceToHost);
         
         for(csize i = 0; i < to - from; i++)
-            sum = _reduce<Reduction, T>(sum, cpu[i]);
+            sum = _reduce_reduce<Reduction, T>(sum, cpu[i]);
     }
 
     return sum;
@@ -499,7 +498,7 @@ static T cpu_reduce(const T *input, csize n, Reduction reduce_tag = Reduction())
 template<class Reduction, typename T>
 static T cpu_fold_reduce(const T *input, csize n, Reduction reduce_tag = Reduction())
 {
-    T sum = _identity<Reduction, T>();
+    T sum = _reduce_indentity<Reduction, T>();
     if(n > 0)
     {
         static T* copy = 0;
@@ -514,10 +513,10 @@ static T cpu_fold_reduce(const T *input, csize n, Reduction reduce_tag = Reducti
         for(csize range = n; range > 1; range /= 2)
         {
             for(csize i = 0; i < range/2 ; i ++)
-                copy[i] = _reduce<Reduction, T>(copy[2*i], copy[2*i + 1]);
+                copy[i] = _reduce_reduce<Reduction, T>(copy[2*i], copy[2*i + 1]);
 
             if(range%2)
-                copy[range/2 - 1] = _reduce<Reduction, T>(copy[range/2 - 1], copy[range - 1]);
+                copy[range/2 - 1] = _reduce_reduce<Reduction, T>(copy[range/2 - 1], copy[range - 1]);
         }
 
         sum  = copy[0];
@@ -648,21 +647,21 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
 
 static void test_identity()
 {
-    ASSERT((_identity<Reduce::Add, double>() == 0));
-    ASSERT((_identity<Reduce::Min, double>() == INFINITY));
-    ASSERT((_identity<Reduce::Max, double>() == -INFINITY));
+    ASSERT((_reduce_indentity<Reduce::Add, double>() == 0));
+    ASSERT((_reduce_indentity<Reduce::Min, double>() == INFINITY));
+    ASSERT((_reduce_indentity<Reduce::Max, double>() == -INFINITY));
 
-    ASSERT((_identity<Reduce::Add, int>() == 0));
-    ASSERT((_identity<Reduce::Min, int>() == INT_MAX));
-    ASSERT((_identity<Reduce::Max, int>() == INT_MIN));
+    ASSERT((_reduce_indentity<Reduce::Add, int>() == 0));
+    ASSERT((_reduce_indentity<Reduce::Min, int>() == INT_MAX));
+    ASSERT((_reduce_indentity<Reduce::Max, int>() == INT_MIN));
 
-    ASSERT((_identity<Reduce::Add, unsigned>() == 0));
-    ASSERT((_identity<Reduce::Min, unsigned>() == UINT_MAX));
-    ASSERT((_identity<Reduce::Max, unsigned>() == 0));
+    ASSERT((_reduce_indentity<Reduce::Add, unsigned>() == 0));
+    ASSERT((_reduce_indentity<Reduce::Min, unsigned>() == UINT_MAX));
+    ASSERT((_reduce_indentity<Reduce::Max, unsigned>() == 0));
 
-    ASSERT((_identity<Reduce::Or, unsigned>() == 0));
-    ASSERT((_identity<Reduce::And, unsigned>() == 0xFFFFFFFFU));
-    ASSERT((_identity<Reduce::Xor, unsigned>() == 0));
+    ASSERT((_reduce_indentity<Reduce::Or, unsigned>() == 0));
+    ASSERT((_reduce_indentity<Reduce::And, unsigned>() == 0xFFFFFFFFU));
+    ASSERT((_reduce_indentity<Reduce::Xor, unsigned>() == 0));
     LOG_OKAY("kernel", "test_identity: success!");
 }
 

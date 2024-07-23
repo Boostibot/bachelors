@@ -444,7 +444,7 @@ int main_tridiag_mul_shared()
 //================================================================
 //                         reductions
 //================================================================
-float reduce(const float* x, int N)
+float cpu_reduce(const float* x, int N)
 {
     float max = -INFINITY;
     for(int i = 0; i < N; i++)
@@ -603,7 +603,7 @@ int main_reduce()
     CUDA_TEST(cudaMalloc(&temp1, N*sizeof(float)));
     CUDA_TEST(cudaMalloc(&temp2, N*sizeof(float)));
 
-    float cpu_reduced = reduce(x_host, N);
+    float cpu_reduced = cpu_reduce(x_host, N);
     float global_mem_reduced = global_mem_reduce(temp1, temp2, x, N);
     float shared_mem_reduced = shared_mem_reduce(temp1, temp2, x, N);
     float warp_reduced = warp_reduce(temp1, temp2, x, N);

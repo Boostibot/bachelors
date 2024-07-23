@@ -95,7 +95,7 @@ static Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bou
 
     //Only fire as many blocks as the hardware could ideally support at once. 
     // Any more than that is pure overhead for the sheduler
-    launch.desired_block_count = DIV_CEIL((uint) N, launch.block_size);
+    launch.desired_block_count = MAX(DIV_CEIL((uint) N, launch.block_size), 1);
     launch.block_count = MIN(MIN(launch.desired_block_count, launch.max_concurent_blocks), (uint) params.max_block_count);
 
     return launch;

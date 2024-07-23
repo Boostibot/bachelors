@@ -1,9 +1,9 @@
 // ==================== SWITCHES ==========================
 
-#define COMPILE_BENCHMARKS
-#define COMPILE_TESTS
+// #define COMPILE_BENCHMARKS
+// #define COMPILE_TESTS
 #define COMPILE_SIMULATION
-#define COMPILE_THRUST
+// #define COMPILE_THRUST
 
 #define USE_CUSTOM_REDUCE
 #define USE_TILED_FOR 
@@ -18,6 +18,7 @@
 #include "cuda_util.cuh"
 #include "cuda_reduction.cuh"
 #include "cuda_for.cuh"
+#include "cuda_random.cuh"
 
 #ifdef COMPILE_SIMULATION
 
@@ -118,7 +119,7 @@ SHARED Real* at_mod(Real* map, int x, int y, int nx, int ny)
         int y_mod = MOD(y, ny);
     #elif AT_MOD_MODE == 1
         //63 ms
-        //@NOTE: this onluy works for x, y maximaly nx, ny respectively otuside of their proper range.
+        //@NOTE: this only works for x, y maximaly nx, ny respectively otuside of their proper range.
         // In our application this is enough.
         //@NOTE: this seems to be the fastest mode
         int x_mod = x;
@@ -497,7 +498,10 @@ void explicit_solver_debug_step(Explicit_Solver* solver, Explicit_State state, A
     Real* grad_F = solver->debug_maps.grad_phi;
     Real* grad_U = solver->debug_maps.grad_T;
     Real* aniso = solver->debug_maps.aniso_factor;
-
+    Real* perlin = solver->debug_maps.perlin;
+    Real* simplex = solver->debug_maps.simplex;
+    static uint32_t _iter = 0;
+    uint32_t iter = _iter++;
     Real S0 = (Real) params.S;
     Real m0 = (Real) params.m0;
     Real theta0 = (Real) params.theta0;
@@ -527,9 +531,12 @@ void explicit_solver_debug_step(Explicit_Solver* solver, Explicit_State state, A
         Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
 
         grad_F[x + y*nx] = grad_Phi_norm;
-        grad_U[x + y*nx] = grad_T_norm;
+        grad_U[x + y*nx] = grad_T_norm; 
         aniso[x + y*nx] = g_theta;
     });
+
+    perlin2d_generate(perlin, nx, ny, 1, 1, 8, iter);
+    simplex2d_generate(simplex, nx, ny, 3, 3, 8, iter);
 }
 
 void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Allen_Cahn_Params params, size_t iter, bool do_debug)
@@ -746,6 +753,8 @@ void explicit_solver_get_maps(Explicit_Solver* solver, Explicit_State state, Sim
     ASSIGN_MAP_NAMED(solver->debug_maps.aniso_factor, "aniso_factor");
     ASSIGN_MAP_NAMED(solver->debug_maps.reaction, "reaction");
     ASSIGN_MAP_NAMED(solver->debug_maps.step_residual, "step_residual");
+    ASSIGN_MAP_NAMED(solver->debug_maps.perlin, "perlin");
+    ASSIGN_MAP_NAMED(solver->debug_maps.simplex, "simplex");
 }
 
 struct Cross_Matrix_Static {
