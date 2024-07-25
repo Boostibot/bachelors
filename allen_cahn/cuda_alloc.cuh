@@ -96,7 +96,7 @@ static void* _cache_alloc(size_t bytes, Cache_Tag* tag, Source_Info source)
     {
         bucket_i = cache->bucket_count++;
         LOG_INFO("CUDA", "Alloc cache made bucket [%i] %s", bucket_i, format_bytes((size_t) bytes).str);
-        TEST(cache->bucket_count < (int) STATIC_ARRAY_SIZE(cache->buckets), "Unexepectedly high ammount of buckets");
+        TEST(cache->bucket_count < (int) ARRAY_LEN(cache->buckets), "Unexepectedly high ammount of buckets");
         cache->buckets[bucket_i].bucket_size = bytes;
     }
 

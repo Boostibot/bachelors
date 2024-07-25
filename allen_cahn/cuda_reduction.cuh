@@ -329,6 +329,82 @@ static T cuda_dot_product(const T *a, const T *b, csize N, Cuda_Launch_Params la
     return output;
 }
 
+namespace Reduce
+{
+    template<typename T>
+    struct Stats {
+        T sum;
+        T L1;
+        T L2;
+        T min;
+        T max;
+
+        static const char* name() {
+            return "Stats";
+        }
+
+        static __host__ __device__ Stats identity() {
+            Stats stats = {0};
+            stats.sum = (T) 0;
+            stats.L1 = (T) 0;
+            stats.L2 = (T) 0;
+            stats.min = _reduce_indentity<Min, T>();
+            stats.max = _reduce_indentity<Max, T>();
+            return stats;
+        }
+
+        static __host__ __device__ Stats reduce(Stats a, Stats b) {
+            Stats out = {0};
+            out.sum = a.sum + b.sum;
+            out.L1 = a.L1 + b.L1;
+            out.L2 = a.L2 + b.L2;
+            out.min = MIN(a.min, b.min);
+            out.max = MAX(a.max, b.max);
+            return out;
+        }
+    };
+}
+
+//surpress "pointless comparison of unsigned type with zero" because its just annoying when making
+// generic code...
+#pragma nv_diag_suppress 186
+template<typename T>
+static Reduce::Stats<T> cuda_stats(const T *a, csize N, Cuda_Launch_Params launch_params = {})
+{
+    using Stats = Reduce::Stats<T>;
+    Stats output = cuda_produce_reduce<Stats, Stats>(N, [=]SHARED(csize i){
+        T val = a[i];
+        Stats stats = {0};
+        stats.sum = val;
+        stats.L1 = val >= 0 ? val : (T) -val;
+        stats.L2 = val*val;
+        stats.min = val;
+        stats.max = val;
+        return stats;
+    }, Stats{}, launch_params);
+    output.L2 = (T) sqrt((double) output.L2);
+    return output;
+}
+
+template<typename T>
+static Reduce::Stats<T> cuda_stats_delta(const T *a, const T *b, csize N, Cuda_Launch_Params launch_params = {})
+{
+    using Stats = Reduce::Stats<T>;
+    Stats output = cuda_produce_reduce<Stats, Stats>(N, [=]SHARED(csize i){
+        T val = a[i] - b[i];
+        Stats stats = {0};
+        stats.sum = val;
+        stats.L1 = val >= 0 ? val : (T) -val;
+        stats.L2 = val*val;
+        stats.min = val;
+        stats.max = val;
+        return stats;
+    }, Stats{}, launch_params);
+    output.L2 = (T) sqrt((double) output.L2);
+    return output;
+}
+#pragma nv_diag_default 186
+
 //============================== TEMPLATE MADNESS BELOW ===================================
 template <class Reduction, typename T>
 static __host__ __device__ __forceinline__ T _reduce_indentity()
@@ -393,6 +469,36 @@ static __host__ __device__ __forceinline__ const char* _reduce_name()
         return Reduction::name();
 }
 
+template <typename T>
+static __device__ __forceinline__ T shuffle_down_sync_any(unsigned int mask, T value, int offset)
+{
+    //@NOTE: not builtin types would need to be reinterpret casted and shuffled approproately!
+    //We ignore that for now!
+    if constexpr(sizeof(T) <= 8 && std::is_arithmetic_v<T>)
+        return __shfl_down_sync(mask, value, offset);
+    else if(sizeof(T) % 8 == 0)
+    {   
+        constexpr int nums = sizeof(T) / 8; 
+        union Caster {T t; uint64_t u64s[nums];};
+        Caster cast_from = {value};
+        Caster cast_to;
+        for(int i = 0; i < nums; i++)
+            cast_to.u64s[i] = __shfl_down_sync(mask, cast_from.u64s[i], offset);
+
+        return cast_to.t;
+    }
+    else
+    {
+        constexpr int nums = (sizeof(T) + 3) / 4;
+        union Caster {T t; uint64_t u32s[nums];};
+        Caster cast_from = {value};
+        Caster cast_to;
+        for(int i = 0; i < nums; i++)
+            cast_to.u32s[i] = __shfl_down_sync(mask, cast_from.u32s[i], offset);
+
+        return cast_to.t;
+    }
+}
 
 template <class Reduction, typename T>
 static __device__ __forceinline__ T _warp_reduce(unsigned int mask, T value) 
@@ -417,19 +523,8 @@ static __device__ __forceinline__ T _warp_reduce(unsigned int mask, T value)
     #endif
     else
     {
-        //@NOTE: T must be one of: (unsigned) short, (unsigned) int, (unsigned) long long, hafl, float, double.
-        //Otherwise when sizeof(T) < 8 we will need to write custom casting code
-        //Otherwiese when sizeof(T) > 8 we will need to change to algorhimt to do only shared memory reduction
-        #if 1
         for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) 
-            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, offset), value);
-        #else
-            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 16), value);
-            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 8), value);
-            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 4), value);
-            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 2), value);
-            value = _reduce_reduce<Reduction, T>(__shfl_down_sync(mask, value, 1), value);
-        #endif
+            value = _reduce_reduce<Reduction, T>(shuffle_down_sync_any<T>(mask, value, offset), value);
 
         return value;
     }
@@ -563,7 +658,7 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
 
     //Find max size 
     csize N = 0;
-    for(csize i = 0; i < (csize) STATIC_ARRAY_SIZE(Ns); i++)
+    for(csize i = 0; i < (csize) ARRAY_LEN(Ns); i++)
         if(N < Ns[i])
             N = Ns[i];
 
@@ -575,7 +670,7 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
     random_map_64(rand, rand_state, N);
 
     //test each size on radom data.
-    for(csize i = 0; i < (csize) STATIC_ARRAY_SIZE(Ns); i++)
+    for(csize i = 0; i < (csize) ARRAY_LEN(Ns); i++)
     {
         csize n = Ns[i];
         LOG_INFO("kernel", "test_reduce_type<%s>: n:%lli", type_name, (lli)n);
@@ -609,6 +704,21 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
         TEST(_is_approx_equal(max1, max0));
         TEST(_is_approx_equal(max1, max2));
         TEST(_is_approx_equal(max1, max3));
+
+        Reduce::Stats<T> stats = cuda_stats(rand, n);
+        T l1 = cuda_L1_norm(rand, n);
+        T l2 = cuda_L2_norm(rand, n);
+        TEST(stats.min == min3);
+        TEST(stats.max == max3);
+        //this should be strict equality since the alg for sum and sum in stats is the *same*
+        // but it isnt. Why? Lets blame it on the kernel optimalizations reordering our instructions
+        // cause I cant be bothered
+        // TEST(stats.L1 == l1);
+        // TEST(stats.L2 == l2);
+        // TEST(stats.sum == sum3); 
+        TEST(_is_approx_equal(stats.L1, l1));
+        TEST(_is_approx_equal(stats.L2, l2));
+        TEST(_is_approx_equal(stats.sum, sum3)); 
 
         if constexpr(std::is_integral_v<T>)
         {

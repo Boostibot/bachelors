@@ -138,7 +138,7 @@ static Cuda_Launch_Bounds cuda_get_launch_bounds(Cuda_Launch_Constraints constra
     {
         if(info.prop.maxThreadsPerMultiProcessor % curr_size == 0)
         {   
-            if(out.preferd_block_sizes_count < (csize) STATIC_ARRAY_SIZE(out.preferd_block_sizes))
+            if(out.preferd_block_sizes_count < (csize) ARRAY_LEN(out.preferd_block_sizes))
                 out.preferd_block_sizes[out.preferd_block_sizes_count++] = curr_size;
             else
                 out.preferd_block_sizes[out.preferd_block_sizes_count - 1] = curr_size;

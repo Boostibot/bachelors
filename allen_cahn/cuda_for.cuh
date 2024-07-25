@@ -519,7 +519,7 @@ static void test_tiled_for(uint64_t seed)
     csize rs[] = {0, 1, 2, 3, 10, 15};
 
     csize max_N = 0;
-    for(csize Ni = 0; Ni < (csize) STATIC_ARRAY_SIZE(Ns); Ni++)
+    for(csize Ni = 0; Ni < (csize) ARRAY_LEN(Ns); Ni++)
         if(max_N < Ns[Ni])
             max_N = Ns[Ni];
 
@@ -534,9 +534,9 @@ static void test_tiled_for(uint64_t seed)
     int input_range = 100;
     int stencil_range = 10;
     srand(seed);
-    for(csize Ni = 0; Ni < (csize) STATIC_ARRAY_SIZE(Ns); Ni++)
+    for(csize Ni = 0; Ni < (csize) ARRAY_LEN(Ns); Ni++)
     {
-        for(csize ri = 0; ri < (csize) STATIC_ARRAY_SIZE(rs); ri++)
+        for(csize ri = 0; ri < (csize) ARRAY_LEN(rs); ri++)
         {
             csize N = Ns[Ni];
             csize r = rs[ri];
@@ -602,7 +602,7 @@ static void test_tiled_for_2D(uint64_t seed)
     csize rs[] = {0, 1, 2, 3};
 
     csize max_N = 0;
-    for(csize Ni = 0; Ni < (csize) STATIC_ARRAY_SIZE(ns); Ni++)
+    for(csize Ni = 0; Ni < (csize) ARRAY_LEN(ns); Ni++)
         if(max_N < ns[Ni])
             max_N = ns[Ni];
 
@@ -619,10 +619,10 @@ static void test_tiled_for_2D(uint64_t seed)
     int stencil_range = 10;
 
     srand(seed);
-    for(csize niy = 0; niy < (csize) STATIC_ARRAY_SIZE(ns); niy++)
-        for(csize nix = 0; nix < (csize) STATIC_ARRAY_SIZE(ns); nix++)
-            for(csize riy = 0; riy < (csize) STATIC_ARRAY_SIZE(rs); riy++)
-                for(csize rix = 0; rix < (csize) STATIC_ARRAY_SIZE(rs); rix++)
+    for(csize niy = 0; niy < (csize) ARRAY_LEN(ns); niy++)
+        for(csize nix = 0; nix < (csize) ARRAY_LEN(ns); nix++)
+            for(csize riy = 0; riy < (csize) ARRAY_LEN(rs); riy++)
+                for(csize rix = 0; rix < (csize) ARRAY_LEN(rs); rix++)
                 {
                     csize nx = ns[nix];
                     csize ny = ns[niy];

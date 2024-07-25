@@ -53,7 +53,7 @@ typedef unsigned long long llu;
     #define BRACE_INIT(Struct_Type) (Struct_Type)
 #endif 
 
-#define STATIC_ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#define ARRAY_LEN(array) (sizeof(array) / sizeof((array)[0]))
 
 #ifndef EXPORT
     #define EXPORT

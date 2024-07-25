@@ -16,43 +16,54 @@
 //   throught the maps and display/serialize only the desired one in solver agnostic way. We use this
 //   to quickly define new debug maps without having to change almost anything.
 
-// #define DO_FLOATS 
-
 #include <stddef.h>
 
-#ifdef DO_FLOATS
+#define COMPILE_GRAPHICS  
+// #define COMPILE_NETCDF  
+#ifndef CUSTOM_SETTINGS
+// #define COMPILE_BENCHMARKS
+// #define COMPILE_TESTS
+#define COMPILE_SIMULATION
+// #define COMPILE_THRUST
+#define COMPILE_NOISE
+
+#define USE_CUSTOM_REDUCE
+// #define USE_TILED_FOR 
+// #define USE_FLOATS
+#endif
+
+#ifdef USE_FLOATS
     typedef float Real;
 #else
     typedef double Real;
 #endif
 
-typedef struct Sim_Real_Vector {
-    Real* data;
+enum Sim_Boundary_Type {
+    BOUNDARY_PERIODIC = 0, 
+    BOUNDARY_DIRICHLET_ZERO, 
+    BOUNDARY_NEUMANN_ZERO, 
+};
+
+typedef struct Sim_Params{
     int nx;
     int ny;
-} Sim_Real_Vector; 
 
-typedef struct Allen_Cahn_Params{
-    int nx;
-    int ny;
+    double L0; 
 
-    double L0; //simulation region size in real units
-
-    double dt; //time step
-    double L;  //latent heat
-    double xi; //boundary thickness
-    double a;  //
+    double dt;
+    double L; 
+    double xi;
+    double a;  
     double b;
     double alpha;
     double beta;
-    double Tm; //melting point
-    double Tinit; //currenlty unsused
-    double gamma; //Crank-Nicolson factor: 
+    double gamma; 
+    double Tm; 
+    double exact_R_ini; //TODO: remove
 
-    double S; //anisotrophy strength
-    double m0; //anisotrophy frequency (?)
-    double theta0; //anisotrophy orientation
-    bool do_anisotropy;
+    double S; 
+    double m0; 
+    double theta0;
 
     double T_tolerance;
     double Phi_tolerance;
@@ -65,74 +76,118 @@ typedef struct Allen_Cahn_Params{
     bool do_corrector_loop;
     bool do_corrector_guess;
 
-    double noise_T_strength;
-    double noise_T_min;      
-    double noise_T_max;
-    double noise_T_timestep; //Regenerates a new noise map ever 
-
-    double noise_Phi_strength;
-    double noise_Phi_min;      
-    double noise_Phi_max;
-
-    double noise_der_Phi_strength;
-    double noise_der_Phi_min;      
-    double noise_der_Phi_max;
-
-    double noise_Phi_timestep; //Regenerates a new noise map ever 
     bool do_debug;
-    bool do_noise;
     bool do_stats;
     bool do_stats_step_residual;
-} Allen_Cahn_Params;
+    bool do_exact;
 
-typedef struct Allen_Cahn_Stats{
-    Real L2_step_residuals[20];
-    Real Lmax_step_residuals[20];
-    int step_residuals;
+    Sim_Boundary_Type T_boundary;
+    Sim_Boundary_Type Phi_boundary;
+} Sim_Params;
 
-    int T_iters;
-    int Phi_iters;
+enum {MAX_STEP_RESIDUALS = 20};
 
-    Real T_error;
-    Real Phi_errror;
-} Allen_Cahn_Stats;
+typedef struct Float_Array {
+    double* data;
+    size_t len;
+    size_t capacity;
+} Float_Array;
 
-typedef enum Solver_Type{
+typedef struct Sim_Stats_Vectors{
+    Float_Array time;
+    Float_Array iter;
+    
+    Float_Array T_delta_L1;
+    Float_Array T_delta_L2;
+    Float_Array T_delta_max;
+    Float_Array T_delta_min;
+
+    Float_Array phi_delta_L1;
+    Float_Array phi_delta_L2;
+    Float_Array phi_delta_max;
+    Float_Array phi_delta_min;
+
+    Float_Array phi_iters;
+    Float_Array T_iters;
+    Float_Array phi_ellapsed_time; //TODO
+    Float_Array T_ellapsed_time;
+
+    Float_Array step_res_L1[MAX_STEP_RESIDUALS];
+    Float_Array step_res_L2[MAX_STEP_RESIDUALS];
+    Float_Array step_res_max[MAX_STEP_RESIDUALS];
+    Float_Array step_res_min[MAX_STEP_RESIDUALS];
+} Sim_Stats_Vectors;
+
+typedef struct Sim_Stats {
+    Sim_Stats_Vectors vectors;
+    size_t step_res_count;
+} Sim_Stats;
+
+typedef struct Sim_Step_Info {
+    size_t iter;
+    double sim_time;
+} Sim_Step_Info;
+
+#include <stdlib.h>
+static void float_array_reserve(Float_Array* array, size_t to_capaciy)
+{
+    if(array->capacity < to_capaciy)
+    {
+        array->capacity = array->capacity*3/2 + 8;
+        array->data = (double*) realloc(array->data, array->capacity*sizeof(double));
+    }
+} 
+
+static void float_array_push(Float_Array* array, double val)
+{
+    float_array_reserve(array, array->len + 1);
+    array->data[array->len ++] = val;
+}
+
+static void float_array_clear(Float_Array* array)
+{
+    array->len = 0;
+}
+
+typedef enum Sim_Solver_Type{
     SOLVER_TYPE_NONE = 0,
-    SOLVER_TYPE_EXPLICIT,
+    SOLVER_TYPE_EXPLICIT_EULER,
     SOLVER_TYPE_EXPLICIT_RK4,
     SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE,
     SOLVER_TYPE_SEMI_IMPLICIT,
     SOLVER_TYPE_SEMI_IMPLICIT_COUPLED,
+    SOLVER_TYPE_EXACT,
 
     SOLVER_TYPE_ENUM_COUNT,
-} Solver_Type;
+} Sim_Solver_Type;
 
-static const char* solver_type_to_cstring(Solver_Type type)
+static const char* solver_type_to_cstring(Sim_Solver_Type type)
 {
     switch(type)
     {
         default: return "unknown";
         case SOLVER_TYPE_NONE: return "none";
-        case SOLVER_TYPE_EXPLICIT: return "explicit";
+        case SOLVER_TYPE_EXPLICIT_EULER: return "explicit";
         case SOLVER_TYPE_EXPLICIT_RK4: return "explicit-rk4";
         case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: return "explicit-rk4-adaptive";
         case SOLVER_TYPE_SEMI_IMPLICIT: return "semi-implicit";
         case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: return "semi-implicit-coupled"; 
+        case SOLVER_TYPE_EXACT: return "exact"; 
     }
 }
 
-static int solver_type_required_history(Solver_Type type) 
+static int solver_type_required_history(Sim_Solver_Type type) 
 {
     switch(type)
     {
         default:
         case SOLVER_TYPE_NONE: return 0;
-        case SOLVER_TYPE_EXPLICIT: return 2;
+        case SOLVER_TYPE_EXPLICIT_EULER: return 2;
         case SOLVER_TYPE_EXPLICIT_RK4: return 2;
         case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: return 2;
         case SOLVER_TYPE_SEMI_IMPLICIT: return 2;
         case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: return 2;
+        case SOLVER_TYPE_EXACT: return 1;
     }
 }
 
@@ -166,9 +221,8 @@ typedef struct Explicit_State{
 
 typedef Explicit_State Explicit_RK4_Solver;
 typedef Explicit_State Explicit_RK4_Adaptive_Solver;
-
-//Semi implicit
 typedef Explicit_State Semi_Implicit_State;
+typedef Explicit_State Exact_State;
 
 typedef struct Semi_Implicit_Solver {
     struct {
@@ -212,9 +266,10 @@ typedef struct Semi_Implicit_Coupled_Solver {
 typedef struct Sim_State {
     int nx;
     int ny;
-    Solver_Type type;
+    Sim_Solver_Type type;
 
     union {
+        Exact_State exact;
         Explicit_State expli;
         Semi_Implicit_State impli;
         Semi_Implicit_Coupled_State impli_coupled;
@@ -224,9 +279,10 @@ typedef struct Sim_State {
 typedef struct Sim_Solver  {
     int nx;
     int ny;
-    Solver_Type type;
+    Sim_Solver_Type type;
 
     union {
+        int exact;
         Explicit_Solver expli;
         Semi_Implicit_Solver impli;
         Semi_Implicit_Coupled_Solver impli_coupled;
@@ -241,10 +297,10 @@ typedef struct Sim_Map {
     int ny;
 } Sim_Map;
 
-extern "C" void sim_solver_reinit(Sim_Solver* solver, Solver_Type type, int nx, int ny);
-extern "C" void sim_states_reinit(Sim_State* states, int state_count, Solver_Type type, int nx, int ny);
+extern "C" void sim_solver_reinit(Sim_Solver* solver, Sim_Solver_Type type, int nx, int ny);
+extern "C" void sim_states_reinit(Sim_State* states, int state_count, Sim_Solver_Type type, int nx, int ny);
 extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count);
-extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Allen_Cahn_Params params, Allen_Cahn_Stats* stats_or_null);
+extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, Sim_Step_Info info, Sim_Params params, Sim_Stats* stats_or_null);
 
 typedef enum {
     MODIFY_UPLOAD,
@@ -252,8 +308,8 @@ typedef enum {
 } Sim_Modify;
 
 extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify);
-extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t size, Sim_Modify modify);
-extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t size, Sim_Modify modify);
+extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t count, Sim_Modify modify);
+extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t count, Sim_Modify modify);
 
 extern "C" bool run_tests();
 extern "C" bool run_benchmarks(int N);
@@ -265,18 +321,18 @@ extern "C" bool run_benchmarks(int N);
 // things that shouldnt be combined and the best would be to leave the user code coupled to a particular solver since I cannot 
 // figure out a seemless fitting interface.
 
-#if 1
+#if 0
 #include <string.h>
 static void sim_example()
 {
     //Construct by zero init
-    Allen_Cahn_Params params = {0};
+    Sim_Params params = {0};
     Sim_Solver solver = {0};
     Sim_State states[SIM_HISTORY_MAX] = {0};
     
     int nx = 20;
     int ny = 20;
-    Solver_Type type = SOLVER_TYPE_EXPLICIT; 
+    Sim_Solver_Type type = SOLVER_TYPE_EXPLICIT_EULER; 
     (void) type; //for some reason we get unreferenced variable warning here even though it clearly is used (?)
     
     //Init solver. It returns the MINIMAL number of states it requires

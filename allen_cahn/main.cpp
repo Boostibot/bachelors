@@ -5,96 +5,88 @@
 #include "log.h"
 #include "assert.h"
 
+#include "assert.h"
 #include <cmath>
 #include <stddef.h>
-
-#include "assert.h"
 #include <cuda_runtime.h> 
-#include <netcdf.h>
+#include "exact.h"
 
-#define WINDOW_TITLE        "sim"
-#define DEF_WINDOW_WIDTH	800 
-#define DEF_WINDOW_HEIGHT	800
+#define WINDOW_TITLE                "sim"
+#define DEF_WINDOW_WIDTH	        1024 
+#define DEF_WINDOW_HEIGHT	        1024
 
-#define FPS_DISPLAY_FREQ    (double) 50000
-#define RENDER_FREQ         (double) 30
-#define IDLE_RENDER_FREQ    (double) 20
-#define POLL_FREQ           (double) 30
-#define FREE_RUN_SYM_FPS    (double) 200000000
-#define COMPILE_GRAPHICS  
+#define FPS_DISPLAY_PERIOD          0.0
+#define SCREEN_UPDATE_PERIOD        0.03
+#define SCREEN_UPDATE_IDLE_PERIOD   0.05
+#define POLL_EVENTS_PERIOD          0.03
+#define FREE_RUN_PERIOD             0.001
 
 static double clock_s();
 static void wait_s(double seconds);
 
 typedef struct App_State {
+    time_t init_time;
     bool is_in_step_mode;
     bool is_in_debug_mode;
-    uint8_t render_target; //0:phi 1:T rest: debug_option at index - 2; 
     double remaining_steps;
     double step_by;
+    double sim_time;
     double dt;
-    int iter;
-    int snapshot_index;
-    time_t init_time;
+    size_t iter;
+    int render_target; //0:phi 1:T rest: debug_option at index - 2; 
 
-    Allen_Cahn_Stats stats_last;
-    Allen_Cahn_Stats stats_summed;
-    int stats_summed_over_iters;
-
-    Allen_Cahn_Config   config;
+    int count_written_snapshots;
+    int count_written_stats;
+    int count_written_configs;
+    Sim_Stats stats;
+    Sim_Config config;
 
     Sim_Solver solver;
     Sim_State  states[SIM_HISTORY_MAX];
-    int used_states;
+    int        used_states;
 } App_State;
 
-void sim_make_initial_conditions(Real* initial_phi_map, Real* initial_T_map, Allen_Cahn_Config config)
+void sim_make_initial_conditions(Real* initial_phi_map, Real* initial_T_map, const Sim_Config& config)
 {
-    Allen_Cahn_Params params = config.params;
-    Allen_Cahn_Initial_Conditions initial = config.initial_conditions;
+    const Sim_Params& params = config.params;
+    Exact_Params exact_params = get_static_exact_params(params);
     for(size_t y = 0; y < (size_t) params.ny; y++)
     {
         for(size_t x = 0; x < (size_t) params.nx; x++)
         {
             Vec2 pos = Vec2{((x+0.5)) / params.nx * params.L0, ((y+0.5)) / params.ny * params.L0}; 
             size_t i = x + y*(size_t) params.nx;
+            
+            if(config.params.do_exact)
+            {
+                Real r = hypot(pos.x - params.L0/2, pos.y - params.L0/2); 
 
-            double center_dist = hypot(initial.circle_center.x - pos.x, initial.circle_center.y - pos.y);
+                initial_phi_map[i] = exact_corresponing_phi_ini(r, exact_params);
+                initial_T_map[i] = exact_u(0, r, exact_params);
+            }
+            else
+            {
+                double center_dist = hypot(config.init_circle_center.x - pos.x, config.init_circle_center.y - pos.y);
 
-            bool is_within_cube = (initial.square_from.x <= pos.x && pos.x < initial.square_to.x) && 
-			    (initial.square_from.y <= pos.y && pos.y < initial.square_to.y);
+                bool is_within_cube = (config.init_square_from.x <= pos.x && pos.x < config.init_square_to.x) && 
+                    (config.init_square_from.y <= pos.y && pos.y < config.init_square_to.y);
 
-            double circle_normed_sdf = (initial.circle_outer_radius - center_dist) / (initial.circle_outer_radius - initial.circle_inner_radius);
-            if(circle_normed_sdf > 1)
-                circle_normed_sdf = 1;
-            if(circle_normed_sdf < 0)
-                circle_normed_sdf = 0;
+                double circle_normed_sdf = (config.init_circle_outer_radius - center_dist) / (config.init_circle_outer_radius - config.init_circle_inner_radius);
+                if(circle_normed_sdf > 1)
+                    circle_normed_sdf = 1;
+                if(circle_normed_sdf < 0)
+                    circle_normed_sdf = 0;
 
-            double cube_sdf = is_within_cube ? 1 : 0;
-            double factor = cube_sdf > circle_normed_sdf ? cube_sdf : circle_normed_sdf;
+                double cube_sdf = is_within_cube ? 1 : 0;
+                double factor = cube_sdf > circle_normed_sdf ? cube_sdf : circle_normed_sdf;
 
-            initial_phi_map[i] = (Real) (factor*initial.inside_phi + (1 - factor)*initial.outside_phi);
-            initial_T_map[i] = (Real) (factor*initial.inside_T + (1 - factor)*initial.outside_T);
+                initial_phi_map[i] = (Real) (factor*config.init_inside_phi + (1 - factor)*config.init_outside_phi);
+                initial_T_map[i] = (Real) (factor*config.init_inside_T + (1 - factor)*config.init_outside_T);
+            }
+
         }
     }
 }
-
-#include <filesystem>
-
-template <typename Func>
-struct Defered
-{
-    Func func;
-    Defered(Func f) : func(f) {} 
-    ~Defered() { func(); }
-};
-
-#define CONCAT2(x, y) x ## y
-#define CONCAT(x, y) CONCAT2(x, y)
-#define UNIQUE(name) CONCAT(name, __LINE__)
-
-//This will only work with c++17 or later but whatever
-#define defer(statement) auto UNIQUE(_defered_) = Defered{[&]{ statement; }}
 
 int maps_find(const Sim_Map* maps, int map_count, const char* name)
 {
@@ -109,24 +101,21 @@ int maps_find(const Sim_Map* maps, int map_count, const char* name)
     return -1;
 }
 
-void simulation_state_reload(App_State* app, Allen_Cahn_Config config)
+void simulation_state_reload(App_State* app, Sim_Config config)
 {
     //@NOTE: I am failing to link to this TU from nvcc without using at least one cuda function
     // so here goes something harmless.
     cudaGetErrorString(cudaSuccess);
-    
     int ny = config.params.ny;
     int nx = config.params.nx;
 
     size_t bytes_size = (size_t) (ny * nx) * sizeof(Real);
     Real* initial_F = (Real*) malloc(bytes_size);
     Real* initial_U = (Real*) malloc(bytes_size);
-    defer(free(initial_F));
-    defer(free(initial_U));
 
-    app->used_states = solver_type_required_history(config.solver);
-    sim_solver_reinit(&app->solver, config.solver, nx, ny);
-    sim_states_reinit(app->states, app->used_states, config.solver, nx, ny);
+    app->used_states = solver_type_required_history(config.simul_solver);
+    sim_solver_reinit(&app->solver, config.simul_solver, nx, ny);
+    sim_states_reinit(app->states, app->used_states, config.simul_solver, nx, ny);
     sim_make_initial_conditions(initial_F, initial_U, config);
     
     Sim_Map maps[SIM_MAPS_MAX] = {0};
@@ -142,36 +131,45 @@ void simulation_state_reload(App_State* app, Allen_Cahn_Config config)
 
     app->config = config;
 
-    app->init_time = time(NULL);   // get time now
+    app->init_time = time(NULL); 
+    free(initial_F);
+    free(initial_U);
 }
 
 
 #ifdef COMPILE_GRAPHICS
 #include "gl.h"
 #include <GLFW/glfw3.h>
-// #include "external/glfw/glfw3.h"
 
 void glfw_resize_func(GLFWwindow* window, int width, int heigth);
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
 #endif
 
-bool save_netcfd_file(App_State* app);
 
+enum {
+    SAVE_NETCDF = 1,
+    SAVE_CSV = 2,
+    SAVE_BIN = 4,
+    SAVE_STATS = 8,
+    SAVE_CONFIG = 16,
+    SAVE_ALL = 31
+};
+bool save_state(App_State* app, int flags, int snapshot_index);
 
 int main()
 {
-    Allen_Cahn_Config config = {0};
+    static App_State app_data = {};
+    static Sim_Config config = {};
     if(allen_cahn_read_config("config.ini", &config) == false)
         return 1;
 
-    if(config.run_tests)
+    if(config.app_run_tests)
         run_tests();
-    if(config.run_benchmarks)
+    if(config.app_run_benchmarks)
         run_benchmarks(config.params.nx * config.params.ny);
-    if(config.run_simulation == false)
+    if(config.app_run_simulation == false)
         return 0;
 
-    App_State app_data = {0};
     App_State* app = (App_State*) &app_data;
     app->is_in_step_mode = true;
     app->remaining_steps = 0;
@@ -179,13 +177,13 @@ int main()
     
     simulation_state_reload(app, config);
     
-    if(config.snapshots.snapshot_initial_conditions)
-        save_netcfd_file(app);
+    if(config.snapshot_initial_conditions)
+        save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, 0);
 
     #define LOG_INFO_CONFIG_FLOAT(var) LOG_INFO("config", #var " = %.2lf", (double) config.params.var);
     #define LOG_INFO_CONFIG_INT(var) LOG_INFO("config", #var " = %i", (int) config.params.var);
 
-    LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.solver));
+    LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.simul_solver));
 
     LOG_INFO_CONFIG_INT(nx);
     LOG_INFO_CONFIG_INT(ny);
@@ -199,7 +197,6 @@ int main()
     LOG_INFO_CONFIG_FLOAT(alpha);
     LOG_INFO_CONFIG_FLOAT(beta);
     LOG_INFO_CONFIG_FLOAT(Tm);
-    LOG_INFO_CONFIG_FLOAT(Tinit);
 
     LOG_INFO_CONFIG_FLOAT(S);
     LOG_INFO_CONFIG_FLOAT(theta0);
@@ -212,7 +209,7 @@ int main()
     #endif // COMPILE_GRAPHICS
 
     //OPENGL setup
-    if(config.interactive_mode)
+    if(config.app_interactive_mode)
     {   
         #ifdef COMPILE_GRAPHICS
         TEST(glfwInit(), "Failed to init glfw");
@@ -243,10 +240,8 @@ int main()
         glfwSetKeyCallback(window, glfw_key_func);
         glfwSwapInterval(0);
         gl_init((void*) glfwGetProcAddress);
-
     
         double time_display_last_time = 0;
-    
         double render_last_time = 0;
         double simulated_last_time = 0;
         double poll_last_time = 0;
@@ -257,36 +252,35 @@ int main()
         int snapshot_times_i = 0;
         bool end_reached = false;
 
-        double curr_real_time = 0;
 	    while (!glfwWindowShouldClose(window))
         {
             double frame_start_time = clock_s();
 
-            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshots.snapshot_every;
-            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.stop_after / config.snapshots.snapshot_times;
+            bool update_screen = frame_start_time - render_last_time > SCREEN_UPDATE_PERIOD;
+            bool update_frame_time_display = frame_start_time - time_display_last_time > FPS_DISPLAY_PERIOD;
+            bool poll_events = frame_start_time - poll_last_time > POLL_EVENTS_PERIOD;
 
-            if(curr_real_time >= next_snapshot_every)
+            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
+            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
+
+            if(app->sim_time >= next_snapshot_every)
             {
                 snapshot_every_i += 1;
-                save_netcfd_file(app);
+                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
             }
 
-            if(curr_real_time >= next_snapshot_times && end_reached == false)
+            if(app->sim_time >= next_snapshot_times && end_reached == false)
             {
                 snapshot_times_i += 1;
-                save_netcfd_file(app);
+                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
             }
 
-            if(curr_real_time >= config.stop_after && end_reached == false)
+            if(app->sim_time >= config.simul_stop_time && end_reached == false)
             {
-                LOG_INFO("app", "reached stop time %lfs. Simulation paused.", config.stop_after);
+                LOG_INFO("app", "reached stop time %lfs. Simulation paused.", config.simul_stop_time);
                 app->is_in_step_mode = true;
                 end_reached = true;
             }
-
-            bool update_screen = frame_start_time - render_last_time > 1.0/RENDER_FREQ;
-            bool update_frame_time_display = frame_start_time - time_display_last_time > 1.0/FPS_DISPLAY_FREQ;
-            bool poll_events = frame_start_time - poll_last_time > 1.0/POLL_FREQ;
 
             if(update_screen)
             {
@@ -299,13 +293,13 @@ int main()
                 if(0 <= target && target < SIM_MAPS_MAX)
                     selected_map = maps[target];
 
-                draw_sci_cuda_memory("main", selected_map.nx, selected_map.ny, (float) app->config.display_min, (float) app->config.display_max, config.linear_filtering, selected_map.data);
+                draw_sci_cuda_memory("main", selected_map.nx, selected_map.ny, (float) app->config.app_display_min, (float) app->config.app_display_max, config.app_linear_filtering, selected_map.data);
                 glfwSwapBuffers(window);
             }
 
             if(update_frame_time_display)
             {
-                glfwSetWindowTitle(window, format_string("%s step: %3.3lfms | real: %8.6lfms", solver_type_to_cstring(app->config.solver), processing_time * 1000, curr_real_time*1000).c_str());
+                glfwSetWindowTitle(window, format_string("%s step: %3.3lfms | real: %8.6lfms", solver_type_to_cstring(app->config.simul_solver), processing_time * 1000, app->sim_time*1000).c_str());
                 time_display_last_time = frame_start_time;
             }
 
@@ -313,31 +307,19 @@ int main()
             if(app->is_in_step_mode)
                 step_sym = app->remaining_steps > 0.5;
             else
-                step_sym = frame_start_time - simulated_last_time > 1.0/app->step_by/FREE_RUN_SYM_FPS;
+                step_sym = frame_start_time - simulated_last_time > FREE_RUN_PERIOD/app->step_by;
 
             if(step_sym)
             {
                 simulated_last_time = frame_start_time;
                 app->remaining_steps -= 1;
 
-                Allen_Cahn_Stats stats = {0};
                 app->config.params.do_debug = app->is_in_debug_mode;
-                double solver_start_time = clock_s();
-                curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, &stats);
-                double solver_end_time = clock_s();
 
-                app->stats_last = stats;
-                app->stats_summed.Phi_errror += stats.Phi_errror;
-                app->stats_summed.T_error += stats.T_error;
-                app->stats_summed.Phi_iters += stats.Phi_iters;
-                app->stats_summed.T_iters += stats.T_iters;
-                app->stats_summed.step_residuals = stats.step_residuals;
-                for(size_t z = 0; z < sizeof(stats.L2_step_residuals) / sizeof(int); z++)
-                {
-                    app->stats_summed.L2_step_residuals[z] += stats.L2_step_residuals[z];
-                    app->stats_summed.Lmax_step_residuals[z] += stats.Lmax_step_residuals[z];
-                }
-                app->stats_summed_over_iters += 1;
+                Sim_Step_Info step_info = {app->iter, app->sim_time};
+                double solver_start_time = clock_s();
+                app->sim_time += sim_solver_step(&app->solver, app->states, app->used_states, step_info, app->config.params, &app->stats);
+                double solver_end_time = clock_s();
 
                 processing_time = solver_end_time - solver_start_time;
                 app->iter += 1;
@@ -353,11 +335,10 @@ int main()
             app->dt = end_frame_time - frame_start_time;
 
             //if is idle for the last 0.5 seconds limit the framerate to IDLE_RENDER_FREQ
-            double idle_frame_time = 1/IDLE_RENDER_FREQ;
             bool do_frame_limiting = simulated_last_time + 0.5 < frame_start_time;
             do_frame_limiting = true;
-            if(do_frame_limiting && app->dt < idle_frame_time)
-                wait_s(idle_frame_time - app->dt);
+            if(do_frame_limiting && app->dt < SCREEN_UPDATE_IDLE_PERIOD)
+                wait_s(SCREEN_UPDATE_IDLE_PERIOD - app->dt);
         }
     
         glfwDestroyWindow(window);
@@ -367,48 +348,42 @@ int main()
     else
     {
         app->is_in_debug_mode = false;
-        int iters = (int) (config.stop_after / config.params.dt);
-        int snapshot_every_i = 0;
-        int snapshot_times_i = 0;
+        size_t iters = (size_t) ceil(config.simul_stop_time / config.params.dt);
+        size_t snapshot_every_i = 0;
+        size_t snapshot_times_i = 0;
         bool end_reached = false;
         double start_time = clock_s();
         double last_notif_time = 0;
 
-        double curr_real_time = 0;
         for(; app->iter <= iters; app->iter++)
         {
             double now = clock_s();
             
-            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshots.snapshot_every;
-            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.stop_after / config.snapshots.snapshot_times;
+            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
+            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
 
-            if(curr_real_time >= next_snapshot_every)
+            if(app->sim_time >= next_snapshot_every)
             {
                 snapshot_every_i += 1;
-                save_netcfd_file(app);
+                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
             }
 
-            if(curr_real_time >= next_snapshot_times && end_reached == false)
+            if(app->sim_time >= next_snapshot_times && end_reached == false)
             {
                 snapshot_times_i += 1;
-                save_netcfd_file(app);
+                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
             }
 
-            //make sure we say 0% and 100%
             if(now - last_notif_time > 1 || app->iter == iters || app->iter == 0)
             {
                 last_notif_time = now;
                 LOG_INFO("app", "... completed %2lf%%", (double) app->iter * 100 / iters);
-
                 if(app->iter == iters)
                     break;
             }
 
-            Allen_Cahn_Stats stats = {0};
-            app->config.params.do_debug = app->is_in_debug_mode;
-            curr_real_time += sim_solver_step(&app->solver, app->states, app->used_states, app->iter, app->config.params, &stats);
-
-
+            Sim_Step_Info step_info = {app->iter, app->sim_time};
+            app->sim_time += sim_solver_step(&app->solver, app->states, app->used_states, step_info, app->config.params, &app->stats);
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
@@ -425,8 +400,6 @@ int main()
 void glfw_resize_func(GLFWwindow* window, int width, int heigth)
 {
     (void) window;
-	// make sure the viewport matches the new window dimensions; note that width and 
-	// heigth will be significantly larger than specified on retina displays.
 	glViewport(0, 0, width, heigth);
 }
 
@@ -446,11 +419,6 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
             app->is_in_step_mode = !app->is_in_step_mode;
             LOG_INFO("APP", "Simulation %s", app->is_in_step_mode ? "paused" : "running");
         }
-        if(key == GLFW_KEY_A)
-        {
-            app->config.params.do_anisotropy = !app->config.params.do_anisotropy;
-            LOG_INFO("APP", "Anisotropy %s", app->config.params.do_anisotropy ? "true" : "false");
-        }
         if(key == GLFW_KEY_D)
         {
             app->is_in_debug_mode = !app->is_in_debug_mode;
@@ -458,8 +426,8 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
         }
         if(key == GLFW_KEY_L)
         {
-            app->config.linear_filtering = !app->config.linear_filtering;
-            LOG_INFO("APP", "Linear FIltering %s", app->config.linear_filtering ? "true" : "false");
+            app->config.app_linear_filtering = !app->config.app_linear_filtering;
+            LOG_INFO("APP", "Linear FIltering %s", app->config.app_linear_filtering ? "true" : "false");
         }
         if(key == GLFW_KEY_C)
         {
@@ -469,14 +437,14 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
         if(key == GLFW_KEY_S)
         {
             LOG_INFO("APP", "On demand snapshot triggered");
-            save_netcfd_file(app);
+            save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
         }
         if(key == GLFW_KEY_R)
         {
             LOG_INFO("APP", "Input range to display in form 'MIN space MAX'");
 
-            double new_display_max = app->config.display_max;
-            double new_display_min = app->config.display_min;
+            double new_display_max = app->config.app_display_max;
+            double new_display_min = app->config.app_display_min;
             if(scanf("%lf %lf", &new_display_min, &new_display_max) != 2)
             {
                 LOG_INFO("APP", "Bad range syntax!");
@@ -484,8 +452,8 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
             else
             {
                 LOG_INFO("APP", "displaying range [%.2lf, %.2lf]", new_display_min, new_display_max);
-                app->config.display_max = (Real) new_display_max;
-                app->config.display_min = (Real) new_display_min;
+                app->config.app_display_max = (Real) new_display_max;
+                app->config.app_display_min = (Real) new_display_min;
             }
         }
 
@@ -504,20 +472,19 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
             }
         }
 
-        uint8_t new_render_target = (uint8_t) -1;
-        //Switching of render targets. 0 is Phi 1 is T
-        if(key == GLFW_KEY_F1) new_render_target= 0;
-        if(key == GLFW_KEY_F2) new_render_target= 1;
-        if(key == GLFW_KEY_F3) new_render_target= 2;
-        if(key == GLFW_KEY_F4) new_render_target= 3;
-        if(key == GLFW_KEY_F5) new_render_target= 4;
-        if(key == GLFW_KEY_F6) new_render_target= 5;
-        if(key == GLFW_KEY_F7) new_render_target= 6;
-        if(key == GLFW_KEY_F8) new_render_target= 7;
-        if(key == GLFW_KEY_F9) new_render_target= 8;
-        if(key == GLFW_KEY_F10) new_render_target= 9;
+        int new_render_target = -1;
+        if(key == GLFW_KEY_F1) new_render_target = 0;
+        if(key == GLFW_KEY_F2) new_render_target = 1;
+        if(key == GLFW_KEY_F3) new_render_target = 2;
+        if(key == GLFW_KEY_F4) new_render_target = 3;
+        if(key == GLFW_KEY_F5) new_render_target = 4;
+        if(key == GLFW_KEY_F6) new_render_target = 5;
+        if(key == GLFW_KEY_F7) new_render_target = 6;
+        if(key == GLFW_KEY_F8) new_render_target = 7;
+        if(key == GLFW_KEY_F9) new_render_target = 8;
+        if(key == GLFW_KEY_F10) new_render_target = 9;
         
-        if(new_render_target != (uint8_t) -1)
+        if(new_render_target != -1)
         {
             Sim_Map maps[SIM_MAPS_MAX] = {0};
             sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
@@ -557,108 +524,307 @@ static void wait_s(double seconds)
     std::this_thread::sleep_until(sleep_til);
 }
 
+bool save_bin_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi);
+bool save_csv_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi);
 
-bool save_netcfd_file(App_State* app)
+bool load_bin_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi);
+bool load_csv_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi);
+
+bool save_csv_stat_file(const char* filename, size_t from, size_t to, Sim_Stats stats);
+bool save_netcfd_file(const char* filename, App_State* app);
+
+#include <cstdio>
+#define BIN_FILE_MAGIC 0x11223344
+bool save_bin_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi)
+{
+    bool state = false;
+    FILE* file = fopen(filename, "wb");
+    if(file != NULL)
+    {
+        size_t N = (size_t) (nx*ny);
+        int magic = BIN_FILE_MAGIC;
+        fwrite(&magic, sizeof magic, 1, file);
+        fwrite(&nx, sizeof nx, 1, file);
+        fwrite(&ny, sizeof ny, 1, file);
+        fwrite(&iter, sizeof iter, 1, file);
+        fwrite(&t, sizeof t, 1, file);
+        fwrite(T, sizeof(double), N, file);
+        fwrite(phi, sizeof(double), N, file);
+
+        state = ferror(file) == 0;
+        fclose(file);
+    }
+    if(state == false)
+        LOG_ERROR("APP", "Error saving bin file '%s'", filename);
+    return state;
+}
+
+bool load_bin_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi)
+{
+    bool state = false;
+    FILE* file = fopen(filename, "rb");
+    if(file != NULL)
+    {
+        int magic = 0;
+        fread(&magic, sizeof magic, 1, file);
+        state = magic == BIN_FILE_MAGIC;
+
+        fread(nx, sizeof *nx, 1, file);
+        fread(nx, sizeof *nx, 1, file);
+        fread(ny, sizeof *ny, 1, file);
+        fread(iter, sizeof *iter, 1, file);
+        fread(t, sizeof *t, 1, file);
+
+        *T = NULL;
+        *phi = NULL;
+        state = state && ferror(file) == 0;
+        if(state && nx > 0 && ny > 0)
+        {
+            size_t map_size = (size_t) (*nx**ny)*sizeof(double);
+            *T = (double*) malloc(map_size);
+            *phi = (double*) malloc(map_size);
+        
+            fwrite(T, map_size, 1, file);
+            fwrite(phi, map_size, 1, file);
+
+            state = ferror(file) == 0;
+        }
+        fclose(file);
+    }
+    if(state == false)
+        LOG_ERROR("APP", "Error loading bin file '%s'", filename);
+    return state;
+}
+bool save_csv_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi)
+{
+    bool state = false;
+    FILE* file = fopen(filename, "wb");
+    if(file != NULL)
+    {
+        fprintf(file, "%i,%i,%lli,%.8lf\n", nx, ny, (long long) iter, t);
+        for(int y = 0; y < ny; y++)
+        {
+            if(nx > 0)
+                fprintf(file, "%lf", T[0 + y*nx]);
+
+            for(int x = 1; x < nx; x++)
+                fprintf(file, ",%lf", T[x + y*nx]);
+
+            fprintf(file, "\n");
+        }
+
+        for(int y = 0; y < ny; y++)
+        {
+            if(nx > 0)
+                fprintf(file, "%lf", phi[0 + y*nx]);
+
+            for(int x = 1; x < nx; x++)
+                fprintf(file, ",%lf", phi[x + y*nx]);
+
+            fprintf(file, "\n");
+        }
+
+        state = ferror(file) == 0;
+        fclose(file);
+    }
+    if(state == false)
+        LOG_ERROR("APP", "Error saving cvs file '%s'", filename);
+    return state;
+}
+
+bool load_csv_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi)
+{
+    bool state = false;
+    FILE* file = fopen(filename, "rb");
+    if(file != NULL)
+    {
+        long long iterll = 0;
+        state = 4 == fscanf(file, "%i,%i,%lli,%lf\n", nx, ny, &iterll, t);
+        *iter = (size_t) iterll;
+        for(int y = 0; y < *ny && state; y++)
+        {
+            if(nx > 0)
+                state = 1 == fscanf(file, "%lf", T[0 + y**nx]);
+
+            for(int x = 1; x < *nx && state; x++)
+                state = 1 == fscanf(file, ",%lf", T[x + y**nx]);
+
+            fscanf(file, "\n");
+        }
+
+        for(int y = 0; y < *ny && state; y++)
+        {
+            if(nx > 0)
+                state = 1 == fscanf(file, "%lf", phi[0 + y**nx]);
+
+            for(int x = 1; x < *nx && state; x++)
+                state = 1 == fscanf(file, ",%lf", phi[x + y**nx]);
+
+            fscanf(file, "\n");
+        }
+
+        state = state && ferror(file) == 0;
+        fclose(file);
+    }
+    if(state == false)
+        LOG_ERROR("APP", "Error loading csv file '%s'", filename);
+    return state;
+}
+
+struct Small_String {
+    char data[16];
+};
+
+Small_String float_array_at_conv(Float_Array arr, size_t at)
+{
+    Small_String out = {0};
+    if(at < arr.len)
+        snprintf(out.data, sizeof out.data, "%lf", arr.data[at]);
+    return out;
+}
+
+bool save_csv_stat_file(const char* filename, size_t from, size_t to, Sim_Stats stats, bool append)
+{
+    bool state = false;
+    FILE* file = fopen(filename, append ? "ab" : "wb");
+    if(file != NULL)
+    {
+        if(append == false)
+        {
+            fprintf(file, 
+                "\"time\",\"iter\",\"T_delta_L1\",\"T_delta_L2\",\"T_delta_max\",\"T_delta_min\","
+                "\"phi_delta_L1\",\"phi_delta_L2\",\"phi_delta_max\",\"phi_delta_min\",\"phi_iters\",\"T_iters\"");
+                
+            for(int s = 0; s < (int) stats.step_res_count; s++)
+                fprintf(file, ",\"step_res_L1[%i]\",\"step_res_L1[%i]\",\"step_res_L1[%i]\",\"step_res_L1[%i]\"", s, s, s, s);
+
+            fprintf(file, "\n");
+        }
+
+        for(size_t y = from; y < to; y++)
+        {
+            #define G(name) float_array_at_conv(stats.vectors.name, y).data
+            fprintf(file, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s", 
+                G(time),G(iter),G(T_delta_L1),G(T_delta_L2),G(T_delta_max),G(T_delta_min),
+                G(phi_delta_L1),G(phi_delta_L2),G(phi_delta_max),G(phi_delta_min),G(phi_iters),G(T_iters));
+                
+            for(int s = 0; s < (int) stats.step_res_count; s++)
+                fprintf(file, ",%s,%s,%s,%s", G(step_res_L1[s]),G(step_res_L1[s]),G(step_res_L1[s]),G(step_res_L1[s]));
+
+            fprintf(file, "\n");
+            #undef G
+        }
+
+        state = ferror(file) == 0;
+        fclose(file);
+    }
+    return state;
+}
+
+#include <filesystem>
+bool make_save_folder(const Sim_Config& config, time_t init_time, std::string* out, bool create_in_filesystem)
+{
+    tm* t = localtime(&init_time);
+    std::string folder = format_string("%s%s%s%04i-%02i-%02i__%02i-%02i-%02i__%s%s", 
+        config.snapshot_folder.data(),
+        config.snapshot_folder.size() > 0 ? "/" : "",
+        config.snapshot_prefix.data(), 
+        t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
+        solver_type_to_cstring(config.simul_solver),
+        config.snapshot_postfix.data()
+    );
+    std::error_code error = {};
+    if(folder.empty() == false && create_in_filesystem)
+        std::filesystem::create_directory(folder, error);
+
+    if(error)
+        LOG_ERROR("APP", "Error creating save folder '%s': %s", folder.data(), error.message().data());
+
+    *out = folder;
+    return !error;
+}
+
+bool save_state(App_State* app, int flags, int snapshot_index)
+{
+    std::string save_folder;
+    bool state = make_save_folder(app->config, app->init_time, &save_folder, true);
+
+    if(flags & SAVE_NETCDF)    
+    {
+        std::string file = format_string("%s/%s_nc_%04i.nc", save_folder.data(), solver_type_to_cstring(app->config.simul_solver), snapshot_index);
+        state = save_netcfd_file(file.data(), app) && state;
+    }
+
+    if(flags & SAVE_CSV)    
+    {
+        LOG_WARN("APP", "Save CSV should not be used!");
+        // std::string file = format_string("%s_csv_%04i.csv", solver_type_to_cstring(app->config.simul_solver), snapshot_index);
+        // state = save_netcfd_file(file.data(), app) && state;
+    }
+
+    if(flags & SAVE_BIN)    
+    {
+        Sim_Map maps[SIM_MAPS_MAX] = {0};
+        sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
+        int F_i = maps_find(maps, SIM_MAPS_MAX, "Phi");
+        int U_i = maps_find(maps, SIM_MAPS_MAX, "T");
+
+        if(F_i == -1 || U_i == -1)
+            LOG_ERROR("APP", "Cannot find phi or T maps");
+        else
+        {
+            int nx = maps[F_i].nx;
+            int ny = maps[F_i].ny;
+            size_t N = (size_t) (nx*ny);
+            double* F = (double*) malloc(N*sizeof(double));
+            double* U = (double*) malloc(N*sizeof(double));
+
+            sim_modify_double(maps[F_i].data, F, N, MODIFY_DOWNLOAD);
+            sim_modify_double(maps[U_i].data, U, N, MODIFY_DOWNLOAD);
+
+            std::string file = format_string("%s/%s_bin_%04i.bin", save_folder.data(), solver_type_to_cstring(app->config.simul_solver), snapshot_index);
+            state = save_bin_map_file(file.data(), nx, ny, app->iter, app->sim_time, U, F) && state;
+
+            free(F);
+            free(U);
+        }
+    }
+
+    if((flags & SAVE_STATS))    
+    {
+        std::string file = format_string("%s/stats.csv", save_folder.data());
+        state = save_csv_stat_file(file.data(), 0, app->stats.vectors.time.len, app->stats, app->count_written_stats != 0) && state;
+        for(size_t i = 0; i < sizeof(app->stats.vectors)/sizeof(Float_Array); i++)
+        {
+            Float_Array* arr = ((Float_Array*) (void*) &app->stats.vectors) + i;
+            float_array_clear(arr);
+        }
+
+        app->count_written_stats += 1;
+    } 
+
+    if((flags & SAVE_CONFIG) && app->count_written_configs == 0)    
+    {
+        std::string file = format_string("%s/config.ini", save_folder.data());
+        state = save_netcfd_file(file.data(), app) && state;
+        app->count_written_configs += 1;
+    } 
+
+    return state;
+}
+
+
+#ifdef COMPILE_NETCDF
+#include <netcdf.h>
+bool save_netcfd_file(const char* filename, App_State* app)
 {
     enum {NDIMS = 2};
     int dataset_ID = 0;
     int dim_ids[NDIMS] = {0};
-    Allen_Cahn_Params params = app->config.params;
+    const Sim_Params& params = app->config.params;
 
     int iter = (int) app->iter;
     double real_time = (Real) app->iter * app->config.params.dt;
-    
-    if(app->config.snapshots.snapshot_initial_conditions == false)
-        app->snapshot_index += 1;
-
-    //creates a path in the form "path/to/snapshots/prefix_2024_03_01__10_22_43_postfix/0001.nc"
-    std::string composed_filename;
-
-    {
-        Allen_Cahn_Snapshots* snapshots = &app->config.snapshots;
-        tm* t = localtime(&app->init_time);
-
-        std::filesystem::path snapshot_folder = snapshots->folder;
-
-        std::string folder = format_string("%s%04i-%02i-%02i__%02i-%02i-%02i__%s%s", 
-            snapshots->prefix.data(), 
-            t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
-            solver_type_to_cstring(app->config.solver),
-            snapshots->postfix.data()
-        );
-        std::error_code error = {};
-        if(snapshot_folder.empty() == false)
-            std::filesystem::create_directory(snapshot_folder, error);
-
-        
-
-        snapshot_folder.append(folder.c_str()); 
-        std::filesystem::create_directory(snapshot_folder, error);
-
-        if(app->snapshot_index <= 1)
-        {
-            std::filesystem::path config_path = snapshot_folder; 
-            config_path.append("config.ini");
-            file_write_entire(config_path.c_str(), app->config.entire_config_file);
-        }
-
-        //Saving of stats!
-        if(app->config.params.do_stats)
-        {
-            std::filesystem::path stats_path = snapshot_folder; 
-            stats_path.append(format_string("stats_%04i.txt", app->snapshot_index));
-
-            Allen_Cahn_Stats cur_stats = app->stats_last;
-            Allen_Cahn_Stats avg_stats = app->stats_summed;
-            int iters = app->stats_summed_over_iters;
-            if(iters <= 0)
-                iters = 1;
-            avg_stats.Phi_errror /= iters;
-            avg_stats.T_error /= iters;
-            avg_stats.Phi_iters /= iters;
-            avg_stats.T_iters /= iters;
-            for(size_t z = 0; z < sizeof(avg_stats.L2_step_residuals) / sizeof(int); z++)
-            {
-                avg_stats.L2_step_residuals[z] /= iters;
-                avg_stats.Lmax_step_residuals[z] /= iters;
-            }
-
-            //Clear any stats @TODO: less OOP. This functions should not modify app state in any way!
-            app->stats_summed_over_iters = 0;
-            app->stats_summed = Allen_Cahn_Stats{0};
-
-            int l_i = avg_stats.step_residuals - 1;
-            if(l_i < 0)
-                l_i = 0;
-
-            file_write_entire(stats_path.c_str(), format_string(
-                "     L2     Lmax\n"
-                "avg: %e, %e\n" 
-                "cur: %e, %e\n", 
-                avg_stats.L2_step_residuals[l_i], avg_stats.Lmax_step_residuals[l_i],
-                cur_stats.L2_step_residuals[l_i], cur_stats.Lmax_step_residuals[l_i]
-            ));
-        }
-
-        std::filesystem::path snapshot_path = snapshot_folder; 
-        snapshot_path.append(format_string("%s_%04i.nc", solver_type_to_cstring(app->config.solver), app->snapshot_index).c_str());
-
-        composed_filename = snapshot_path.c_str();
-
-        if(error)
-        {
-            LOG_INFO("app", "encoutered error '%s' while creating a folder on the final snapshot path '%s'",
-                error.message().c_str(), composed_filename.c_str()
-            );
-
-            return false;
-        }
-    }
-
-    if(app->config.snapshots.snapshot_initial_conditions == true)
-        app->snapshot_index += 1;
-        
-    const char* filename = composed_filename.data();
 
     #define NC_ERROR_AND(code) (code) != NC_NOERR ? (code) :
 
@@ -677,7 +843,6 @@ bool save_netcfd_file(App_State* app)
     }
 
     int real_type = sizeof(Real) == sizeof(double) ? NC_DOUBLE : NC_FLOAT;
-
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_x", NC_INT, 1, &params.nx);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "mesh_size_y", NC_INT, 1, &params.ny);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "L0", NC_INT, 1, &params.L0);
@@ -693,11 +858,9 @@ bool save_netcfd_file(App_State* app)
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "alpha", real_type, 1, &params.alpha);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "beta", real_type, 1, &params.beta);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tm", real_type, 1, &params.Tm);
-    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "Tinit", real_type, 1, &params.Tinit);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "S", real_type, 1, &params.S);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "nx", real_type, 1, &params.nx);
     nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "theta0", real_type, 1, &params.theta0);
-    nc_error = NC_ERROR_AND(nc_error) nc_put_att(dataset_ID, NC_GLOBAL, "do_anisotropy", NC_BYTE, 1, &params.do_anisotropy);
 
     if(nc_error != NC_NOERR) {
         LOG_INFO("APP", "NetCDF error while outputing params: %s.", nc_strerror(nc_error));
@@ -715,9 +878,6 @@ bool save_netcfd_file(App_State* app)
     Real* F = (Real*) malloc(copy_size);
     Real* U = (Real*) malloc(copy_size);
 
-    defer(free(F));
-    defer(free(U));
-
     Sim_Map maps[SIM_MAPS_MAX] = {0};
     sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
     int Phi_i = maps_find(maps, SIM_MAPS_MAX, "Phi");
@@ -734,6 +894,8 @@ bool save_netcfd_file(App_State* app)
 
     nc_error = NC_ERROR_AND(nc_error) nc_close(dataset_ID);
 
+    free(F);
+    free(U);
     if(nc_error != NC_NOERR) {
         LOG_INFO("APP", "NetCDF error while outputing data: %s.", nc_strerror(nc_error));
         return false;
@@ -741,3 +903,11 @@ bool save_netcfd_file(App_State* app)
 
     return true;
 }
+#else
+bool save_netcfd_file(const char* filename, App_State* app)
+{
+    (void) filename;
+    (void) app;
+    return true;
+}
+#endif
