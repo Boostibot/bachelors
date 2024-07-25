@@ -216,32 +216,6 @@ static void cuda_tiled_for_bound(const T* data, csize from_i, csize to_i, Functi
     }, (Function&&) func, dynamic_r, launch_params);
 }
 
-enum Tiled_For_Periodic_Variant {
-    TILED_FOR_PERIODIC_MODULO = 0,
-    TILED_FOR_PERIODIC_SMALL_R,
-};
-
-template <csize static_r, Tiled_For_Periodic_Variant periodic_variant = TILED_FOR_PERIODIC_MODULO, typename T = int, typename Function = int>
-static void cuda_tiled_for_periodic(const T* data, csize from_i, csize to_i, Function func, csize dynamic_r = 0, Cuda_Launch_Params launch_params = {})
-{
-    //Gather is not offset!
-    const T* offset_data = data + from_i;
-    cuda_tiled_for<static_r, T, Function>(from_i, to_i, [=]SHARED(csize i, csize N, csize r){
-        (void) offset_data;
-        if constexpr(periodic_variant == TILED_FOR_PERIODIC_SMALL_R)
-        {
-            if(i < 0)
-                i += N;
-            else if(i >= N)
-                i -= N;
-
-            return offset_data[i];
-        }
-        else
-            return offset_data[MOD(i, N)];
-    }, (Function&&) func, dynamic_r, launch_params);
-}
-
 template <typename T, typename Gather, typename Function, csize static_rx, csize static_ry>
 static void __global__ cuda_tiled_for_2D_kernel(csize from_x, csize from_y, csize nx, csize ny, csize dynamic_rx, csize dynamic_ry, Gather gather, Function func)
 {
@@ -362,52 +336,6 @@ static void cuda_tiled_for_2D_bound(const T* data, csize data_width, csize from_
             else
                 return out_of_bounds_val;
         }, (Function&&) func, dynamic_rx, dynamic_ry, launch_params);
-}
-
-template <csize static_rx, csize static_ry, Tiled_For_Periodic_Variant periodic_variant = TILED_FOR_PERIODIC_MODULO, typename T = int, typename Function = int>
-static void cuda_tiled_for_2D_modular(const T* data, csize data_width, csize from_x, csize from_y, csize to_x, csize to_y, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, Cuda_Launch_Params launch_params = {})
-{
-    //Gather is not offset!
-    const T* offset_data = data + (from_x + from_y*data_width);
-    cuda_tiled_for_2D<static_rx, static_ry, T, Function>(from_x, from_y, to_x, to_y,  
-        [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry){
-            csize x_mod = x;
-            csize y_mod = y;
-
-            if constexpr(periodic_variant == TILED_FOR_PERIODIC_SMALL_R)
-            {
-                if(x_mod < 0)
-                    x_mod += nx;
-                else if(x_mod >= nx)
-                    x_mod -= nx;
-
-                if(y_mod < 0)
-                    y_mod += ny;
-                else if(y_mod >= ny)
-                    y_mod -= ny;
-            }
-            else
-            {
-                x_mod = MOD(x, nx);
-                y_mod = MOD(y, ny);
-            }
-
-            return offset_data[x_mod + y_mod*data_width];
-        }, (Function&&) func, dynamic_rx, dynamic_ry, launch_params);
-}
-
-//================================= CONVENIENCE WRAPPERS FOR RANGE [0, N) =====================================================
-
-template <csize static_rx, csize static_ry, typename T, typename Function>
-static void cuda_tiled_for_2D_bound(const T* data, csize nx, csize ny, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, T out_of_bounds_val = T(), Cuda_Launch_Params launch_params = {})
-{
-    cuda_tiled_for_2D_bound<static_rx, static_ry, T, Function>(data, nx, 0, 0, nx, ny, (Function&&)func, dynamic_rx, dynamic_ry, out_of_bounds_val, launch_params);
-}
-
-template <csize static_rx, csize static_ry, Tiled_For_Periodic_Variant periodic_variant = TILED_FOR_PERIODIC_MODULO, typename T = int, typename Function = int>
-static void cuda_tiled_for_2D_modular(const T* data, csize nx, csize ny, Function func, csize dynamic_rx = 0, csize dynamic_ry = 0, Cuda_Launch_Params launch_params = {})
-{
-    cuda_tiled_for_2D_modular<static_rx, static_ry, periodic_variant, T, Function>(data, nx, 0, 0, nx, ny, (Function&&)func, dynamic_rx, dynamic_ry, launch_params);
 }
 
 //================================================ TESTS ====================================================================
@@ -655,7 +583,7 @@ static void test_tiled_for_2D(uint64_t seed)
                     CUDA_DEBUG_TEST(cudaMemcpy(gpu_in, cpu_in, N_bytes, cudaMemcpyHostToDevice));
                     CUDA_DEBUG_TEST(cudaMemcpy(gpu_stencil, cpu_stencil, (size_t) (sx*sy)*sizeof(int), cudaMemcpyHostToDevice));
 
-                    cuda_tiled_for_2D_bound<TILED_FOR_DYNAMIC_RANGE, TILED_FOR_DYNAMIC_RANGE>(gpu_in, nx, ny, 
+                    cuda_tiled_for_2D_bound<TILED_FOR_DYNAMIC_RANGE, TILED_FOR_DYNAMIC_RANGE>(gpu_in, nx, 0, 0, nx, ny, 
                         [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, int* __restrict__ shared){
                             int out = 0;
                             for(csize ix = -rx; ix <= rx; ix++)

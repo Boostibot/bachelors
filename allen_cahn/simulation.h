@@ -27,8 +27,6 @@
 // #define COMPILE_THRUST
 #define COMPILE_NOISE
 
-#define USE_CUSTOM_REDUCE
-// #define USE_TILED_FOR 
 // #define USE_FLOATS
 #endif
 
@@ -155,7 +153,6 @@ typedef enum Sim_Solver_Type{
     SOLVER_TYPE_EXPLICIT_RK4,
     SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE,
     SOLVER_TYPE_SEMI_IMPLICIT,
-    SOLVER_TYPE_SEMI_IMPLICIT_COUPLED,
     SOLVER_TYPE_EXACT,
 
     SOLVER_TYPE_ENUM_COUNT,
@@ -171,7 +168,6 @@ static const char* solver_type_to_cstring(Sim_Solver_Type type)
         case SOLVER_TYPE_EXPLICIT_RK4: return "explicit-rk4";
         case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: return "explicit-rk4-adaptive";
         case SOLVER_TYPE_SEMI_IMPLICIT: return "semi-implicit";
-        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: return "semi-implicit-coupled"; 
         case SOLVER_TYPE_EXACT: return "exact"; 
     }
 }
@@ -186,7 +182,6 @@ static int solver_type_required_history(Sim_Solver_Type type)
         case SOLVER_TYPE_EXPLICIT_RK4: return 2;
         case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: return 2;
         case SOLVER_TYPE_SEMI_IMPLICIT: return 2;
-        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: return 2;
         case SOLVER_TYPE_EXACT: return 1;
     }
 }
@@ -244,13 +239,6 @@ typedef struct Semi_Implicit_Solver {
     int ny;
 } Semi_Implicit_Solver;
 
-//Semi implicit coupled
-typedef struct Semi_Implicit_Coupled_State{
-    Real* C;
-
-    int nx;
-    int ny;
-} Semi_Implicit_Coupled_State;
 
 typedef struct Semi_Implicit_Coupled_Solver {
     Real* b_C; //size 2N
@@ -272,7 +260,6 @@ typedef struct Sim_State {
         Exact_State exact;
         Explicit_State expli;
         Semi_Implicit_State impli;
-        Semi_Implicit_Coupled_State impli_coupled;
     };
 } Sim_State;
 
@@ -285,7 +272,6 @@ typedef struct Sim_Solver  {
         int exact;
         Explicit_Solver expli;
         Semi_Implicit_Solver impli;
-        Semi_Implicit_Coupled_Solver impli_coupled;
     };
 } Sim_Solver;
 
@@ -313,58 +299,3 @@ extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size
 
 extern "C" bool run_tests();
 extern "C" bool run_benchmarks(int N);
-
-// solver -> init to some concrete solver
-// solver has to have internal state for caching CACHING! CACHING! its all about caching! We dont even have to have a solver
-// since we can just cache the needed data inside the function or better yet recapture them every time.
-// But we have to have states and have to have views into the solver debug info. Idk man. Maybe I am really just attempting to combine
-// things that shouldnt be combined and the best would be to leave the user code coupled to a particular solver since I cannot 
-// figure out a seemless fitting interface.
-
-#if 0
-#include <string.h>
-static void sim_example()
-{
-    //Construct by zero init
-    Sim_Params params = {0};
-    Sim_Solver solver = {0};
-    Sim_State states[SIM_HISTORY_MAX] = {0};
-    
-    int nx = 20;
-    int ny = 20;
-    Sim_Solver_Type type = SOLVER_TYPE_EXPLICIT_EULER; 
-    (void) type; //for some reason we get unreferenced variable warning here even though it clearly is used (?)
-    
-    //Init solver. It returns the MINIMAL number of states it requires
-    // to work properly.
-    sim_solver_reinit(&solver, type, nx, ny);
-    int state_count = solver_type_required_history(type);
-    //Init the states 
-    sim_states_reinit(states, state_count, type, nx, ny);
-
-    //Loop simulation
-    for(int i = 0; i < 1000; i++)
-    {
-        //Do a step in the simulation
-        Sim_Map maps[SIM_MAPS_MAX] = {0};
-        sim_solver_step(&solver, states, state_count, i, params, NULL);
-
-        //Get debug maps
-        sim_solver_get_maps(&solver, states, state_count, i, maps, SIM_MAPS_MAX);
-        for(int map_i = 0; map_i < SIM_MAPS_MAX; i++)
-        {
-            if(strcmp(maps[map_i].name, "T")) {
-                float* visualisation_storage = NULL; //pretend this points to something
-                sim_modify_float(maps[map_i].data, visualisation_storage, (size_t) (ny*nx), MODIFY_DOWNLOAD);
-
-                //... print map inside visualisation_storage ...
-            }
-        }
-    }
-
-    //deinit solver and states by initing them to SOLVER_TYPE_NONE (nx, ny is ignored)
-    sim_solver_reinit(&solver, SOLVER_TYPE_NONE, 0, 0);
-    sim_states_reinit(states, state_count, SOLVER_TYPE_NONE, 0, 0);
-}
-
-#endif

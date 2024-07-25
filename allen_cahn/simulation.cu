@@ -13,12 +13,6 @@
 
 #ifdef COMPILE_SIMULATION
 
-#ifndef USE_CUSTOM_REDUCE
-#include <thrust/inner_product.h>
-#include <thrust/device_ptr.h>
-#include <thrust/extrema.h>
-#endif
-
 #if 1
 SHARED Real custom_hypot(Real y, Real x) { return (Real) hypotf((float)y, (float)x); }
 SHARED Real custom_atan2(Real y, Real x) { return (Real) atan2f((float) y, (float) x); }
@@ -28,94 +22,6 @@ SHARED Real custom_hypot(Real y, Real x) { return hypot(y, x); }
 SHARED Real custom_atan2(Real y, Real x) { return atan2(y, x); }
 SHARED Real custom_cos(Real theta) { return cos(theta); }
 #endif
-
-Real vector_dot_product(const Real *a, const Real *b, int ny)
-{
-    #ifdef USE_CUSTOM_REDUCE
-    return cuda_dot_product(a, b, ny);
-    #else
-    // wrap raw pointers to device memory with device_ptr
-    thrust::device_ptr<const Real> d_a(a);
-    thrust::device_ptr<const Real> d_b(b);
-
-    // inner_product implements a mathematical dot product
-    return thrust::inner_product(d_a, d_a + ny, d_b, 0.0);
-    #endif
-}
-
-Real vector_max(const Real *a, int N)
-{
-    #ifdef USE_CUSTOM_REDUCE
-    return cuda_max(a, N);
-    #else
-    thrust::device_ptr<const Real> d_a(a);
-    return *(thrust::max_element(d_a, d_a + N));
-    #endif
-}
-
-Real vector_get_l2_dist(const Real* a, const Real* b, int N)
-{
-    #ifdef USE_CUSTOM_REDUCE
-    return cuda_L2_distance(a, b, N)/ sqrt((Real) N);
-    #else
-    Cache_Tag tag = cache_tag_make();
-    Real* temp = cache_alloc(Real, N, &tag);
-    cuda_for(0, N, [=]SHARED(int i){
-        temp[i] = a[i] - b[i];
-    });
-
-    Real temp_dot_temp = vector_dot_product(temp, temp, N);
-    Real error = sqrt(temp_dot_temp/N);
-    cache_free(&tag);
-    return error;
-    #endif
-}
-
-Real vector_get_max_dist(const Real* a, const Real* b, int N)
-{
-    #ifdef USE_CUSTOM_REDUCE
-    return cuda_L2_distance(a, b, N);
-    #else
-    Cache_Tag tag = cache_tag_make();
-    Real* temp = cache_alloc(Real, N, &tag);
-    cuda_for(0, N, [=]SHARED(int i){
-        temp[i] = a[i] - b[i];
-    });
-
-    Real temp_dot_temp = vector_max(temp, N);
-    Real error = sqrt(temp_dot_temp/N);
-    cache_free(&tag);
-    return error;
-    #endif
-}
-
-
-Real vector_euclid_norm(const Real* vector, int N)
-{
-    #ifdef USE_CUSTOM_REDUCE
-    return cuda_L2_norm(vector, N)/ sqrt((Real) N);
-    #else
-    Real dot = vector_dot_product(vector, vector, N);
-    return sqrt(dot / N);
-    #endif
-}
-
-SHARED Real* at_mod(Real* map, int x, int y, int nx, int ny)
-{
-    int x_mod = x;
-    if(x_mod < 0)
-        x_mod += nx;
-    else if(x_mod >= nx)
-        x_mod -= nx;
-
-    int y_mod = y;
-    if(y_mod < 0)
-        y_mod += ny;
-    else if(y_mod >= ny)
-        y_mod -= ny;
-
-    return &map[x_mod + y_mod*nx];
-}
 
 SHARED Real boundary_sample(const Real* map, int x, int y, int nx, int ny, Sim_Boundary_Type bound)
 {
@@ -563,8 +469,8 @@ double explicit_solver_rk4_adaptive_step(Explicit_Solver* solver, Explicit_State
             Epsilon_U[i] = U >= 0 ? U : -U;
         });
 
-        epsilon_F = vector_max(Epsilon_F, N);
-        epsilon_U = vector_max(Epsilon_U, N);
+        epsilon_F = cuda_max(Epsilon_F, N);
+        epsilon_U = cuda_max(Epsilon_U, N);
 
         if(epsilon_F < params.Phi_tolerance && epsilon_U < params.T_tolerance)
             converged = true;
@@ -739,7 +645,6 @@ void cross_matrix_static_multiply(Real* out, const void* _A, const Real* vec, in
     int nx = A.nx;
     int ny = A.ny;
 
-    #ifdef USE_TILED_FOR
     cuda_tiled_for_2D<1, 1, Real>(0, 0, nx, ny,
         [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Real {
             return boundary_sample(vec, x, y, nx, ny, A.boundary);
@@ -754,17 +659,6 @@ void cross_matrix_static_multiply(Real* out, const void* _A, const Real* vec, in
             out[x + y*nx] = val;
         }
     );
-    #else
-    cuda_for_2D(0, 0, nx, ny, [=]SHARED(int x, int y){
-        int i = x + y*nx;
-        Real val = vec[i]*A.C;
-        val += boundary_sample(vec, x+1, y, nx, ny, A.boundary)*A.R;
-        val += boundary_sample(vec, x-1, y, nx, ny, A.boundary)*A.L;
-        val += boundary_sample(vec, x, y+1, nx, ny, A.boundary)*A.U;
-        val += boundary_sample(vec, x, y-1, nx, ny, A.boundary)*A.D;
-        out[i] = val;
-    });
-    #endif
 }
 
 void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* vec, int N)
@@ -773,7 +667,6 @@ void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* vec, int
     int nx = A.nx;
     int ny = A.ny;
 
-    #ifdef USE_TILED_FOR
     cuda_tiled_for_2D<1, 1, Real>(0, 0, nx, ny,
         [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Real {
             return boundary_sample(vec, x, y, nx, ny, A.boundary);
@@ -794,22 +687,6 @@ void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* vec, int
             out[i] = val;
         }
     );
-    #else
-    cuda_for_2D(0, 0, nx, ny, [=]SHARED(int x, int y){
-        int i = x + y*nx;
-        Real s = A.anisotrophy[i];
-        Real X = A.X*s;
-        Real Y = A.Y*s;
-        Real C = 1 + A.C_minus_one*s;
-
-        Real val = vec[i]*C;
-        val += boundary_sample(vec, x+1, y, nx, ny, A.boundary)*X;
-        val += boundary_sample(vec, x-1, y, nx, ny, A.boundary)*X;
-        val += boundary_sample(vec, x, y+1, nx, ny, A.boundary)*Y;
-        val += boundary_sample(vec, x, y-1, nx, ny, A.boundary)*Y;
-        out[i] = val;
-    });
-    #endif
 }
 
 typedef struct Conjugate_Gardient_Params {
@@ -869,7 +746,7 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
             p[i] = r[i];
         });
 
-        r_dot_r = vector_dot_product(r, r, N);
+        r_dot_r = cuda_dot_product(r, r, N);
     }
     else
     {
@@ -877,7 +754,7 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
         CUDA_DEBUG_TEST(cudaMemcpyAsync(r, b, sizeof(Real)*(size_t)N, cudaMemcpyDeviceToDevice, stream2));
         CUDA_DEBUG_TEST(cudaMemcpyAsync(p, b, sizeof(Real)*(size_t)N, cudaMemcpyDeviceToDevice, stream3));
 
-        r_dot_r = vector_dot_product(b, b, N);
+        r_dot_r = cuda_dot_product(b, b, N);
         // CUDA_DEBUG_TEST(cudaDeviceSynchronize());
     }
 
@@ -888,7 +765,7 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
         {
             matrix_mul_func(Ap, A, p, N);
             
-            Real p_dot_Ap = vector_dot_product(p, Ap, N);
+            Real p_dot_Ap = cuda_dot_product(p, Ap, N);
             Real alpha = r_dot_r / MAX(p_dot_Ap, params.epsilon);
             
             cuda_for(0, N, [=]SHARED(int i){
@@ -896,7 +773,7 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
                 r[i] = r[i] - alpha*Ap[i];
             });
 
-            Real r_dot_r_new = vector_dot_product(r, r, N);
+            Real r_dot_r_new = cuda_dot_product(r, r, N);
             if(r_dot_r_new < scaled_squared_tolerance)
             {
                 r_dot_r = r_dot_r_new;
@@ -1156,16 +1033,12 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
             anisotrophy_matrix_multiply(AfF, &A_F, F_next, N);
             cross_matrix_static_multiply(AuU, &A_U, U_next, N);
 
-            Real back_error_F = vector_get_l2_dist(AfF, b_F, N);
-            Real back_error_U = vector_get_l2_dist(AuU, b_U, N);
+            Real back_error_F_max = cuda_Lmax_distance(AfF, b_F, N);
+            Real back_error_U_max = cuda_Lmax_distance(AuU, b_U, N);
 
-            Real back_error_F_max = vector_get_max_dist(AfF, b_F, N);
-            Real back_error_U_max = vector_get_max_dist(AuU, b_U, N);
-
-            LOG_DEBUG("SOLVER", "AVG | F:%e U:%e Epsilon:%e \n", (double) back_error_F, (double) back_error_U, (double) solver_params.tolerance*2);
-            LOG_DEBUG("SOLVER", "MAX | F:%e U:%e Epsilon:%e \n", (double) back_error_F_max, (double) back_error_U_max, (double) solver_params.tolerance*2);
+            LOG_DEBUG("SOLVER", "MAX ERROR | F:%e U:%e Epsilon:%e \n", (double) back_error_F_max, (double) back_error_U_max, (double) solver_params.tolerance*2);
         }
-        
+
         calc_debug_values(next_state.F, next_state.U, solver->debug_maps.grad_phi, solver->debug_maps.grad_T, solver->debug_maps.aniso_factor, params);
     }
 
@@ -1291,44 +1164,6 @@ void semi_implicit_solver_get_maps(Semi_Implicit_Solver* solver, Semi_Implicit_S
     ASSIGN_MAP_NAMED(solver->debug_maps.step_residuals[2], "step_residual3");           
 }
 
-struct Semi_Implicit_Coupled_Cross_Matrix {
-    Anisotrophy_Matrix A_F; //A anisotrophy scaled cross matrix
-    Real* B_U; //A changing diagonal 
-
-    Cross_Matrix_Static A_U; //Static cross matrix
-    Real B_F; //A single value diagonal
-
-    int nx;
-    int ny;
-};
-
-void semi_implicit_coupled_solver_resize(Semi_Implicit_Coupled_Solver* solver, int nx, int ny)
-{
-    if(solver->nx != nx || solver->ny != ny)
-    {
-        int N = ny*nx;
-        int N_old = solver->ny*solver->nx;
-        cuda_realloc_in_place((void**) &solver->b_C, 2*(size_t)N*sizeof(Real), 2*(size_t)N_old*sizeof(Real), REALLOC_ZERO);
-        cuda_realloc_in_place((void**) &solver->aniso, (size_t)N*sizeof(Real), (size_t)N_old*sizeof(Real), REALLOC_ZERO);
-        cuda_realloc_in_place((void**) &solver->B_U, (size_t)N*sizeof(Real), (size_t)N_old*sizeof(Real), REALLOC_ZERO);
-
-        solver->nx = nx;
-        solver->ny = ny;
-    }
-}
-
-void semi_implicit_coupled_state_resize(Semi_Implicit_Coupled_State* state, int nx, int ny)
-{
-    if(state->nx != nx || state->ny != ny)
-    {
-        int N = ny*nx;
-        int N_old = state->ny*state->nx;
-        cuda_realloc_in_place((void**) &state->C, 2*(size_t)N*isizeof(Real), 2*(size_t)N_old*isizeof(Real), REALLOC_ZERO);
-        state->nx = nx;
-        state->ny = ny;
-    }
-}
-
 template <typename T>
 void sim_modify_T(Real* device_memory, T* host_memory, size_t count, Sim_Modify modify)
 {
@@ -1413,10 +1248,6 @@ extern "C" void sim_solver_reinit(Sim_Solver* solver, Sim_Solver_Type type, int 
             semi_implicit_solver_resize(&solver->impli, nx, ny);
         } break;
 
-        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
-            semi_implicit_coupled_solver_resize(&solver->impli_coupled, nx, ny);
-        } break;
-
         default: {
             assert(false);
         }
@@ -1447,10 +1278,6 @@ void sim_state_reinit(Sim_State* states, Sim_Solver_Type type, int nx, int ny)
 
         case SOLVER_TYPE_SEMI_IMPLICIT: {
             explicit_state_resize(&states->impli, nx, ny);
-        } break;
-
-        case SOLVER_TYPE_SEMI_IMPLICIT_COUPLED: {
-            semi_implicit_coupled_state_resize(&states->impli_coupled, nx, ny);
         } break;
 
         default: {
