@@ -97,140 +97,22 @@ void explicit_state_resize(Explicit_State* state, int nx, int ny)
     }
 }
 
-struct Bundled {
-    Real Phi;
-    Real T;
-};
-
-struct Explicit_Solve_Result {
-    Real dt_Phi;
-    Real dt_T;
-};
-
-struct Explicit_Solve_Debug {
-    Real grad_Phi;
-    Real grad_T;
-    Real g_theta;
-    Real theta;
-    Real reaction_term;
-};
-
 SHARED Real f0(Real phi)
 {
 	return phi*(1 - phi)*(phi - 1.0f/2);
 }
 
-extern "C" void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Sim_Params params, Sim_Step_Info step_info, Sim_Stats* stats_or_null)
-{
-    int nx = params.nx;
-    int ny = params.ny;
-
-    Real a = (Real) params.a;
-    Real b = (Real) params.b;
-    Real alpha = (Real) params.alpha;
-    Real beta = (Real) params.beta;
-    Real xi = (Real) params.xi;
-    Real Tm = (Real) params.Tm;
-    Real L = (Real) params.L; //Latent heat, not L0 (sym size) ! 
-    Real dt = (Real) params.dt;
-    Real S0 = (Real) params.S; //anisotrophy strength
-    Real m0 = (Real) params.m0; //anisotrophy frequency (?)
-    Real theta0 = (Real) params.theta0;
-    bool do_corrector_guess = params.do_corrector_guess;
-
-    Real dx = (Real) params.L0 / nx;
-    Real dy = (Real) params.L0 / ny;
-    Real one_over_2dx = 1/(2*dx);
-    Real one_over_2dy = 1/(2*dy);
-    Real one_over_dx2 = 1/(dx*dx);
-    Real one_over_dy2 = 1/(dy*dy);
-
-    Real k0_factor = a/(xi*xi * alpha);
-    Real k2_factor = b*beta/alpha;
-    Real k1_factor = 1/alpha;
-    Real dt_L = dt*L;
-
-    Real* in_F = state.F;
-    Real* in_U = state.U;
-
-    Real* out_F = next_state->F;
-    Real* out_U = next_state->U;
-
-    Real fu = 0;
-    if(params.do_exact)
-    {
-        Exact_Params exact_params = get_static_exact_params(params);
-        fu = exact_fu(step_info.sim_time, exact_params);
-    }
-
-    cuda_tiled_for_2D<1, 1, Bundled>(0, 0, params.nx, params.ny,
-        [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Bundled{
-            csize x_mod = x;
-            csize y_mod = y;
-
-            if(x_mod < 0)
-                x_mod += nx;
-            else if(x_mod >= nx)
-                x_mod -= nx;
-
-            if(y_mod < 0)
-                y_mod += ny;
-            else if(y_mod >= ny)
-                y_mod -= ny;
-
-            int I = x_mod + y_mod*nx;
-
-            Real Phi = in_F[I];
-            Real T = in_U[I];
-            return Bundled{Phi, T};
-        },
-        [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, Bundled* shared){
-            Bundled C = shared[tx   + ty*tile_size_x];
-            Bundled E = shared[tx+1 + ty*tile_size_x];
-            Bundled W = shared[tx-1 + ty*tile_size_x];
-            Bundled N = shared[tx   + (ty+1)*tile_size_x];
-            Bundled S = shared[tx   + (ty-1)*tile_size_x];
-
-            Real grad_Phi_x = (E.Phi - W.Phi)*one_over_2dx;
-            Real grad_Phi_y = (N.Phi - S.Phi)*one_over_2dx;
-            Real grad_Phi_norm = custom_hypot(grad_Phi_x, grad_Phi_y);
-
-            Real theta = custom_atan2(grad_Phi_y, grad_Phi_x);
-            Real g_theta = (Real) 1 - S0*custom_cos(m0*theta + theta0);
-
-            Real laplace_Phi = (W.Phi - 2*C.Phi + E.Phi)*one_over_dx2 + (S.Phi - 2*C.Phi + N.Phi)*one_over_dy2;
-            Real laplace_T = (W.T - 2*C.T + E.T)*one_over_dx2 +     (S.T - 2*C.T + N.T)*one_over_dy2;
-
-            Real k0 = g_theta*f0(C.Phi)*k0_factor;
-            Real k2 = grad_Phi_norm*k2_factor;
-            Real k1 = g_theta*k1_factor;
-            Real corr = 1 + k2*dt_L;
-
-            Real dt_Phi = 0;
-            if(do_corrector_guess)
-                dt_Phi = (k1*laplace_Phi + k0 - k2*(C.T - Tm + dt*laplace_T))/corr;
-            else
-                dt_Phi = k1*laplace_Phi + k0 - k2*(C.T - Tm);
-
-            Real dt_T = laplace_T + L*dt_Phi + fu; 
-
-            out_F[x + y*nx] = C.Phi + dt_Phi*dt;
-            out_U[x + y*nx] = C.T + dt_T*dt;
-        });
-
-    if(params.do_stats && stats_or_null)
-    {
-        float_array_push(&stats_or_null->vectors.phi_iters, 1);
-        float_array_push(&stats_or_null->vectors.T_iters, 1);
-    }
-}
+struct Phase_Temp {
+    Real Phi;
+    Real T;
+};
 
 struct Explicit_Blend_State {
     Real weight;
     Explicit_State state;
 };
 
-template<typename ... States>
+template<bool IS_EULER, typename ... States>
 void explicit_solver_solve_lin_combination(Explicit_State* out, Sim_Params params, Sim_Step_Info step_info, States... state_args)
 {
     int nx = params.nx;
@@ -275,8 +157,8 @@ void explicit_solver_solve_lin_combination(Explicit_State* out, Sim_Params param
 
     Sim_Boundary_Type U_bound = params.T_boundary;
     Sim_Boundary_Type F_bound = params.Phi_boundary;
-    cuda_tiled_for_2D<1, 1, Bundled>(0, 0, nx, ny,
-        [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Bundled{
+    cuda_tiled_for_2D<1, 1, Phase_Temp>(0, 0, nx, ny,
+        [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Phase_Temp{
             Real U = 0;
             Real F = 0;
             #pragma unroll
@@ -286,14 +168,14 @@ void explicit_solver_solve_lin_combination(Explicit_State* out, Sim_Params param
                 U += boundary_sample(states[i].state.U, x, y, nx, ny, U_bound) * states[i].weight;
             }
 
-            return Bundled{F, U};
+            return Phase_Temp{F, U};
         },
-        [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, Bundled* shared){
-            Bundled C = shared[tx   + ty*tile_size_x];
-            Bundled E = shared[tx+1 + ty*tile_size_x];
-            Bundled W = shared[tx-1 + ty*tile_size_x];
-            Bundled N = shared[tx   + (ty+1)*tile_size_x];
-            Bundled S = shared[tx   + (ty-1)*tile_size_x];
+        [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, Phase_Temp* shared){
+            Phase_Temp C = shared[tx   + ty*tile_size_x];
+            Phase_Temp E = shared[tx+1 + ty*tile_size_x];
+            Phase_Temp W = shared[tx-1 + ty*tile_size_x];
+            Phase_Temp N = shared[tx   + (ty+1)*tile_size_x];
+            Phase_Temp S = shared[tx   + (ty-1)*tile_size_x];
 
             Real grad_Phi_x = (E.Phi - W.Phi)*one_over_2dx;
             Real grad_Phi_y = (N.Phi - S.Phi)*one_over_2dx;
@@ -318,8 +200,17 @@ void explicit_solver_solve_lin_combination(Explicit_State* out, Sim_Params param
 
             Real dt_T = laplace_T + L*dt_Phi + fu;
 
-            out_F[x + y*nx] = dt_Phi;
-            out_U[x + y*nx] = dt_T;
+            if(IS_EULER)
+            {
+                out_F[x + y*nx] = C.Phi + dt*dt_Phi;
+                out_U[x + y*nx] = C.T + dt*dt_T;
+            }
+            else
+            {
+                out_F[x + y*nx] = dt_Phi;
+                out_U[x + y*nx] = dt_T;
+            }
+                
         });   
 }
 
@@ -359,6 +250,22 @@ void calc_debug_values(const Real* F, const Real* U, Real* grad_F, Real* grad_U,
         aniso[x + y*nx] = g_theta;
     });
 }
+
+void explicit_solver_newton_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Sim_Params params, Sim_Step_Info step_info, Sim_Stats* stats_or_null)
+{
+    explicit_solver_solve_lin_combination<true>(next_state, params, step_info, Explicit_Blend_State{1, state});
+    if(params.do_debug)
+        calc_debug_values(next_state->F, next_state->U, solver->debug_maps.grad_phi, solver->debug_maps.grad_T, solver->debug_maps.aniso_factor, params);
+
+    if(params.do_stats && stats_or_null)
+    {
+        float_array_push(&stats_or_null->vectors.phi_iters, 1);
+        float_array_push(&stats_or_null->vectors.T_iters, 1);
+    }
+
+    CUDA_DEBUG_TEST(cudaDeviceSynchronize());
+}
+
 void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Explicit_State* next_state, Sim_Params params, Sim_Step_Info step_info, Sim_Stats* stats_or_null)
 {
     Cache_Tag tag = cache_tag_make();
@@ -380,10 +287,10 @@ void explicit_solver_rk4_step(Explicit_Solver* solver, Explicit_State state, Exp
 
     Real dt = (Real) params.dt;
     using W = Explicit_Blend_State;
-    explicit_solver_solve_lin_combination(&k1, params, step_info, W{1, state});
-    explicit_solver_solve_lin_combination(&k2, params, step_info, W{1, state}, W{dt * (Real) 0.5, k1});
-    explicit_solver_solve_lin_combination(&k3, params, step_info, W{1, state}, W{dt * (Real) 0.5, k2});
-    explicit_solver_solve_lin_combination(&k4, params, step_info, W{1, state}, W{dt * 1, k3});
+    explicit_solver_solve_lin_combination<false>(&k1, params, step_info, W{1, state});
+    explicit_solver_solve_lin_combination<false>(&k2, params, step_info, W{1, state}, W{dt * (Real) 0.5, k1});
+    explicit_solver_solve_lin_combination<false>(&k3, params, step_info, W{1, state}, W{dt * (Real) 0.5, k2});
+    explicit_solver_solve_lin_combination<false>(&k4, params, step_info, W{1, state}, W{dt * 1, k3});
 
     Real* out_F = next_state->F;
     Real* out_U = next_state->U;
@@ -436,7 +343,7 @@ double explicit_solver_rk4_adaptive_step(Explicit_Solver* solver, Explicit_State
     Explicit_State k5 = steps[4];
 
     using W = Explicit_Blend_State;
-    explicit_solver_solve_lin_combination(&k1, params, step_info, W{1, state});
+    explicit_solver_solve_lin_combination<false>(&k1, params, step_info, W{1, state});
 
     bool converged = false;
     int i = 0;
@@ -456,10 +363,10 @@ double explicit_solver_rk4_adaptive_step(Explicit_Solver* solver, Explicit_State
         // k4 = f(x + tau/8*k1 + tau*3/8*k3));
         // k5 = f(x + tau/2*k1 - tau*3/2*k3 + tau*2*k4));
         
-        explicit_solver_solve_lin_combination(&k2, params, step_info, W{1, state}, W{tau/3, k1});
-        explicit_solver_solve_lin_combination(&k3, params, step_info, W{1, state}, W{tau/6, k1}, W{tau/6, k2});
-        explicit_solver_solve_lin_combination(&k4, params, step_info, W{1, state}, W{tau/8, k1}, W{tau*3/8, k3});
-        explicit_solver_solve_lin_combination(&k5, params, step_info, W{1, state}, W{tau/2, k1}, W{-tau*3/2, k3}, W{tau*2, k4});
+        explicit_solver_solve_lin_combination<false>(&k2, params, step_info, W{1, state}, W{tau/3, k1});
+        explicit_solver_solve_lin_combination<false>(&k3, params, step_info, W{1, state}, W{tau/6, k1}, W{tau/6, k2});
+        explicit_solver_solve_lin_combination<false>(&k4, params, step_info, W{1, state}, W{tau/8, k1}, W{tau*3/8, k3});
+        explicit_solver_solve_lin_combination<false>(&k5, params, step_info, W{1, state}, W{tau/2, k1}, W{-tau*3/2, k3}, W{tau*2, k4});
 
         cuda_for(0, params.ny*params.nx, [=]SHARED(int i){
             Real F = (Real)0.2*k1.F[i] - (Real)0.9*k3.F[i] + (Real)0.8*k4.F[i] - (Real)0.1*k5.F[i];
@@ -914,18 +821,18 @@ void semi_implicit_solver_step_based(Semi_Implicit_Solver* solver, Real* F, Real
 
     if(do_corrector_guess)
     {
-        cuda_tiled_for_2D<1, 1, Bundled>(0, 0, nx, ny,
-            [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Bundled {
+        cuda_tiled_for_2D<1, 1, Phase_Temp>(0, 0, nx, ny,
+            [=]SHARED(csize x, csize y, csize nx, csize ny, csize rx, csize ry) -> Phase_Temp {
                 Real Phi = boundary_sample(F, x, y, nx, ny, F_bound);
                 Real T = boundary_sample(U, x, y, nx, ny, U_bound);
-                return Bundled{Phi, T};
+                return Phase_Temp{Phi, T};
             },
-            [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, Bundled* shared){
-                Bundled C = shared[tx   + ty*tile_size_x];
-                Bundled E = shared[tx+1 + ty*tile_size_x];
-                Bundled W = shared[tx-1 + ty*tile_size_x];
-                Bundled N = shared[tx   + (ty+1)*tile_size_x];
-                Bundled S = shared[tx   + (ty-1)*tile_size_x];
+            [=]SHARED(csize x, csize y, csize tx, csize ty, csize tile_size_x, csize tile_size_y, Phase_Temp* shared){
+                Phase_Temp C = shared[tx   + ty*tile_size_x];
+                Phase_Temp E = shared[tx+1 + ty*tile_size_x];
+                Phase_Temp W = shared[tx-1 + ty*tile_size_x];
+                Phase_Temp N = shared[tx   + (ty+1)*tile_size_x];
+                Phase_Temp S = shared[tx   + (ty-1)*tile_size_x];
 
                 Real grad_Phi_x = (E.Phi - W.Phi)*one_over_2dx;
                 Real grad_Phi_y = (N.Phi - S.Phi)*one_over_2dy;
@@ -1149,11 +1056,7 @@ void semi_implicit_solver_get_maps(Semi_Implicit_Solver* solver, Semi_Implicit_S
     int __map_i = 0;
     memset(maps, 0, sizeof maps[0] * (size_t)map_count);
     ASSIGN_MAP_NAMED(state.F, "Phi");            
-    ASSIGN_MAP_NAMED(state.U, "T");            
-    // ASSIGN_MAP_NAMED(solver->maps.b_F, "b_F");           
-    // ASSIGN_MAP_NAMED(solver->debug_maps.AfF, "AfF");           
-    // ASSIGN_MAP_NAMED(solver->maps.b_U, "b_U");           
-    // ASSIGN_MAP_NAMED(solver->debug_maps.AuU, "AuU");           
+    ASSIGN_MAP_NAMED(state.U, "T");                    
     ASSIGN_MAP_NAMED(solver->debug_maps.grad_phi, "grad_phi");           
     ASSIGN_MAP_NAMED(solver->debug_maps.grad_T, "grad_T");           
     ASSIGN_MAP_NAMED(solver->maps.anisotrophy, "Anisotrophy");
