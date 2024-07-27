@@ -710,6 +710,8 @@ static void test_reduce_type(uint64_t seed, const char* type_name)
         T l2 = cuda_L2_norm(rand, n);
         TEST(stats.min == min3);
         TEST(stats.max == max3);
+        if(n > 0)
+            TEST(min3 <= max3);
         //this should be strict equality since the alg for sum and sum in stats is the *same*
         // but it isnt. Why? Lets blame it on the kernel optimalizations reordering our instructions
         // cause I cant be bothered

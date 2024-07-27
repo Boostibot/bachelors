@@ -1,33 +1,20 @@
 #pragma once
 
 // This file defines a C interface between the cuda implementation and outside world.
-//
-// We try to be as transparent as possible while still allowing the user application to
-//   not care about the solver type. We use tagged unions instead of inheritence like approaches.
-//
-// We try to decouple the concept of state (T, Phi, ... inside Sim_State) from the auxiliary data 
-//   needed to perform a sngle simulation step  (Matrices, vectors of right hands side ... 
-//   inside Sim_Solver). This provides us with a lot extra flexibility we wouldnt be able to get with
-//   the usual Solver calls that manages everything. We are free to create as much history state as we 
-//   want, replay a particular step in the simulation, change solvers mid way through algorhitm... .
-//   
-// The retrieval of all maps used is done through the Sim_Map interface which returns a raw pointer
-//   int the cuda DEVICE memory along with name identifying it. This makes it extremely easy to iterate
-//   throught the maps and display/serialize only the desired one in solver agnostic way. We use this
-//   to quickly define new debug maps without having to change almost anything.
 
 #include <stddef.h>
+#include <stdlib.h>
+#include "defines.h"
 
 #define COMPILE_GRAPHICS  
-// #define COMPILE_NETCDF  
-#ifndef CUSTOM_SETTINGS
-// #define COMPILE_BENCHMARKS
-// #define COMPILE_TESTS
-#define COMPILE_SIMULATION
-// #define COMPILE_THRUST
-#define COMPILE_NOISE
-
-// #define USE_FLOATS
+    // #define COMPILE_NETCDF  
+    #ifndef CUSTOM_SETTINGS
+    // #define COMPILE_BENCHMARKS
+    // #define COMPILE_TESTS
+    #define COMPILE_SIMULATION
+    // #define COMPILE_THRUST
+    #define COMPILE_NOISE
+    // #define USE_FLOATS
 #endif
 
 #ifdef USE_FLOATS
@@ -36,18 +23,74 @@
     typedef double Real;
 #endif
 
-enum Sim_Boundary_Type {
+typedef enum Sim_Boundary_Type {
     BOUNDARY_PERIODIC = 0, 
     BOUNDARY_DIRICHLET_ZERO, 
     BOUNDARY_NEUMANN_ZERO, 
-};
+    BOUNDARY_ENUM_COUNT, 
+} Sim_Boundary_Type;
+
+typedef enum Sim_Solver_Type{
+    SOLVER_TYPE_NONE = 0,
+    SOLVER_TYPE_EXPLICIT_EULER,
+    SOLVER_TYPE_EXPLICIT_RK4,
+    SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE,
+    SOLVER_TYPE_SEMI_IMPLICIT,
+    SOLVER_TYPE_EXACT,
+    SOLVER_TYPE_ENUM_COUNT,
+} Sim_Solver_Type;
+
+typedef int64_t i64;
+
+typedef struct Sim_Map {
+    Real* data;
+    int nx;
+    int ny;
+    char name[32];
+    i64 iter; //iteration at which this mapped was touched
+    double time;
+    bool is_debug;
+} Sim_Map;
+
+enum {MAX_STEP_RESIDUALS = 20};
+typedef struct Sim_Stats {
+    double time;
+    i64 iter;
+    
+    int Phi_iters;
+    int Phi_ellapsed_time; //TODO
+    float T_iters;
+    float T_ellapsed_time;
+
+    float T_delta_L1;
+    float T_delta_L2;
+    float T_delta_max;
+    float T_delta_min;
+
+    float Phi_delta_L1;
+    float Phi_delta_L2;
+    float Phi_delta_max;
+    float Phi_delta_min;
+
+    float step_res_L1[MAX_STEP_RESIDUALS];
+    float step_res_L2[MAX_STEP_RESIDUALS];
+    float step_res_max[MAX_STEP_RESIDUALS];
+    float step_res_min[MAX_STEP_RESIDUALS];
+    int step_res_count;
+} Sim_Stats;
 
 typedef struct Sim_Params{
+    Sim_Solver_Type solver;
     int nx;
     int ny;
 
-    double L0; 
+    double time;
+    i64 iter;
 
+    Sim_Boundary_Type T_boundary;
+    Sim_Boundary_Type Phi_boundary;
+
+    double L0; 
     double dt;
     double L; 
     double xi;
@@ -57,7 +100,6 @@ typedef struct Sim_Params{
     double beta;
     double gamma; 
     double Tm; 
-    double exact_R_ini; //TODO: remove
 
     double S; 
     double m0; 
@@ -79,84 +121,36 @@ typedef struct Sim_Params{
     bool do_stats_step_residual;
     bool do_exact;
 
-    Sim_Boundary_Type T_boundary;
-    Sim_Boundary_Type Phi_boundary;
+    Sim_Stats* stats;
+    Sim_Map* temp_maps;
+    int temp_map_count;
 } Sim_Params;
 
-enum {MAX_STEP_RESIDUALS = 20};
+void sim_realloc(Sim_Map* map, const char* name, int nx, int ny, double time, i64 iter);
+double sim_step(Sim_Map F, Sim_Map U, Sim_Map* next_F, Sim_Map* next_U, Sim_Params params);
 
-typedef struct Float_Array {
-    double* data;
-    size_t len;
-    size_t capacity;
-} Float_Array;
+typedef enum {
+    MODIFY_UPLOAD,
+    MODIFY_DOWNLOAD,
+} Sim_Modify;
 
-typedef struct Sim_Stats_Vectors{
-    Float_Array time;
-    Float_Array iter;
-    
-    Float_Array T_delta_L1;
-    Float_Array T_delta_L2;
-    Float_Array T_delta_max;
-    Float_Array T_delta_min;
+extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify);
+extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t count, Sim_Modify modify);
+extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t count, Sim_Modify modify);
 
-    Float_Array phi_delta_L1;
-    Float_Array phi_delta_L2;
-    Float_Array phi_delta_max;
-    Float_Array phi_delta_min;
+extern "C" bool run_tests();
+extern "C" bool run_benchmarks(int N);
 
-    Float_Array phi_iters;
-    Float_Array T_iters;
-    Float_Array phi_ellapsed_time; //TODO
-    Float_Array T_ellapsed_time;
-
-    Float_Array step_res_L1[MAX_STEP_RESIDUALS];
-    Float_Array step_res_L2[MAX_STEP_RESIDUALS];
-    Float_Array step_res_max[MAX_STEP_RESIDUALS];
-    Float_Array step_res_min[MAX_STEP_RESIDUALS];
-} Sim_Stats_Vectors;
-
-typedef struct Sim_Stats {
-    Sim_Stats_Vectors vectors;
-    size_t step_res_count;
-} Sim_Stats;
-
-typedef struct Sim_Step_Info {
-    size_t iter;
-    double sim_time;
-} Sim_Step_Info;
-
-#include <stdlib.h>
-static void float_array_reserve(Float_Array* array, size_t to_capaciy)
+static const char* boundary_type_to_cstring(Sim_Boundary_Type type)
 {
-    if(array->capacity < to_capaciy)
+    switch(type)
     {
-        array->capacity = array->capacity*3/2 + 8;
-        array->data = (double*) realloc(array->data, array->capacity*sizeof(double));
+        default: return "unknown";
+        case BOUNDARY_PERIODIC: return "periodic";
+        case BOUNDARY_DIRICHLET_ZERO: return "dirichlet";
+        case BOUNDARY_NEUMANN_ZERO: return "neumann";
     }
-} 
-
-static void float_array_push(Float_Array* array, double val)
-{
-    float_array_reserve(array, array->len + 1);
-    array->data[array->len ++] = val;
 }
-
-static void float_array_clear(Float_Array* array)
-{
-    array->len = 0;
-}
-
-typedef enum Sim_Solver_Type{
-    SOLVER_TYPE_NONE = 0,
-    SOLVER_TYPE_EXPLICIT_EULER,
-    SOLVER_TYPE_EXPLICIT_RK4,
-    SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE,
-    SOLVER_TYPE_SEMI_IMPLICIT,
-    SOLVER_TYPE_EXACT,
-
-    SOLVER_TYPE_ENUM_COUNT,
-} Sim_Solver_Type;
 
 static const char* solver_type_to_cstring(Sim_Solver_Type type)
 {
@@ -171,131 +165,3 @@ static const char* solver_type_to_cstring(Sim_Solver_Type type)
         case SOLVER_TYPE_EXACT: return "exact"; 
     }
 }
-
-static int solver_type_required_history(Sim_Solver_Type type) 
-{
-    switch(type)
-    {
-        default:
-        case SOLVER_TYPE_NONE: return 0;
-        case SOLVER_TYPE_EXPLICIT_EULER: return 2;
-        case SOLVER_TYPE_EXPLICIT_RK4: return 2;
-        case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: return 2;
-        case SOLVER_TYPE_SEMI_IMPLICIT: return 2;
-        case SOLVER_TYPE_EXACT: return 1;
-    }
-}
-
-#define SIM_HISTORY_MAX 32
-#define SIM_MAPS_MAX    64
-
-//Explicit
-typedef struct Explicit_Solver {
-    struct {
-        Real* grad_phi;
-        Real* grad_T;
-        Real* reaction;
-        Real* aniso_factor;
-        Real* step_residual;
-        Real* perlin;
-        Real* simplex;
-    } debug_maps;
-
-    void* pad;
-    int nx;
-    int ny;
-} Explicit_Solver;
-
-typedef struct Explicit_State{
-    Real* F;
-    Real* U;
-
-    int nx;
-    int ny;
-} Explicit_State;
-
-typedef Explicit_State Explicit_RK4_Solver;
-typedef Explicit_State Explicit_RK4_Adaptive_Solver;
-typedef Explicit_State Semi_Implicit_State;
-typedef Explicit_State Exact_State;
-
-typedef struct Semi_Implicit_Solver {
-    struct {
-        Real* b_F;
-        Real* b_U;
-        Real* anisotrophy;
-    } maps;
-
-    struct {
-        Real* grad_phi;
-        Real* grad_T;
-        Real* aniso_factor;
-        Real* AfF;
-        Real* AuU;
-        Real* step_residuals[3];
-    } debug_maps;
-
-    int nx;
-    int ny;
-} Semi_Implicit_Solver;
-
-
-typedef struct Semi_Implicit_Coupled_Solver {
-    Real* b_C; //size 2N
-
-    Real* aniso; //size N
-    Real* B_U; //size N
-
-    int nx;
-    int ny;
-} Semi_Implicit_Coupled_Solver;
-
-//Polymorphic
-typedef struct Sim_State {
-    int nx;
-    int ny;
-    Sim_Solver_Type type;
-
-    union {
-        Exact_State exact;
-        Explicit_State expli;
-        Semi_Implicit_State impli;
-    };
-} Sim_State;
-
-typedef struct Sim_Solver  {
-    int nx;
-    int ny;
-    Sim_Solver_Type type;
-
-    union {
-        int exact;
-        Explicit_Solver expli;
-        Semi_Implicit_Solver impli;
-    };
-} Sim_Solver;
-
-typedef struct Sim_Map {
-    const char* name;
-    Real* data;
-
-    int nx;
-    int ny;
-} Sim_Map;
-
-extern "C" void sim_solver_reinit(Sim_Solver* solver, Sim_Solver_Type type, int nx, int ny);
-extern "C" void sim_states_reinit(Sim_State* states, int state_count, Sim_Solver_Type type, int nx, int ny);
-extern "C" void sim_solver_get_maps(Sim_Solver* solver, Sim_State* states, int states_count, int iter, Sim_Map* maps, int map_count);
-extern "C" double sim_solver_step(Sim_Solver* solver, Sim_State* states, int states_count, Sim_Step_Info info, Sim_Params params, Sim_Stats* stats_or_null);
-
-typedef enum {
-    MODIFY_UPLOAD,
-    MODIFY_DOWNLOAD,
-} Sim_Modify;
-
-extern "C" void sim_modify(void* device_memory, void* host_memory, size_t size, Sim_Modify modify);
-extern "C" void sim_modify_float(Real* device_memory, float* host_memory, size_t count, Sim_Modify modify);
-extern "C" void sim_modify_double(Real* device_memory, double* host_memory, size_t count, Sim_Modify modify);
-
-extern "C" bool run_tests();
-extern "C" bool run_benchmarks(int N);

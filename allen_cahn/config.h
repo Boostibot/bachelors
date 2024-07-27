@@ -14,7 +14,6 @@ typedef struct Sim_Config{
 
     //Simulation parameters
     double simul_stop_time;
-    Sim_Solver_Type simul_solver;
 
     //initial nonditions
     std::string init_path;
@@ -46,6 +45,7 @@ typedef struct Sim_Config{
     bool app_run_benchmarks;
     bool app_collect_stats;
     bool app_collect_step_residuals;
+    double app_collect_stats_every;
 
     bool   app_interactive_mode;
     bool   app_linear_filtering;
@@ -329,7 +329,37 @@ bool key_value_get_solver_type(const Key_Value& map, Sim_Solver_Type* out, const
         {
             LOG_ERROR("config", "invalid value '%s' for solver! Expecting one of:", solver_string.data());
             for(size_t i = SOLVER_TYPE_NONE + 1; i < SOLVER_TYPE_ENUM_COUNT; i++)
-                LOG_ERROR(">config", "[%i] %s", i, solver_type_to_cstring((Sim_Solver_Type) i));
+                LOG_ERROR(">config", "%i. '%s'", i, solver_type_to_cstring((Sim_Solver_Type) i));
+
+            matched_solver = false;
+        }
+        else
+            *out = solver_type;
+    }
+
+    return matched_solver;
+}
+
+bool key_value_get_boundary_type(const Key_Value& map, Sim_Boundary_Type* out, const char* section, const char* str)
+{
+    Sim_Boundary_Type solver_type = BOUNDARY_ENUM_COUNT;
+    std::string solver_string;
+    bool matched_solver = key_value_get_string(map, &solver_string, section, str);
+    if(matched_solver)
+    {
+        for(size_t i = 0; i < BOUNDARY_ENUM_COUNT; i++)
+        {
+            Sim_Boundary_Type type = (Sim_Boundary_Type) i;
+            const char* name = boundary_type_to_cstring(type);
+            if(solver_string == name)
+                solver_type = type;
+        }
+
+        if(solver_type == BOUNDARY_ENUM_COUNT)
+        {
+            LOG_ERROR("config", "invalid value '%s' for boundary! Expecting one of:", solver_string.data());
+            for(size_t i = BOUNDARY_PERIODIC; i < BOUNDARY_ENUM_COUNT; i++)
+                LOG_ERROR(">config", "%i. '%s'", i, boundary_type_to_cstring((Sim_Boundary_Type) i));
 
             matched_solver = false;
         }
@@ -389,7 +419,9 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
             & (uint8_t) key_value_get_double(pairs, &params->theta0, "simulation", "theta0")
             & (uint8_t) key_value_get_double(pairs, &params->gamma, "simulation", "gamma")
             & (uint8_t) key_value_get_bool(pairs, &params->do_exact, "simulation", "do_exact")
-            & (uint8_t) key_value_get_solver_type(pairs, &config->simul_solver, "simulation", "solver")
+            & (uint8_t) key_value_get_solver_type(pairs, &params->solver, "simulation", "solver")
+            & (uint8_t) key_value_get_boundary_type(pairs, &params->Phi_boundary, "simulation", "Phi_boundary")
+            & (uint8_t) key_value_get_boundary_type(pairs, &params->T_boundary, "simulation", "T_boundary")
             & (uint8_t) key_value_get_double(pairs, &config->simul_stop_time, "simulation", "stop_after")
             & (uint8_t) key_value_get_int(pairs, &params->nx, "simulation", "mesh_size_x")
             & (uint8_t) key_value_get_int(pairs, &params->ny, "simulation", "mesh_size_y")
@@ -429,11 +461,13 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
             & (uint8_t) key_value_get_bool(pairs, &config->app_run_benchmarks, "program", "run_benchmarks")
             & (uint8_t) key_value_get_bool(pairs, &config->app_interactive_mode, "program", "interactive")
             & (uint8_t) key_value_get_bool(pairs, &config->app_linear_filtering, "program", "linear_filtering")
-            & (uint8_t) key_value_get_bool(pairs, &params->do_stats, "program", "collect_stats")
-            & (uint8_t) key_value_get_bool(pairs, &params->do_stats_step_residual, "program", "collect_step_residual")
+            & (uint8_t) key_value_get_bool(pairs, &config->app_collect_stats, "program", "collect_stats")
+            & (uint8_t) key_value_get_bool(pairs, &config->app_collect_step_residuals, "program", "collect_step_residual")
+            & (uint8_t) key_value_get_double(pairs, &config->app_collect_stats_every, "program", "collect_stats_every")
             & (uint8_t) key_value_get_double(pairs, &config->app_display_min, "program", "display_min")
             & (uint8_t) key_value_get_double(pairs, &config->app_display_max, "program", "display_max")
             ;
+            
 
         //TODO: this should be more proper
         if(params->do_exact)
@@ -448,7 +482,6 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
             params->xi = params->L0/params->nx * 11/10;
             config->init_circle_inner_radius = 0.25;
         }
-        params->exact_R_ini = config->init_circle_inner_radius;
             
         state = matched_initial && matched_snaps && matched_simulation && matched_program;
         if(state == false)

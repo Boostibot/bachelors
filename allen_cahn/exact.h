@@ -95,6 +95,6 @@ EXACT_API Exact_Params get_static_exact_params(Sim_Params params)
     exact_params.xi = params.xi;
     exact_params.epsilon = 0.001;
     exact_params.lambda = 0.5;
-    exact_params.R_ini = params.exact_R_ini;
+    exact_params.R_ini = 0.25;
     return exact_params;
 }

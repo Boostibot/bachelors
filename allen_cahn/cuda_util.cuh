@@ -2,7 +2,7 @@
 
 //For the moment we compile these onese as well but
 // just as static so we can safely link
-#define EXPORT static
+// #define EXPORT static
 #include "assert.h"
 #include "defines.h"
 #include "log.h"

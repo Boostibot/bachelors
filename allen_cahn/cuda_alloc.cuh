@@ -218,4 +218,4 @@ static void _cuda_realloc_in_place(void** ptr_ptr, size_t new_size, size_t old_s
 }
 
 #define cuda_realloc(old_ptr, new_size, old_size, flags)          _cuda_realloc(old_ptr, new_size, old_size, flags, __FILE__, __FUNCTION__, __LINE__)
-#define cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags) _cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags, __FILE__, __FUNCTION__, __LINE__)
+#define cuda_realloc_in_place(ptr_ptr, new_size, old_size, flags) _cuda_realloc_in_place((void**) ptr_ptr, new_size, old_size, flags, __FILE__, __FUNCTION__, __LINE__)

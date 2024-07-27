@@ -9,6 +9,7 @@
 #include <cmath>
 #include <stddef.h>
 #include <cuda_runtime.h> 
+#include <vector>
 #include "exact.h"
 
 #define WINDOW_TITLE                "sim"
@@ -24,7 +25,41 @@
 static double clock_s();
 static void wait_s(double seconds);
 
-typedef struct App_State {
+struct App_Stats {
+    std::vector<double> time;
+    std::vector<i64>   iter;
+    
+    std::vector<int>   Phi_iters;
+    std::vector<int>   Phi_ellapsed_time; //TODO
+    std::vector<float> T_iters;
+    std::vector<float> T_ellapsed_time;
+
+    std::vector<float> T_delta_L1;
+    std::vector<float> T_delta_L2;
+    std::vector<float> T_delta_max;
+    std::vector<float> T_delta_min;
+
+    std::vector<float> Phi_delta_L1;
+    std::vector<float> Phi_delta_L2;
+    std::vector<float> Phi_delta_max;
+    std::vector<float> Phi_delta_min;
+
+    std::vector<float> step_res_L1[MAX_STEP_RESIDUALS];
+    std::vector<float> step_res_L2[MAX_STEP_RESIDUALS];
+    std::vector<float> step_res_max[MAX_STEP_RESIDUALS];
+    std::vector<float> step_res_min[MAX_STEP_RESIDUALS];
+    int step_res_count;
+};
+
+enum {
+    SIM_MAP_F = 0,
+    SIM_MAP_U = 1,
+    SIM_MAP_NEXT_F = 2,
+    SIM_MAP_NEXT_U = 3,
+    SIM_MAP_TEMP = 4,
+    SIM_MAP_COUNT = 32,
+};
+struct App_State {
     time_t init_time;
     bool is_in_step_mode;
     bool is_in_debug_mode;
@@ -32,8 +67,9 @@ typedef struct App_State {
     double step_by;
     double sim_time;
     double dt;
-    size_t iter;
-    int render_target; //0:phi 1:T rest: debug_option at index - 2; 
+    double last_stats_save;
+    i64 iter;
+    int render_target;
 
     int count_written_snapshots;
     int count_written_stats;
@@ -41,12 +77,20 @@ typedef struct App_State {
     Sim_Stats stats;
     Sim_Config config;
 
-    Sim_Solver solver;
-    Sim_State  states[SIM_HISTORY_MAX];
-    int        used_states;
-} App_State;
+    union {
+        struct {
+            Sim_Map F;
+            Sim_Map U;
+            Sim_Map next_F;
+            Sim_Map next_U;
+            Sim_Map temp[28];
+        };
+        Sim_Map all[32];
+    } maps;
+    App_Stats stat_vectors;
+};
 
-void sim_make_initial_conditions(Real* initial_phi_map, Real* initial_T_map, const Sim_Config& config)
+void sim_make_initial_conditions(Real* F, Real* U, const Sim_Config& config)
 {
     const Sim_Params& params = config.params;
     Exact_Params exact_params = get_static_exact_params(params);
@@ -61,8 +105,8 @@ void sim_make_initial_conditions(Real* initial_phi_map, Real* initial_T_map, con
             {
                 Real r = hypot(pos.x - params.L0/2, pos.y - params.L0/2); 
 
-                initial_phi_map[i] = exact_corresponing_phi_ini(r, exact_params);
-                initial_T_map[i] = exact_u(0, r, exact_params);
+                F[i] = exact_corresponing_phi_ini(r, exact_params);
+                U[i] = exact_u(0, r, exact_params);
             }
             else
             {
@@ -80,8 +124,8 @@ void sim_make_initial_conditions(Real* initial_phi_map, Real* initial_T_map, con
                 double cube_sdf = is_within_cube ? 1 : 0;
                 double factor = cube_sdf > circle_normed_sdf ? cube_sdf : circle_normed_sdf;
 
-                initial_phi_map[i] = (Real) (factor*config.init_inside_phi + (1 - factor)*config.init_outside_phi);
-                initial_T_map[i] = (Real) (factor*config.init_inside_T + (1 - factor)*config.init_outside_T);
+                F[i] = (Real) (factor*config.init_inside_phi + (1 - factor)*config.init_outside_phi);
+                U[i] = (Real) (factor*config.init_inside_T + (1 - factor)*config.init_outside_T);
             }
 
         }
@@ -103,8 +147,6 @@ int maps_find(const Sim_Map* maps, int map_count, const char* name)
 
 void simulation_state_reload(App_State* app, Sim_Config config)
 {
-    //@NOTE: I am failing to link to this TU from nvcc without using at least one cuda function
-    // so here goes something harmless.
     cudaGetErrorString(cudaSuccess);
     int ny = config.params.ny;
     int nx = config.params.nx;
@@ -112,30 +154,20 @@ void simulation_state_reload(App_State* app, Sim_Config config)
     size_t bytes_size = (size_t) (ny * nx) * sizeof(Real);
     Real* initial_F = (Real*) malloc(bytes_size);
     Real* initial_U = (Real*) malloc(bytes_size);
-
-    app->used_states = solver_type_required_history(config.simul_solver);
-    sim_solver_reinit(&app->solver, config.simul_solver, nx, ny);
-    sim_states_reinit(app->states, app->used_states, config.simul_solver, nx, ny);
     sim_make_initial_conditions(initial_F, initial_U, config);
     
-    Sim_Map maps[SIM_MAPS_MAX] = {0};
-    sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
-    int Phi_i = maps_find(maps, SIM_MAPS_MAX, "Phi");
-    int T_i = maps_find(maps, SIM_MAPS_MAX, "T");
+    double t = 0;
+    i64 iter = 0;
+    sim_realloc(&app->maps.F, "F", nx, ny, t, iter);
+    sim_realloc(&app->maps.U, "U", nx, ny, t, iter);
 
-    if(Phi_i != -1)
-        sim_modify(maps[Phi_i].data, initial_F, bytes_size, MODIFY_UPLOAD);
-
-    if(T_i != -1)
-        sim_modify(maps[T_i].data, initial_U, bytes_size, MODIFY_UPLOAD);
-
+    sim_modify(app->maps.F.data, initial_F, bytes_size, MODIFY_UPLOAD);
+    sim_modify(app->maps.U.data, initial_U, bytes_size, MODIFY_UPLOAD);
     app->config = config;
-
     app->init_time = time(NULL); 
     free(initial_F);
     free(initial_U);
 }
-
 
 #ifdef COMPILE_GRAPHICS
 #include "gl.h"
@@ -145,10 +177,8 @@ void glfw_resize_func(GLFWwindow* window, int width, int heigth);
 void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mods);
 #endif
 
-
 enum {
     SAVE_NETCDF = 1,
-    SAVE_CSV = 2,
     SAVE_BIN = 4,
     SAVE_STATS = 8,
     SAVE_CONFIG = 16,
@@ -178,12 +208,12 @@ int main()
     simulation_state_reload(app, config);
     
     if(config.snapshot_initial_conditions)
-        save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, 0);
+        save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG, 0);
 
     #define LOG_INFO_CONFIG_FLOAT(var) LOG_INFO("config", #var " = %.2lf", (double) config.params.var);
     #define LOG_INFO_CONFIG_INT(var) LOG_INFO("config", #var " = %i", (int) config.params.var);
 
-    LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.simul_solver));
+    LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.params.solver));
 
     LOG_INFO_CONFIG_INT(nx);
     LOG_INFO_CONFIG_INT(ny);
@@ -285,21 +315,14 @@ int main()
             if(update_screen)
             {
                 render_last_time = frame_start_time;
-                int target = app->render_target;
-
-                Sim_Map maps[SIM_MAPS_MAX] = {0};
-                sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
-                Sim_Map selected_map = {0};
-                if(0 <= target && target < SIM_MAPS_MAX)
-                    selected_map = maps[target];
-
-                draw_sci_cuda_memory("main", selected_map.nx, selected_map.ny, (float) app->config.app_display_min, (float) app->config.app_display_max, config.app_linear_filtering, selected_map.data);
+                Sim_Map render_target = app->maps.all[app->render_target];
+                draw_sci_cuda_memory("main", render_target.nx, render_target.ny, (float) app->config.app_display_min, (float) app->config.app_display_max, config.app_linear_filtering, render_target.data);
                 glfwSwapBuffers(window);
             }
 
             if(update_frame_time_display)
             {
-                glfwSetWindowTitle(window, format_string("%s step: %3.3lfms | real: %8.6lfms", solver_type_to_cstring(app->config.simul_solver), processing_time * 1000, app->sim_time*1000).c_str());
+                glfwSetWindowTitle(window, format_string("%s step: %3.3lfms | real: %8.6lfms", solver_type_to_cstring(app->config.params.solver), processing_time * 1000, app->sim_time*1000).c_str());
                 time_display_last_time = frame_start_time;
             }
 
@@ -314,15 +337,69 @@ int main()
                 simulated_last_time = frame_start_time;
                 app->remaining_steps -= 1;
 
-                app->config.params.do_debug = app->is_in_debug_mode;
+                Sim_Params params = app->config.params;
+                params.iter = app->iter;
+                params.time = app->sim_time;
+                params.do_debug = app->is_in_debug_mode;
+                params.do_stats = app->config.app_collect_stats;
+                params.do_stats_step_residual = app->config.app_collect_step_residuals;
+                params.stats = &app->stats;
+                params.temp_maps = app->maps.temp;
+                params.temp_map_count = sizeof app->maps.temp / sizeof *app->maps.temp;
 
-                Sim_Step_Info step_info = {app->iter, app->sim_time};
                 double solver_start_time = clock_s();
-                app->sim_time += sim_solver_step(&app->solver, app->states, app->used_states, step_info, app->config.params, &app->stats);
+                app->sim_time += sim_step(app->maps.F, app->maps.U, &app->maps.next_F, &app->maps.next_U, params);
                 double solver_end_time = clock_s();
+
+                if(params.do_stats && app->sim_time >= app->last_stats_save + app->config.app_collect_stats_every)
+                {
+                    if(app->stat_vectors.step_res_count < app->stats.step_res_count)
+                    {
+                        size_t first_size = app->stat_vectors.step_res_L1[0].size();
+                        for(int i = app->stat_vectors.step_res_count; i < app->stats.step_res_count; i++)
+                        {
+                            app->stat_vectors.step_res_L1[i].resize(first_size);
+                            app->stat_vectors.step_res_L2[i].resize(first_size);
+                            app->stat_vectors.step_res_max[i].resize(first_size);
+                            app->stat_vectors.step_res_min[i].resize(first_size);
+                        }
+                        app->stat_vectors.step_res_count = app->stats.step_res_count;
+                    }
+
+                    app->stat_vectors.step_res_count = std::max(app->stat_vectors.step_res_count, app->stats.step_res_count);
+                    app->stat_vectors.time.push_back(app->stats.time);
+                    app->stat_vectors.iter.push_back(app->stats.iter);
+                    
+                    app->stat_vectors.Phi_iters.push_back(app->stats.Phi_iters);
+                    app->stat_vectors.Phi_ellapsed_time.push_back(app->stats.Phi_ellapsed_time); //TODO
+                    app->stat_vectors.T_iters.push_back(app->stats.T_iters);
+                    app->stat_vectors.T_ellapsed_time.push_back(app->stats.T_ellapsed_time);
+
+                    app->stat_vectors.T_delta_L1.push_back(app->stats.T_delta_L1);
+                    app->stat_vectors.T_delta_L2.push_back(app->stats.T_delta_L2);
+                    app->stat_vectors.T_delta_max.push_back(app->stats.T_delta_max);
+                    app->stat_vectors.T_delta_min.push_back(app->stats.T_delta_min);
+
+                    app->stat_vectors.Phi_delta_L1.push_back(app->stats.Phi_delta_L1);
+                    app->stat_vectors.Phi_delta_L2.push_back(app->stats.Phi_delta_L2);
+                    app->stat_vectors.Phi_delta_max.push_back(app->stats.Phi_delta_max);
+                    app->stat_vectors.Phi_delta_min.push_back(app->stats.Phi_delta_min);
+
+                    for(int i = 0; i < app->stat_vectors.step_res_count; i++)
+                    {
+                        app->stat_vectors.step_res_L1[i].push_back(app->stats.step_res_L1[i]);
+                        app->stat_vectors.step_res_L2[i].push_back(app->stats.step_res_L2[i]);
+                        app->stat_vectors.step_res_max[i].push_back(app->stats.step_res_max[i]);
+                        app->stat_vectors.step_res_min[i].push_back(app->stats.step_res_min[i]);
+                    }
+                    app->last_stats_save = app->sim_time;
+                }
 
                 processing_time = solver_end_time - solver_start_time;
                 app->iter += 1;
+
+                std::swap(app->maps.F, app->maps.next_F);
+                std::swap(app->maps.U, app->maps.next_U);
             }
 
             if(poll_events)
@@ -347,8 +424,9 @@ int main()
     }
     else
     {
+        LOG_ERROR("APP", "Nom interactive mode is right now not maintained");
         app->is_in_debug_mode = false;
-        size_t iters = (size_t) ceil(config.simul_stop_time / config.params.dt);
+        i64 iters = (i64) ceil(config.simul_stop_time / config.params.dt);
         size_t snapshot_every_i = 0;
         size_t snapshot_times_i = 0;
         bool end_reached = false;
@@ -382,8 +460,8 @@ int main()
                     break;
             }
 
-            Sim_Step_Info step_info = {app->iter, app->sim_time};
-            app->sim_time += sim_solver_step(&app->solver, app->states, app->used_states, step_info, app->config.params, &app->stats);
+            // Sim_Step_Info step_info = {app->iter, app->sim_time};
+            // app->sim_time += sim_solver_step(&app->solver, app->states, app->used_states, step_info, app->config.params, &app->stats);
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
@@ -481,26 +559,18 @@ void glfw_key_func(GLFWwindow* window, int key, int scancode, int action, int mo
         if(key == GLFW_KEY_F6) new_render_target = 5;
         if(key == GLFW_KEY_F7) new_render_target = 6;
         if(key == GLFW_KEY_F8) new_render_target = 7;
-        if(key == GLFW_KEY_F9) new_render_target = 8;
-        if(key == GLFW_KEY_F10) new_render_target = 9;
+
+        if(key == GLFW_KEY_F9) new_render_target = MOD(app->render_target-1, SIM_MAP_COUNT);
+        if(key == GLFW_KEY_F10) new_render_target = MOD(app->render_target+1, SIM_MAP_COUNT);
         
         if(new_render_target != -1)
         {
-            Sim_Map maps[SIM_MAPS_MAX] = {0};
-            sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
+            const char* map_name = app->maps.all[new_render_target].name;
+            if(strlen(map_name) == 0)
+                map_name = "<EMPTY>";
 
-            if(0 <= new_render_target && new_render_target < SIM_MAPS_MAX)
-            {
-                if(maps[new_render_target].name == NULL)
-                    maps[new_render_target].name = "<EMPTY>";
-
-                LOG_INFO("APP", "redering %s", maps[new_render_target].name);
-                app->render_target = new_render_target;
-            }
-            else
-            {
-                LOG_INFO("APP", "current render target %i outside of the allowed range [0, %i)", new_render_target, SIM_MAPS_MAX);
-            }
+            LOG_INFO("APP", "redering %s", map_name);
+            app->render_target = new_render_target;
         }
     }
 }
@@ -524,18 +594,14 @@ static void wait_s(double seconds)
     std::this_thread::sleep_until(sleep_til);
 }
 
-bool save_bin_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi);
-bool save_csv_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi);
-
-bool load_bin_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi);
-bool load_csv_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi);
-
-bool save_csv_stat_file(const char* filename, size_t from, size_t to, Sim_Stats stats);
+bool save_bin_map_file(const char* filename, int nx, int ny, double dx, double dy, i64 iter, double dt, const Sim_Map* maps, int map_count);
+bool save_csv_stat_file(const char* filename, int nx, int ny, double dt, size_t from, size_t to, const App_Stats& stats, bool append);
 bool save_netcfd_file(const char* filename, App_State* app);
 
 #include <cstdio>
 #define BIN_FILE_MAGIC 0x11223344
-bool save_bin_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi)
+
+bool save_bin_map_file(const char* filename, int nx, int ny, double dx, double dy, i64 iter, double time, const Sim_Map* maps, int map_count)
 {
     bool state = false;
     FILE* file = fopen(filename, "wb");
@@ -544,12 +610,20 @@ bool save_bin_map_file(const char* filename, int nx, int ny, size_t iter, double
         size_t N = (size_t) (nx*ny);
         int magic = BIN_FILE_MAGIC;
         fwrite(&magic, sizeof magic, 1, file);
+        fwrite(&map_count, sizeof map_count, 1, file);
         fwrite(&nx, sizeof nx, 1, file);
         fwrite(&ny, sizeof ny, 1, file);
+        fwrite(&dx, sizeof dx, 1, file);
+        fwrite(&dy, sizeof dy, 1, file);
+        fwrite(&time, sizeof time, 1, file);
         fwrite(&iter, sizeof iter, 1, file);
-        fwrite(&t, sizeof t, 1, file);
-        fwrite(T, sizeof(double), N, file);
-        fwrite(phi, sizeof(double), N, file);
+        for(int i = 0; i < map_count; i++)
+            if(maps[i].iter == iter && maps[i].data)
+                fwrite(maps[i].name, sizeof maps[i].name, 1, file);
+
+        for(int i = 0; i < map_count; i++)
+            if(maps[i].iter == iter && maps[i].data)
+                fwrite(maps[i].data, sizeof(double), N, file);
 
         state = ferror(file) == 0;
         fclose(file);
@@ -559,131 +633,29 @@ bool save_bin_map_file(const char* filename, int nx, int ny, size_t iter, double
     return state;
 }
 
-bool load_bin_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi)
-{
-    bool state = false;
-    FILE* file = fopen(filename, "rb");
-    if(file != NULL)
-    {
-        int magic = 0;
-        fread(&magic, sizeof magic, 1, file);
-        state = magic == BIN_FILE_MAGIC;
-
-        fread(nx, sizeof *nx, 1, file);
-        fread(nx, sizeof *nx, 1, file);
-        fread(ny, sizeof *ny, 1, file);
-        fread(iter, sizeof *iter, 1, file);
-        fread(t, sizeof *t, 1, file);
-
-        *T = NULL;
-        *phi = NULL;
-        state = state && ferror(file) == 0;
-        if(state && nx > 0 && ny > 0)
-        {
-            size_t map_size = (size_t) (*nx**ny)*sizeof(double);
-            *T = (double*) malloc(map_size);
-            *phi = (double*) malloc(map_size);
-        
-            fwrite(T, map_size, 1, file);
-            fwrite(phi, map_size, 1, file);
-
-            state = ferror(file) == 0;
-        }
-        fclose(file);
-    }
-    if(state == false)
-        LOG_ERROR("APP", "Error loading bin file '%s'", filename);
-    return state;
-}
-bool save_csv_map_file(const char* filename, int nx, int ny, size_t iter, double t, const double* T, const double* phi)
-{
-    bool state = false;
-    FILE* file = fopen(filename, "wb");
-    if(file != NULL)
-    {
-        fprintf(file, "%i,%i,%lli,%.8lf\n", nx, ny, (long long) iter, t);
-        for(int y = 0; y < ny; y++)
-        {
-            if(nx > 0)
-                fprintf(file, "%lf", T[0 + y*nx]);
-
-            for(int x = 1; x < nx; x++)
-                fprintf(file, ",%lf", T[x + y*nx]);
-
-            fprintf(file, "\n");
-        }
-
-        for(int y = 0; y < ny; y++)
-        {
-            if(nx > 0)
-                fprintf(file, "%lf", phi[0 + y*nx]);
-
-            for(int x = 1; x < nx; x++)
-                fprintf(file, ",%lf", phi[x + y*nx]);
-
-            fprintf(file, "\n");
-        }
-
-        state = ferror(file) == 0;
-        fclose(file);
-    }
-    if(state == false)
-        LOG_ERROR("APP", "Error saving cvs file '%s'", filename);
-    return state;
-}
-
-bool load_csv_map_file(const char* filename, int* nx, int* ny, size_t* iter, double* t, double** T, double** phi)
-{
-    bool state = false;
-    FILE* file = fopen(filename, "rb");
-    if(file != NULL)
-    {
-        long long iterll = 0;
-        state = 4 == fscanf(file, "%i,%i,%lli,%lf\n", nx, ny, &iterll, t);
-        *iter = (size_t) iterll;
-        for(int y = 0; y < *ny && state; y++)
-        {
-            if(nx > 0)
-                state = 1 == fscanf(file, "%lf", T[0 + y**nx]);
-
-            for(int x = 1; x < *nx && state; x++)
-                state = 1 == fscanf(file, ",%lf", T[x + y**nx]);
-
-            fscanf(file, "\n");
-        }
-
-        for(int y = 0; y < *ny && state; y++)
-        {
-            if(nx > 0)
-                state = 1 == fscanf(file, "%lf", phi[0 + y**nx]);
-
-            for(int x = 1; x < *nx && state; x++)
-                state = 1 == fscanf(file, ",%lf", phi[x + y**nx]);
-
-            fscanf(file, "\n");
-        }
-
-        state = state && ferror(file) == 0;
-        fclose(file);
-    }
-    if(state == false)
-        LOG_ERROR("APP", "Error loading csv file '%s'", filename);
-    return state;
-}
-
 struct Small_String {
     char data[16];
 };
 
-Small_String float_array_at_conv(Float_Array arr, size_t at)
+template<typename T>
+Small_String float_vec_string_at(const std::vector<T>& arr, size_t at)
 {
     Small_String out = {0};
-    if(at < arr.len)
-        snprintf(out.data, sizeof out.data, "%lf", arr.data[at]);
+    if(at < arr.size())
+        snprintf(out.data, sizeof out.data, "%f", (float) arr[at]);
     return out;
 }
 
-bool save_csv_stat_file(const char* filename, size_t from, size_t to, Sim_Stats stats, bool append)
+template<typename T>
+Small_String int_vec_string_at(const std::vector<T>& arr, size_t at)
+{
+    Small_String out = {0};
+    if(at < arr.size())
+        snprintf(out.data, sizeof out.data, "%lli", (long long) arr[at]);
+    return out;
+}
+
+bool save_csv_stat_file(const char* filename, int nx, int ny, double dt, size_t from, size_t to, const App_Stats& stats, bool append)
 {
     bool state = false;
     FILE* file = fopen(filename, append ? "ab" : "wb");
@@ -691,9 +663,10 @@ bool save_csv_stat_file(const char* filename, size_t from, size_t to, Sim_Stats 
     {
         if(append == false)
         {
+            fprintf(file, "%i,%i,%lf\n", nx, ny, dt);
             fprintf(file, 
-                "\"time\",\"iter\",\"T_delta_L1\",\"T_delta_L2\",\"T_delta_max\",\"T_delta_min\","
-                "\"phi_delta_L1\",\"phi_delta_L2\",\"phi_delta_max\",\"phi_delta_min\",\"phi_iters\",\"T_iters\"");
+                "\"time\",\"iter\",\"Phi_iters\",\"T_iters\",\"T_delta_L1\",\"T_delta_L2\",\"T_delta_max\",\"T_delta_min\","
+                "\"Phi_delta_L1\",\"Phi_delta_L2\",\"Phi_delta_max\",\"Phi_delta_min\"");
                 
             for(int s = 0; s < (int) stats.step_res_count; s++)
                 fprintf(file, ",\"step_res_L1[%i]\",\"step_res_L1[%i]\",\"step_res_L1[%i]\",\"step_res_L1[%i]\"", s, s, s, s);
@@ -703,16 +676,20 @@ bool save_csv_stat_file(const char* filename, size_t from, size_t to, Sim_Stats 
 
         for(size_t y = from; y < to; y++)
         {
-            #define G(name) float_array_at_conv(stats.vectors.name, y).data
+            #define F(name) float_vec_string_at(stats.name, y).data
+            #define I(name) int_vec_string_at(stats.name, y).data
             fprintf(file, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s", 
-                G(time),G(iter),G(T_delta_L1),G(T_delta_L2),G(T_delta_max),G(T_delta_min),
-                G(phi_delta_L1),G(phi_delta_L2),G(phi_delta_max),G(phi_delta_min),G(phi_iters),G(T_iters));
+                F(time),I(iter),I(Phi_iters),I(T_iters),
+                F(T_delta_L1),F(T_delta_L2),F(T_delta_max),F(T_delta_min),
+                F(Phi_delta_L1),F(Phi_delta_L2),F(Phi_delta_max),F(Phi_delta_min)
+            );
                 
             for(int s = 0; s < (int) stats.step_res_count; s++)
-                fprintf(file, ",%s,%s,%s,%s", G(step_res_L1[s]),G(step_res_L1[s]),G(step_res_L1[s]),G(step_res_L1[s]));
+                fprintf(file, ",%s,%s,%s,%s", F(step_res_L1[s]),F(step_res_L1[s]),F(step_res_L1[s]),F(step_res_L1[s]));
 
             fprintf(file, "\n");
-            #undef G
+            #undef F
+            #undef I
         }
 
         state = ferror(file) == 0;
@@ -730,7 +707,7 @@ bool make_save_folder(const Sim_Config& config, time_t init_time, std::string* o
         config.snapshot_folder.size() > 0 ? "/" : "",
         config.snapshot_prefix.data(), 
         t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
-        solver_type_to_cstring(config.simul_solver),
+        solver_type_to_cstring(config.params.solver),
         config.snapshot_postfix.data()
     );
     std::error_code error = {};
@@ -751,62 +728,73 @@ bool save_state(App_State* app, int flags, int snapshot_index)
 
     if(flags & SAVE_NETCDF)    
     {
-        std::string file = format_string("%s/%s_nc_%04i.nc", save_folder.data(), solver_type_to_cstring(app->config.simul_solver), snapshot_index);
+        std::string file = format_string("%s/%s_nc_%04i.nc", save_folder.data(), solver_type_to_cstring(app->config.params.solver), snapshot_index);
         state = save_netcfd_file(file.data(), app) && state;
-    }
-
-    if(flags & SAVE_CSV)    
-    {
-        LOG_WARN("APP", "Save CSV should not be used!");
-        // std::string file = format_string("%s_csv_%04i.csv", solver_type_to_cstring(app->config.simul_solver), snapshot_index);
-        // state = save_netcfd_file(file.data(), app) && state;
     }
 
     if(flags & SAVE_BIN)    
     {
-        Sim_Map maps[SIM_MAPS_MAX] = {0};
-        sim_solver_get_maps(&app->solver, app->states, app->used_states, app->iter, maps, SIM_MAPS_MAX);
-        int F_i = maps_find(maps, SIM_MAPS_MAX, "Phi");
-        int U_i = maps_find(maps, SIM_MAPS_MAX, "T");
+        Sim_Map maps[SIM_MAP_COUNT] = {0};
 
-        if(F_i == -1 || U_i == -1)
-            LOG_ERROR("APP", "Cannot find phi or T maps");
-        else
+        int nx = app->config.params.nx;
+        int ny = app->config.params.ny;
+        double dx = app->config.params.L0 / nx;
+        double dy = app->config.params.L0 / ny;
+        double time = app->sim_time;
+        size_t N = (size_t) (nx*ny);
+
+        int maps_count = 0;
+        for(int i = 0; i < SIM_MAP_COUNT; i++)
         {
-            int nx = maps[F_i].nx;
-            int ny = maps[F_i].ny;
-            size_t N = (size_t) (nx*ny);
-            double* F = (double*) malloc(N*sizeof(double));
-            double* U = (double*) malloc(N*sizeof(double));
+            Sim_Map* from = &app->maps.all[i];
 
-            sim_modify_double(maps[F_i].data, F, N, MODIFY_DOWNLOAD);
-            sim_modify_double(maps[U_i].data, U, N, MODIFY_DOWNLOAD);
-
-            std::string file = format_string("%s/%s_bin_%04i.bin", save_folder.data(), solver_type_to_cstring(app->config.simul_solver), snapshot_index);
-            state = save_bin_map_file(file.data(), nx, ny, app->iter, app->sim_time, U, F) && state;
-
-            free(F);
-            free(U);
+            if(from->iter == app->iter && from->nx > 0 && from->ny > 0)
+            {
+                Sim_Map* into = &maps[maps_count++];
+                *into = *from;
+                into->data = (double*) malloc(N*sizeof(double));
+                sim_modify_double(from->data, into->data, N, MODIFY_DOWNLOAD);
+            }
         }
+
+        std::string file = format_string("%s/maps_%04i.bin", save_folder.data(), snapshot_index);
+        state = save_bin_map_file(file.data(), nx, ny, dx, dy, app->iter, time, maps, maps_count) && state;
+        for(int i = 0; i < SIM_MAP_COUNT; i++)
+            free((double*) maps[i].data);
     }
 
     if((flags & SAVE_STATS))    
     {
         std::string file = format_string("%s/stats.csv", save_folder.data());
-        state = save_csv_stat_file(file.data(), 0, app->stats.vectors.time.len, app->stats, app->count_written_stats != 0) && state;
-        for(size_t i = 0; i < sizeof(app->stats.vectors)/sizeof(Float_Array); i++)
+        state = save_csv_stat_file(file.data(), app->config.params.nx, app->config.params.ny, app->config.params.dt, 0, app->stat_vectors.time.size(), app->stat_vectors, app->count_written_stats != 0) && state;
+        app->stat_vectors.time.clear();
+        app->stat_vectors.iter.clear();
+        app->stat_vectors.Phi_iters.clear();
+        app->stat_vectors.Phi_ellapsed_time.clear();
+        app->stat_vectors.T_iters.clear();
+        app->stat_vectors.T_ellapsed_time.clear();
+        app->stat_vectors.T_delta_L1.clear();
+        app->stat_vectors.T_delta_L2.clear();
+        app->stat_vectors.T_delta_max.clear();
+        app->stat_vectors.T_delta_min.clear();
+        app->stat_vectors.Phi_delta_L1.clear();
+        app->stat_vectors.Phi_delta_L2.clear();
+        app->stat_vectors.Phi_delta_max.clear();
+        app->stat_vectors.Phi_delta_min.clear();
+        for(size_t i = 0; i < MAX_STEP_RESIDUALS; i++)
         {
-            Float_Array* arr = ((Float_Array*) (void*) &app->stats.vectors) + i;
-            float_array_clear(arr);
+            app->stat_vectors.step_res_L1[i].clear();
+            app->stat_vectors.step_res_L2[i].clear();
+            app->stat_vectors.step_res_max[i].clear();
+            app->stat_vectors.step_res_min[i].clear();
         }
-
         app->count_written_stats += 1;
     } 
 
     if((flags & SAVE_CONFIG) && app->count_written_configs == 0)    
     {
         std::string file = format_string("%s/config.ini", save_folder.data());
-        state = save_netcfd_file(file.data(), app) && state;
+        file_write_entire(file.data(), app->config.entire_config_file);
         app->count_written_configs += 1;
     } 
 
