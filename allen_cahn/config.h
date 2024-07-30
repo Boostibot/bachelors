@@ -24,8 +24,8 @@ typedef struct Sim_Config{
     double init_outside_T;
 
     Vec2   init_circle_center;
-    double init_circle_inner_radius;
-    double init_circle_outer_radius;
+    double init_circle_radius;
+    double init_circle_fade;
 
     Vec2   init_square_from;
     Vec2   init_square_to;
@@ -441,8 +441,8 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
             & (uint8_t) key_value_get_double(pairs, &config->init_outside_phi, "initial", "outside_phi")
             & (uint8_t) key_value_get_double(pairs, &config->init_outside_T, "initial", "outside_T")
             & (uint8_t) key_value_get_vec2(pairs, &config->init_circle_center, "initial", "circle_center")
-            & (uint8_t) key_value_get_double(pairs, &config->init_circle_inner_radius, "initial", "circle_inner_radius")
-            & (uint8_t) key_value_get_double(pairs, &config->init_circle_outer_radius, "initial", "circle_outer_radius")
+            & (uint8_t) key_value_get_double(pairs, &config->init_circle_radius, "initial", "circle_radius")
+            & (uint8_t) key_value_get_double(pairs, &config->init_circle_fade, "initial", "circle_fade")
             & (uint8_t) key_value_get_vec2(pairs, &config->init_square_from, "initial", "square_from")
             & (uint8_t) key_value_get_vec2(pairs, &config->init_square_to, "initial", "square_to");
 
@@ -468,7 +468,6 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
             & (uint8_t) key_value_get_double(pairs, &config->app_display_max, "program", "display_max")
             ;
             
-
         //TODO: this should be more proper
         if(params->do_exact)
         {
@@ -480,7 +479,7 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
             params->beta = 1/0.001;
             params->S = 0;
             params->xi = params->L0/params->nx * 11/10;
-            config->init_circle_inner_radius = 0.25;
+            config->init_circle_radius = 0.25;
         }
             
         state = matched_initial && matched_snaps && matched_simulation && matched_program;

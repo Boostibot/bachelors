@@ -223,12 +223,76 @@ def plot_map(map, name):
     img = ax.pcolormesh(X, Y, map.maps[name], cmap='RdBu_r', shading='flat', vmin=0, vmax=1)
     plt.colorbar(img, ax=ax)
     plt.show() 
-    # plt.gcf().savefig(output_figure, format=format)
 
-rel_path = "snapshots/2024-06-27__23-02-44__semi-implicit"
-abs_path = os.path.join(os.path.dirname(__file__), rel_path)
+def path_rel(base, path):
+    return os.path.join(os.path.dirname(__file__), base, path)
 
-stats = load_dir_stat_file(abs_path)
-maps_set = load_dir_bin_map_file(abs_path, 1)
-plot_map(maps_set, "F")
-plot_stats_l2(stats)
+def phi_map_discretize(map):
+    return (map > 0.5).astype(int)
+
+def show_comparison(base,path1, path2, name, i, filter=False):
+    name1 = path1.split("__")[-1]
+    name2 = path2.split("__")[-1]
+
+    maps1 = load_dir_bin_map_file(path_rel(base, path1), i)
+    maps2 = load_dir_bin_map_file(path_rel(base, path2), i)
+
+    map1 = maps1.maps[name]
+    map2 = maps2.maps[name]
+
+    if filter:
+        map1 = phi_map_discretize(map1)
+        map2 = phi_map_discretize(map2)
+    diff = map1 - map2
+    l1_norm = np.sum(np.abs(diff))
+    print(f"l1:{l1_norm} avg:{l1_norm/maps1.N}")
+
+    fig = plt.figure(figsize=(16, 6))
+
+    gs  = fig.add_gridspec(1,3)
+    ax1 = fig.add_subplot(gs[0, 0], label=name1)
+    ax2 = fig.add_subplot(gs[0, 1], label=name2)
+    ax3 = fig.add_subplot(gs[0, 2], label="diff")
+
+    ax1.set_aspect('equal')
+    ax2.set_aspect('equal')
+    ax3.set_aspect('equal')
+    ax1.set_title(name1)
+    ax2.set_title(name2)
+    ax3.set_title("diff")
+
+    linx = np.linspace(0, maps1.dx*maps1.nx, maps1.nx+1)
+    liny = np.linspace(0, maps1.dy*maps1.ny, maps1.ny+1)
+    X, Y = np.meshgrid(linx, liny)
+    img1 = ax1.pcolormesh(X, Y, map1, cmap='RdBu_r', shading='flat', vmin=0, vmax=1)
+    img2 = ax2.pcolormesh(X, Y, map2, cmap='RdBu_r', shading='flat', vmin=0, vmax=1)
+    img_diff = ax3.pcolormesh(X, Y, diff, cmap='RdBu_r', shading='flat')
+    plt.colorbar(img1, ax=ax1,fraction=0.046, pad=0.04)
+    plt.colorbar(img2, ax=ax2,fraction=0.046, pad=0.04)
+    plt.colorbar(img_diff, ax=ax3,fraction=0.046, pad=0.04)
+
+    plt.subplots_adjust(wspace=0.4)
+    fig.show()
+    plt.show()
+
+#Basic comparison
+if False:
+    show_comparison(
+        "showcase/first_comp",
+        "2024-06-28__19-53-08__semi-implicit",
+        "2024-06-28__19-55-31__explicit-rk4",
+        "F", 20, filter=False)
+    
+else:
+    show_comparison(
+        "showcase/first_comp",
+        "2024-06-28__19-53-08__semi-implicit",
+        "2024-06-28__20-00-18__explicit-rk4-adaptive",
+        "F", 20, filter=False)
+
+
+
+# stats = load_dir_stat_file(abs_path)
+# maps_set = load_dir_bin_map_file(abs_path, 1)
+# plot_map(maps_set, "grad_Phi")
+# plot_stats_l2(stats)

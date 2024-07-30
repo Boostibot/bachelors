@@ -110,19 +110,22 @@ void sim_make_initial_conditions(Real* F, Real* U, const Sim_Config& config)
             }
             else
             {
-                double center_dist = hypot(config.init_circle_center.x - pos.x, config.init_circle_center.y - pos.y);
+                Real lo = config.init_circle_radius - params.xi*config.init_circle_fade/2; 
+                Real hi = config.init_circle_radius + params.xi*config.init_circle_fade/2; 
+
+                double r = hypot(config.init_circle_center.x - pos.x, config.init_circle_center.y - pos.y);
 
                 bool is_within_cube = (config.init_square_from.x <= pos.x && pos.x < config.init_square_to.x) && 
                     (config.init_square_from.y <= pos.y && pos.y < config.init_square_to.y);
 
-                double circle_normed_sdf = (config.init_circle_outer_radius - center_dist) / (config.init_circle_outer_radius - config.init_circle_inner_radius);
-                if(circle_normed_sdf > 1)
-                    circle_normed_sdf = 1;
-                if(circle_normed_sdf < 0)
-                    circle_normed_sdf = 0;
+                double circle_sdf = 1 - (r - lo)/(hi - lo);
+                if(circle_sdf > 1)
+                    circle_sdf = 1;
+                if(circle_sdf < 0)
+                    circle_sdf = 0;
 
                 double cube_sdf = is_within_cube ? 1 : 0;
-                double factor = cube_sdf > circle_normed_sdf ? cube_sdf : circle_normed_sdf;
+                double factor = cube_sdf > circle_sdf ? cube_sdf : circle_sdf;
 
                 F[i] = (Real) (factor*config.init_inside_phi + (1 - factor)*config.init_outside_phi);
                 U[i] = (Real) (factor*config.init_inside_T + (1 - factor)*config.init_outside_T);
