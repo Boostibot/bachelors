@@ -6,6 +6,8 @@ import csv
 import math
 import sys
 import os 
+import scipy
+import scipy.ndimage
 
 class Map_Set:
     nx = 0
@@ -214,23 +216,23 @@ def plot_stats_l2(stats):
     plt.grid()
     plt.show() 
 
-def plot_map(map, name):
+def plot_map(map, name, min=0, max=1):
     linx = np.linspace(0, map.dx*map.nx, map.nx+1)
     liny = np.linspace(0, map.dy*map.ny, map.ny+1)
     X, Y = np.meshgrid(linx, liny)
     fig = plt.figure()
     ax = fig.add_subplot(111)
-    img = ax.pcolormesh(X, Y, map.maps[name], cmap='RdBu_r', shading='flat', vmin=0, vmax=1)
+    img = ax.pcolormesh(X, Y, map.maps[name], cmap='RdBu_r', shading='flat', vmin=min, vmax=max)
     plt.colorbar(img, ax=ax)
     plt.show() 
 
 def path_rel(base, path):
     return os.path.join(os.path.dirname(__file__), base, path)
 
-def phi_map_discretize(map):
-    return (map > 0.5).astype(int)
+def phi_map_discretize(map, threshold=0.5):
+    return (map > threshold).astype(int)
 
-def show_comparison(base,path1, path2, name, i, filter=False):
+def plot_phase_comparison(base,path1, path2, name, i, filter=False):
     name1 = path1.split("__")[-1]
     name2 = path2.split("__")[-1]
 
@@ -275,21 +277,148 @@ def show_comparison(base,path1, path2, name, i, filter=False):
     fig.show()
     plt.show()
 
+def extract_outline(values, star=0, threshold=0.5):
+    (nx, ny) = values.shape
+    F_levelset = phi_map_discretize(values, threshold)
+
+    edge = [
+        [ 0, -1,  0],
+        [-1,  4, -1],
+        [ 0, -1,  0],
+    ]
+
+    directions = [
+        (1, 0),
+        (-1, 0),
+        (0, 1),
+        (0, -1),
+        (-1, 1),
+        (1, 1),
+        (-1, -1),
+        (1, -1),
+    ]
+
+    convolved = scipy.ndimage.convolve(F_levelset, edge, mode='constant')
+
+    visited = np.zeros(shape=(nx, ny), dtype=np.uint8)
+
+    def point_add(point, dir):
+        return (point[0] + dir[0], point[1] + dir[1])
+
+    # Select nice start position. That is a posisiton that has both left and right
+    # or top and bot neighbours thus the line can be joined up nicely
+    F_starts = convolved == 1 
+    nonzero = np.nonzero(F_starts)
+    if len(nonzero[0]) == 0:
+        return []
+
+    F_edge = convolved > 0
+    # iterate around shape
+    point = (nonzero[0][star], nonzero[1][star])
+    line = []
+    while True:
+        assert F_edge[point] > 0
+        line.append([point[0], point[1]])
+        visited[point] = 1
+        found = False
+        dir = None
+        for i in range(8):
+            dir = directions[i]
+            off = point_add(point, dir)
+            if F_edge[off] > 0 and visited[off] == 0:
+                found = True
+                break
+        
+        if found == False:
+            break
+
+        point = point_add(point, dir)
+
+    # close loop
+    line.append(line[0])
+
+    return line
+
+def interpolate_outline(line, samples=10, k=3, smoothness=5):
+    linex, liney = zip(*np.array(line))
+    linex = np.array(linex) 
+    liney = np.array(liney)
+    f, u = scipy.interpolate.splprep([linex, liney], k=k, s=smoothness, per=True)
+    xint, yint = scipy.interpolate.splev(np.linspace(0, 1, len(line)*samples), f)
+    return xint, yint
+
+def interpolate_outline2(line, samples=10, k=3, smoothness=5):
+    points = np.array(line)
+
+    # Linear length along the line:
+    distance = np.cumsum(np.sqrt(np.sum( np.diff(points, axis=0)**2, axis=1 )) )
+    distance = np.insert(distance, 0, 0)/distance[-1]
+
+    # Build a list of the spline function, one for each dimension:
+    splines = [scipy.interpolate.UnivariateSpline(distance, coords, k=k, s=smoothness) for coords in points.T]
+
+    alpha = np.linspace(0, 1, math.floor(samples*len(line)))
+    xs = splines[0](alpha)
+    ys = splines[1](alpha)
+    return xs, ys
+
+def chaikins_corner_cutting(coords, refinements=10):
+    coords = np.array(coords)
+
+    for i in range(refinements):
+        L = coords.repeat(2, axis=0)
+        R = np.empty_like(L)
+        R[0] = L[0]
+        R[2::2] = L[1:-1:2]
+        R[1:-1:2] = L[2::2]
+        R[-1] = L[-1]
+        coords = L * 0.75 + R * 0.25
+
+        print(f"refinement {i}")
+
+    return coords
+
+def plot_temperature_interface_map(base, path, i, smoothness=10, min=0, max=1, save_name=""):
+    maps1 = load_dir_bin_map_file(path_rel(base, path), i)
+
+    F = maps1.maps["F"]
+    U = maps1.maps["U"]
+
+    outline = extract_outline(F)
+    outline = (np.array(outline) + 0.5)*(maps1.dx, maps1.dy) 
+    xint, yint = interpolate_outline2(outline, k=5, smoothness=smoothness)
+
+    linx = np.linspace(0, maps1.dx*maps1.nx, maps1.nx+1)
+    liny = np.linspace(0, maps1.dy*maps1.ny, maps1.ny+1)
+    X, Y = np.meshgrid(linx, liny)
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111)
+    ax.set_aspect('equal')
+    img = ax.pcolormesh(X, Y, U, cmap='RdBu_r', shading='flat', vmin=min, vmax=max)
+    ax.plot(yint, xint, c='white', linewidth=1.5)
+
+    plt.colorbar(img, ax=ax, fraction=0.046, pad=0.04)
+    plt.show() 
+
 #Basic comparison
 if False:
-    show_comparison(
+    plot_phase_comparison(
         "showcase/first_comp",
         "2024-06-28__19-53-08__semi-implicit",
         "2024-06-28__19-55-31__explicit-rk4",
         "F", 20, filter=False)
     
-else:
-    show_comparison(
+if False:
+    plot_phase_comparison(
         "showcase/first_comp",
         "2024-06-28__19-53-08__semi-implicit",
         "2024-06-28__20-00-18__explicit-rk4-adaptive",
         "F", 20, filter=False)
+if False:
+    plot_temperature_interface_map("snapshots", "2024-06-31__00-13-39__semi-implicit", 5)
 
+if True:
+    plot_temperature_interface_map("showcase", "show_medium_xi", 5, smoothness=.0035)
 
 
 # stats = load_dir_stat_file(abs_path)

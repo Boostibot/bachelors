@@ -287,6 +287,7 @@ int main()
 
 	    while (!glfwWindowShouldClose(window))
         {
+            bool save_this_iter = false;
             double frame_start_time = clock_s();
 
             bool update_screen = frame_start_time - render_last_time > SCREEN_UPDATE_PERIOD;
@@ -299,21 +300,25 @@ int main()
             if(app->sim_time >= next_snapshot_every)
             {
                 snapshot_every_i += 1;
-                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+                save_this_iter = true;
             }
 
             if(app->sim_time >= next_snapshot_times && end_reached == false)
             {
                 snapshot_times_i += 1;
-                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+                save_this_iter = true;
             }
 
-            if(app->sim_time >= config.simul_stop_time && end_reached == false)
+            if(abs(app->sim_time - config.simul_stop_time) < 1e-8 && end_reached == false)
             {
                 LOG_INFO("app", "reached stop time %lfs. Simulation paused.", config.simul_stop_time);
                 app->is_in_step_mode = true;
                 end_reached = true;
+                save_this_iter = true;
             }
+
+            if(save_this_iter)
+                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
 
             if(update_screen)
             {

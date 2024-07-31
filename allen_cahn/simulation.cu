@@ -737,6 +737,7 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
     A_U.ny = ny;
     A_U.boundary = params.T_boundary;
 
+    printf("theta0: %lf\n", theta0);
     bool do_corrector_guess = params.do_corrector_guess;
     bool is_tiled = true;
 
