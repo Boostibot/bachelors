@@ -434,6 +434,8 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
             & (uint8_t) key_value_get_bool(pairs, &params->do_corrector_loop, "simulation", "do_corrector_loop")
             & (uint8_t) key_value_get_bool(pairs, &params->do_corrector_guess, "simulation", "do_corrector_guess")
             ;
+        //optional
+        (uint8_t) key_value_get_double(pairs, &params->min_dt, "simulation", "min_dt");
             
         uint8_t matched_initial = true
             & (uint8_t) key_value_get_double(pairs, &config->init_inside_phi, "initial", "inside_phi")

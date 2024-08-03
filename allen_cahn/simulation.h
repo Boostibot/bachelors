@@ -100,6 +100,7 @@ typedef struct Sim_Params{
     double beta;
     double gamma; 
     double Tm; 
+    double min_dt;
 
     double S; 
     double m0; 

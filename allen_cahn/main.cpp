@@ -309,7 +309,7 @@ int main()
                 save_this_iter = true;
             }
 
-            if(abs(app->sim_time - config.simul_stop_time) < 1e-8 && end_reached == false)
+            if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
             {
                 LOG_INFO("app", "reached stop time %lfs. Simulation paused.", config.simul_stop_time);
                 app->is_in_step_mode = true;
@@ -677,7 +677,7 @@ bool save_csv_stat_file(const char* filename, int nx, int ny, double dt, size_t 
                 "\"Phi_delta_L1\",\"Phi_delta_L2\",\"Phi_delta_max\",\"Phi_delta_min\"");
                 
             for(int s = 0; s < (int) stats.step_res_count; s++)
-                fprintf(file, ",\"step_res_L1[%i]\",\"step_res_L1[%i]\",\"step_res_L1[%i]\",\"step_res_L1[%i]\"", s, s, s, s);
+                fprintf(file, ",\"step_res_L1[%i]\",\"step_res_L2[%i]\",\"step_res_max[%i]\",\"step_res_min[%i]\"", s, s, s, s);
 
             fprintf(file, "\n");
         }
@@ -693,7 +693,7 @@ bool save_csv_stat_file(const char* filename, int nx, int ny, double dt, size_t 
             );
                 
             for(int s = 0; s < (int) stats.step_res_count; s++)
-                fprintf(file, ",%s,%s,%s,%s", F(step_res_L1[s]),F(step_res_L1[s]),F(step_res_L1[s]),F(step_res_L1[s]));
+                fprintf(file, ",%s,%s,%s,%s", F(step_res_L1[s]),F(step_res_L2[s]),F(step_res_max[s]),F(step_res_min[s]));
 
             fprintf(file, "\n");
             #undef F

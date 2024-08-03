@@ -267,9 +267,29 @@ void calc_debug_values(const Real* F, const Real* U, Real* grad_F, Real* grad_U,
     });
 }
 
-void explicit_solver_newton_step(const Real* F, const Real* U, Real* next_F, Real* next_U, Sim_Params params)
+void explicit_solver_euler_step_based(const Real* F, const Real* U, const Real* U_base, Real* next_F, Real* next_U, Sim_Params params, bool do_stats)
 {
-    explicit_solver_solve_lin_combination<true>(next_F, next_U, params, Explicit_Blend_State{1, F, U});
+    (void) do_stats;
+    if(U == U_base)
+        explicit_solver_solve_lin_combination<true>(next_F, next_U, params, Explicit_Blend_State{1, F, U});
+    else
+    {
+        Cache_Tag tag = cache_tag_make();
+        int N = params.ny * params.nx;
+
+        Real* dt_F = cache_alloc(Real, N, &tag);
+        Real* dt_U = cache_alloc(Real, N, &tag);
+
+        Real dt = (Real) params.dt;
+        explicit_solver_solve_lin_combination<false>(dt_F, dt_U, params, Explicit_Blend_State{1, F, U});
+        cuda_for(0, N, [=]SHARED(int i){
+            next_F[i] = F[i] + dt*dt_F[i];
+            next_U[i] = U_base[i] + dt*dt_U[i];
+        });
+
+        cache_free(&tag);
+    }
+
     if(params.stats)
     {
         params.stats->Phi_iters = 1;
@@ -375,16 +395,25 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
             Epsilon_U[i] = U >= 0 ? U : -U;
         });
 
-        epsilon_F = cuda_max(Epsilon_F, N);
-        epsilon_U = cuda_max(Epsilon_U, N);
+        // L2 instead of max norm!
+        epsilon_F = cuda_L2_norm(Epsilon_F, N)/sqrt((Real)N);
+        epsilon_U = cuda_L2_norm(Epsilon_U, N)/sqrt((Real)N);
+
+        // epsilon_F = cuda_max(Epsilon_F, N);
+        // epsilon_U = cuda_max(Epsilon_U, N);
 
         if(epsilon_F < params.Phi_tolerance && epsilon_U < params.T_tolerance)
             converged = true;
 
-        Real epsilon = (Real) MAX(epsilon_F + epsilon_U, 1e-8);
-        Real delta = (Real) MAX(params.Phi_tolerance + params.T_tolerance, 1e-8);
+        Real epsilon = (Real) MAX(epsilon_F + epsilon_U, 1e-20);
+        Real delta = (Real) MAX(params.Phi_tolerance + params.T_tolerance, 1e-20);
         used_tau = tau;
         tau = pow(delta / epsilon, (Real)0.2)*4/5*tau;
+        tau = MAX(tau, params.min_dt);
+
+        //If below the min limit there is no point in trying another loop
+        if(tau <= params.min_dt && used_tau <= params.min_dt)
+            break;
     }
 
     cuda_for(0, params.ny*params.nx, [=]SHARED(int i){
@@ -404,51 +433,6 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
     cache_free(&tag);
     CUDA_DEBUG_TEST(cudaDeviceSynchronize());
     return (double) used_tau;
-}
-
-double explicit_solver_choose(const Real* F, const Real* U, Real* next_F, Real* next_U, Sim_Params params)
-{
-    if(params.solver == SOLVER_TYPE_EXPLICIT_EULER)
-    {
-        explicit_solver_newton_step(F, U, next_F, next_U, params);
-        return params.dt;
-    }
-    if(params.solver == SOLVER_TYPE_EXPLICIT_RK4)
-    {
-        explicit_solver_rk4_step(F, U, next_F, next_U, params);
-        return params.dt;
-    }
-    if(params.solver == SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE)
-    {
-        return explicit_solver_rk4_adaptive_step(F, U, next_F, next_U, params);
-    }
-
-    assert(false);
-    return 0;
-}
-
-double explicit_solvers_step_and_compute_stats(const Real* F, const Real* U, Real* next_F, Real* next_U, Sim_Params params)
-{
-    double advance_by = explicit_solver_choose(F, U, next_F, next_U, params);
-    int N = params.ny * params.nx;
-    if(params.do_stats_step_residual && params.stats)
-    {
-        Cache_Tag tag = cache_tag_make();
-        Real* corrected_F = cache_alloc(Real, N, &tag);
-        Real* corrected_U = cache_alloc(Real, N, &tag);
-
-        explicit_solver_choose(F, next_U, corrected_F, corrected_U, params);
-
-        Reduce::Stats<Real> step_res_stats = cuda_stats_delta(corrected_F, next_F, N);
-        params.stats->step_res_L1[0] = (float) step_res_stats.L1;
-        params.stats->step_res_L2[0] = (float) step_res_stats.L2;
-        params.stats->step_res_min[0] = (float) step_res_stats.min;
-        params.stats->step_res_max[0] = (float) step_res_stats.max;
-        params.stats->step_res_count = 1;
-        cache_free(&tag);
-    }
-
-    return advance_by;
 }
 
 struct Cross_Matrix_Static {
@@ -737,7 +721,6 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
     A_U.ny = ny;
     A_U.boundary = params.T_boundary;
 
-    printf("theta0: %lf\n", theta0);
     bool do_corrector_guess = params.do_corrector_guess;
     bool is_tiled = true;
 
@@ -867,7 +850,7 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
     cache_free(&tag);
 }
 
-void semi_implicit_solver_step_corrector(const Real* F, const Real* U, Real* next_F, Real* next_U, Sim_Params params)
+void semi_implicit_and_euler_solver_step_corrector(const Real* F, const Real* U, Real* next_F, Real* next_U, Sim_Params params)
 {
     Cache_Tag tag = cache_tag_make();
     int N = params.ny * params.nx;
@@ -903,7 +886,10 @@ void semi_implicit_solver_step_corrector(const Real* F, const Real* U, Real* nex
         max_iters = 1;
 
     //Perform first step
-    semi_implicit_solver_step_based(F, U, U, steps_F[0], steps_U[0], params, true);
+    if(params.solver == SOLVER_TYPE_EXPLICIT_EULER)
+        explicit_solver_euler_step_based(F, U, U, steps_F[0], steps_U[0], params, true);
+    else
+        semi_implicit_solver_step_based(F, U, U, steps_F[0], steps_U[0], params, true);
     for(size_t k = 0; k < max_iters; k++)
     {
         int curr = MOD(k, 2);
@@ -911,10 +897,13 @@ void semi_implicit_solver_step_corrector(const Real* F, const Real* U, Real* nex
 
         log_group();
         //Cycle.
-        semi_implicit_solver_step_based(F, steps_U[curr], U, steps_F[next], steps_U[next], params, false);
+        if(params.solver == SOLVER_TYPE_EXPLICIT_EULER)
+            explicit_solver_euler_step_based(F, steps_U[curr], U, steps_F[next], steps_U[next], params, false);
+        else
+            semi_implicit_solver_step_based(F, steps_U[curr], U, steps_F[next], steps_U[next], params, false);
         if(params.do_stats_step_residual && params.stats)
         {
-            Reduce::Stats<Real> stats = cuda_stats_delta(F, steps_F[next], N);
+            Reduce::Stats<Real> stats = cuda_stats_delta(steps_F[curr], steps_F[next], N);
             Real step_residual_max_error = MAX(stats.max, -stats.min);
 
             params.stats->step_res_L1[k] = (float) stats.L1;
@@ -1033,13 +1022,30 @@ double sim_step(Sim_Map F, Sim_Map U, Sim_Map* next_F, Sim_Map* next_U, Sim_Para
         sim_realloc(next_F, "F", params.nx, params.ny, params.time, params.iter+1);
         sim_realloc(next_U, "U", params.nx, params.ny, params.time, params.iter+1);
 
-        if(params.solver == SOLVER_TYPE_SEMI_IMPLICIT)
+        switch(params.solver)
         {
-            semi_implicit_solver_step_corrector(F.data, U.data, next_F->data, next_U->data, params);
-            dt = params.dt;
+            case SOLVER_TYPE_SEMI_IMPLICIT:
+            case SOLVER_TYPE_EXPLICIT_EULER: {
+                semi_implicit_and_euler_solver_step_corrector(F.data, U.data, next_F->data, next_U->data, params);
+                dt = params.dt;
+            } break;
+
+            case SOLVER_TYPE_EXPLICIT_RK4: {
+                explicit_solver_rk4_step(F.data, U.data, next_F->data, next_U->data, params);
+                dt = params.dt;
+            } break;
+
+            case SOLVER_TYPE_EXPLICIT_RK4_ADAPTIVE: {
+                dt = explicit_solver_rk4_adaptive_step(F.data, U.data, next_F->data, next_U->data, params);
+            } break;
+
+            case SOLVER_TYPE_EXACT: {
+                exact_solver_step(next_F->data, next_U->data, params);
+                dt = params.dt;
+            } break;
+
+            default: break;
         }
-        else
-            dt = explicit_solvers_step_and_compute_stats(F.data, U.data, next_F->data, next_U->data, params);
 
         if(params.do_stats && params.stats)
         {

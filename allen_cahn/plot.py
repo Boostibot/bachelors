@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt 
 import matplotlib.image
 import struct
+import mpl_toolkits.axes_grid1
+import mpl_toolkits.axes_grid1.inset_locator
 import numpy as np
 import csv 
 import math
@@ -8,13 +10,14 @@ import sys
 import os 
 import scipy
 import scipy.ndimage
+import mpl_toolkits
 
 class Map_Set:
     nx = 0
     ny = 0
     dx = 0
     dy = 0
-    dt = 0.0
+    time = 0.0
     N = 0
     iter = 0
     maps = {}
@@ -51,7 +54,7 @@ def load_bin_map_file(path):
         out.ny, pos = read_i32(pos)
         out.dx, pos = read_f64(pos)
         out.dy, pos = read_f64(pos)
-        out.dt, pos = read_f64(pos)
+        out.time, pos = read_f64(pos)
         out.iter, pos = read_i64(pos)
         out.N = out.nx*out.ny
         names = []
@@ -64,7 +67,7 @@ def load_bin_map_file(path):
             map, pos = read_2d_f64_arr(out.nx, out.ny, pos) 
             maps += [map]
 
-        print(f"Map file '{path}' read. dims:{out.nx}x{out.ny} size:{map_count*out.N*8/1024/1024}MB maps:{map_count} {names}")
+        print(f"Map file '{path}' read. dims:{out.nx}x{out.ny} size:{map_count*out.N*8/1024/1024}MB maps:{map_count} {names} time:{out.time}")
         out.maps = dict(zip(names, maps))
     return out
        
@@ -77,25 +80,25 @@ class Stats:
     N = 0
     dt = 0
     step_res_count = 0
-    time = []
-    iter = []
-    Phi_iters = []
-    T_iters = []
-    T_delta_L1 = []
-    T_delta_L2 = []
-    T_delta_Lmax = []
-    T_delta_max = []
-    T_delta_min = []
-    Phi_delta_L1 = []
-    Phi_delta_L2 = []
-    Phi_delta_Lmax = []
-    Phi_delta_max = []
-    Phi_delta_min = []
-    step_res_L1 = []
-    step_res_L2 = []
-    step_res_Lmax = []
-    step_res_max = []
-    step_res_min = []
+    time = None
+    iter = None
+    Phi_iters = None
+    T_iters = None
+    T_delta_L1 = None
+    T_delta_L2 = None
+    T_delta_Lmax = None
+    T_delta_max = None
+    T_delta_min = None
+    Phi_delta_L1 = None
+    Phi_delta_L2 = None
+    Phi_delta_Lmax = None
+    Phi_delta_max = None
+    Phi_delta_min = None
+    step_res_L1 = None
+    step_res_L2 = None
+    step_res_Lmax = None
+    step_res_max = None
+    step_res_min = None
 
 def load_stat_file(path):
     def sa():
@@ -114,11 +117,27 @@ def load_stat_file(path):
 
     print(path)
     stats = Stats()
+    stats.time = []
+    stats.iter = []
+    stats.Phi_iters = []
+    stats.T_iters = []
+    stats.T_delta_L1 = []
+    stats.T_delta_L2 = []
+    stats.T_delta_Lmax = []
+    stats.T_delta_max = []
+    stats.T_delta_min = []
+    stats.Phi_delta_L1 = []
+    stats.Phi_delta_L2 = []
+    stats.Phi_delta_Lmax = []
+    stats.Phi_delta_max = []
+    stats.Phi_delta_min = []
     stats.step_res_L1 = sa()
     stats.step_res_L2 = sa()
     stats.step_res_Lmax = sa()
     stats.step_res_max = sa()
     stats.step_res_min = sa()
+
+    num_row = 0
     with open(path,'r') as csvfile: 
         base_fields = 12
         rows = csv.reader(csvfile, delimiter = ',') 
@@ -130,6 +149,7 @@ def load_stat_file(path):
                 stats.dt = row_f64[2]
                 stats.N = stats.nx*stats.ny
             if i > 1:
+                num_row += 1
                 step_residuals = max(math.ceil((len(row) - base_fields) / 4), 0)
                 fields = base_fields + step_residuals*4
                 stats.step_res_count = max(stats.step_res_count, step_residuals)
@@ -183,6 +203,7 @@ def load_stat_file(path):
 def load_dir_stat_file(path):
     return load_stat_file(path + "/stats.csv")
 
+DPI = None
 def list_subdirs(dirname, recursive=False):
     subfolders = [f.path for f in os.scandir(dirname) if f.is_dir()].sort()
     if recursive:
@@ -305,62 +326,85 @@ def extract_outline(values, star=0, threshold=0.5):
     def point_add(point, dir):
         return (point[0] + dir[0], point[1] + dir[1])
 
-    # Select nice start position. That is a posisiton that has both left and right
-    # or top and bot neighbours thus the line can be joined up nicely
-    F_starts = convolved == 1 
-    nonzero = np.nonzero(F_starts)
-    if len(nonzero[0]) == 0:
-        return []
+    
 
+    lines = []
     F_edge = convolved > 0
-    # iterate around shape
-    point = (nonzero[0][star], nonzero[1][star])
-    line = []
+
     while True:
-        assert F_edge[point] > 0
-        line.append([point[0], point[1]])
-        visited[point] = 1
-        found = False
-        dir = None
-        for i in range(8):
-            dir = directions[i]
-            off = point_add(point, dir)
-            if F_edge[off] > 0 and visited[off] == 0:
-                found = True
-                break
-        
-        if found == False:
+        # Select nice start position. That is a posisiton that has both left and right
+        # or top and bot neighbours thus the line can be joined up nicely
+        F_starts = (convolved - visited*20) == 1 
+        nonzero = np.nonzero(F_starts)
+        if len(nonzero[0]) == 0:
             break
+        
+        # iterate around shape
+        point = (nonzero[0][star], nonzero[1][star])
+        line = []
+        while True:
+            assert F_edge[point] > 0
+            line.append([point[0], point[1]])
+            visited[point] = 1
+            found = False
+            dir = None
+            for i in range(8):
+                dir = directions[i]
+                off = point_add(point, dir)
+                if 0 <= off[0] and off[0] < nx and 0 <= off[1] and off[1] < ny:
+                    if F_edge[off] > 0 and visited[off] == 0:
+                        found = True
+                        break
+            
+            if found == False:
+                break
 
-        point = point_add(point, dir)
+            point = point_add(point, dir)
 
-    # close loop
-    line.append(line[0])
+        # close loop
+        line.append(line[0])
+        if len(line) > 3:
+            # if not degenerate shape (line)
+            points = np.array(line)
+            pointsT = points.T
+            allx = np.all(pointsT[0] == line[0][0])
+            ally = np.all(pointsT[1] == line[0][1])
+            if allx == False and ally == False:
+                lines += [points]
 
-    return line
+    return lines
 
 def interpolate_outline(line, samples=10, k=3, smoothness=5):
     linex, liney = zip(*np.array(line))
     linex = np.array(linex) 
     liney = np.array(liney)
-    f, u = scipy.interpolate.splprep([linex, liney], k=k, s=smoothness, per=True)
-    xint, yint = scipy.interpolate.splev(np.linspace(0, 1, len(line)*samples), f)
-    return xint, yint
+    try:
+        f, u = scipy.interpolate.splprep([linex, liney], k=k, s=smoothness, per=True)
+        xint, yint = scipy.interpolate.splev(np.linspace(0, 1, len(line)*samples), f)
+        return xint, yint
+    except:
+        return linex, liney
 
 def interpolate_outline2(line, samples=10, k=3, smoothness=5):
     points = np.array(line)
 
-    # Linear length along the line:
-    distance = np.cumsum(np.sqrt(np.sum( np.diff(points, axis=0)**2, axis=1 )) )
-    distance = np.insert(distance, 0, 0)/distance[-1]
+    try:
+        # Linear length along the line:
+        distance = np.cumsum(np.sqrt(np.sum( np.diff(points, axis=0)**2, axis=1 )) )
+        distance = np.insert(distance, 0, 0)/distance[-1]
 
-    # Build a list of the spline function, one for each dimension:
-    splines = [scipy.interpolate.UnivariateSpline(distance, coords, k=k, s=smoothness) for coords in points.T]
+        # Build a list of the spline function, one for each dimension:
+        splines = []
+        for coords in points.T:
+            splines += [scipy.interpolate.UnivariateSpline(distance, coords, k=k, s=smoothness)]
 
-    alpha = np.linspace(0, 1, math.floor(samples*len(line)))
-    xs = splines[0](alpha)
-    ys = splines[1](alpha)
-    return xs, ys
+        alpha = np.linspace(0, 1, math.floor(samples*len(line)))
+        xs = splines[0](alpha)
+        ys = splines[1](alpha)
+        return xs, ys
+    except:
+        transp = points.T
+        return transp[0], transp[1]
 
 def chaikins_corner_cutting(coords, refinements=10):
     coords = np.array(coords)
@@ -378,50 +422,333 @@ def chaikins_corner_cutting(coords, refinements=10):
 
     return coords
 
-def plot_temperature_interface_map(base, path, i, smoothness=10, min=0, max=1, save_name=""):
-    maps1 = load_dir_bin_map_file(path_rel(base, path), i)
+def dissable_plot_ticks(ax):
+    ax.tick_params(axis='both', which='both', 
+                    bottom=False, top=False, left=False, right=False,
+                    labelbottom=False, labeltop=False, labelleft=False, labelright=False)
+    
+def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', colorbar='inset', background="U", do_outlines=True):
+    label = 'T'
+    cmap = 'RdBu_r'
+    if background == "F":
+        cmap = 'viridis'
+        label = 'ϕ'
 
-    F = maps1.maps["F"]
-    U = maps1.maps["U"]
-
-    outline = extract_outline(F)
-    outline = (np.array(outline) + 0.5)*(maps1.dx, maps1.dy) 
-    xint, yint = interpolate_outline2(outline, k=5, smoothness=smoothness)
-
+    outlines = []
+    if do_outlines:
+        outlines = extract_outline(F)
     linx = np.linspace(0, maps1.dx*maps1.nx, maps1.nx+1)
     liny = np.linspace(0, maps1.dy*maps1.ny, maps1.ny+1)
     X, Y = np.meshgrid(linx, liny)
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111)
     ax.set_aspect('equal')
-    img = ax.pcolormesh(X, Y, U, cmap='RdBu_r', shading='flat', vmin=min, vmax=max)
-    ax.plot(yint, xint, c='white', linewidth=1.5)
+    img = ax.pcolormesh(X, Y, U, cmap=cmap, shading='flat', vmin=min, vmax=max)
 
-    plt.colorbar(img, ax=ax, fraction=0.046, pad=0.04)
-    plt.show() 
+    for outline in outlines:
+        outline = (np.array(outline) + 0.5)*(maps1.dx, maps1.dy) 
+        xint, yint = interpolate_outline(outline, k=3, smoothness=smoothness)
+        ax.plot(yint, xint, c=line_color, linewidth=1)
 
-#Basic comparison
-if False:
-    plot_phase_comparison(
-        "showcase/first_comp",
-        "2024-06-28__19-53-08__semi-implicit",
-        "2024-06-28__19-55-31__explicit-rk4",
-        "F", 20, filter=False)
+    if colorbar == 'default':
+        plt.colorbar(img, ax=ax, fraction=0.046, pad=0.04)
+    elif colorbar == 'inset':
+        cbaxes = mpl_toolkits.axes_grid1.inset_locator.inset_axes(ax, width="5%", height="40%", loc=4, borderpad=2) 
+        cb = plt.colorbar(img, cax=cbaxes, ax=ax, ticks=[0.,1], orientation='vertical')
+        cb.ax.tick_params(axis='both', direction='in', color=line_color)
+        cb.set_label(label, loc='center', rotation="horizontal", color=line_color, labelpad = 0.5)
+        plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color=line_color)
+        dissable_plot_ticks(ax)
+    else:
+        dissable_plot_ticks(ax)
+
+    ax.set_xlim(xmin=0, xmax=maps1.dx*maps1.nx)
+    ax.set_ylim(ymin=0, ymax=maps1.dy*maps1.ny)
+
+    if save == None:
+        plt.show() 
+    else:
+        plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+
+def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, line_color='white', colorbar='inset', background="U", do_outlines=True):
+    maps1 = load_dir_bin_map_file(path_rel(base, path), i)
+    plot_loaded_temperature_interface_map(
+        maps1, maps1.maps['F'], maps1.maps[background], smoothness=smoothness, line_color=line_color, min=min, max=max, 
+        save=save, colorbar=colorbar, background=background, do_outlines=do_outlines)
+
+def plot_phase_interface(base, path, i, xi = 0.0043, linewidth=4, save=None):
+    maps1 = load_dir_bin_map_file(path_rel(base, path), i)
+    F = maps1.maps["F"]
+    half_nx = maps1.nx//2
+    half_ny = maps1.ny//2
+    interface = F[half_ny][0:half_nx]
+    linx = np.linspace(0, maps1.dx*half_nx, half_nx)
+
+    comp_epsilon = 0.01
+    interface_indeces = np.flatnonzero(np.abs(interface - 0.5) < 0.5 - comp_epsilon)
+    first_i = interface_indeces[0]
+    last_i = interface_indeces[-1]
+    diff = linx[last_i] - linx[first_i]
+    print(f"interface: {linx[first_i]} - {linx[last_i]} = {diff} ({diff/xi} xi) ({diff/maps1.dx} dx)")
+
+    extra_cells = 4
+    display_epsilon = 0.001
+
+    interface_indeces = np.flatnonzero(np.abs(interface - 0.5) < 0.5 - display_epsilon)
+    first_i = interface_indeces[0]
+    last_i = interface_indeces[-1]
+
+    ex_first_i = max(first_i - extra_cells, 0)
+    ex_last_i = min(last_i + extra_cells, half_nx)
+
+    fig = plt.figure(figsize=(11, 10))
+    ax = fig.add_subplot(111)
+    ax.tick_params(axis='both', which='major', pad=15)
+    ax.set(xlim=(linx[ex_first_i], linx[ex_last_i]), ylim=(-0.05, 1.05))
+    ax.plot(linx[ex_first_i:ex_last_i], interface[ex_first_i:ex_last_i], color='#17bf23', label='phase interface', linewidth=linewidth)
+    ax.xaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(maps1.dx))
+    ax.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(maps1.dx*10))
+    plt.xlabel('x') 
+    plt.ylabel('ϕ', rotation="horizontal") 
+    # plt.legend() 
+    # plt.yscale('log')
+    ax.grid()
+    if save != None:
+        plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+    else:
+        plt.show() 
+
+def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, linewidth=1, xmin=1.6, xmax=2.4, ymin=2.6, ymax=None, legend_under=False, print_comp_table=False):
+    if len(paths) == 0:
+        return
+
+    map_sets = []
+    maps = []
+    for entry in paths:
+        map_set = load_dir_bin_map_file(path_rel(base, entry[0]), i) 
+        map_sets += [map_set]
+        maps += [map_set.maps['F']]
+
+
+    def euclid_dist(a, b):
+        return np.linalg.norm((a - b).flatten())
     
-if False:
-    plot_phase_comparison(
-        "showcase/first_comp",
-        "2024-06-28__19-53-08__semi-implicit",
-        "2024-06-28__20-00-18__explicit-rk4-adaptive",
-        "F", 20, filter=False)
-if False:
-    plot_temperature_interface_map("snapshots", "2024-06-31__00-13-39__semi-implicit", 5)
+    def phase_value_dist(a, b):
+        return np.linalg.norm((phi_map_discretize(a) - phi_map_discretize(b)).flatten())
 
+    if print_comp_table:
+        out = []
+        for i,map in enumerate(maps):
+            results = []
+            formated = paths[i][1].ljust(5) + "&"
+            for compare_with in maps:
+                edist = euclid_dist(map, compare_with)
+                pdist = phase_value_dist(map, compare_with)
+                formated += "&{:.2f}&{:.2f}".format(edist, pdist)
+
+                results += [(edist, pdist)]
+            
+            print(f'{formated} \\\\')
+
+    dx = map_sets[0].dx
+    dy = map_sets[0].dy
+    nx = map_sets[0].nx
+    ny = map_sets[0].ny
+    linx = np.linspace(0, map_sets[0].dx*map_sets[0].nx, map_sets[0].nx+1)
+    liny = np.linspace(0, map_sets[0].dy*map_sets[0].ny, map_sets[0].ny+1)
+    X, Y = np.meshgrid(linx, liny)
+
+    fig_width = 10
+    if legend_under:
+        fig_width = 16
+    fig = plt.figure(figsize=(fig_width, 10))
+    ax = fig.add_subplot(111, aspect='equal')
+    ax.tick_params(axis='both', which='major', pad=15)
+    for i, map in enumerate(maps):
+        outline = extract_outline(map)[0]
+        outline = (np.array(outline) + 0.5)*(dx, dy) 
+        xint, yint = interpolate_outline2(outline, k=5, smoothness=smoothness)
+
+        color = None
+        if len(paths[i]) >= 3:
+            color = paths[i][2]
+
+        ax.plot(xint, yint, color=color, label=paths[i][1], linewidth=linewidth)
+
+    ax.set_xlim(xmin=xmin, xmax=xmax)
+    ax.set_ylim(ymin=ymin, ymax=ymax)
+    if legend_under:
+        ax.legend(bbox_to_anchor=(1, 1.05), loc="upper left")
+    else:    
+        ax.legend()
+    
+    fig.tight_layout()
+
+    if save == None:
+        plt.show()
+    else:
+        fig.savefig(save, bbox_inches='tight', dpi=DPI)
+
+    return 0
+
+def plot_step_residual_comp(base, loop, corr_loop, name, save=None, linewidth=1.5):
+    loop_stat = load_dir_stat_file(path_rel(base, loop)) 
+    corr_loop_stat = load_dir_stat_file(path_rel(base, corr_loop)) 
+
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111)
+
+    colors = ['#E6B200', '#00E630', '#00E6CC', '#00B5E6']
+    ax.plot(loop_stat.time, loop_stat.Phi_delta_L2, color='black', label=rf'{name} 3 reps. $\Delta\Phi$')
+    for i in range(loop_stat.step_res_count):
+        ax.plot(loop_stat.time, loop_stat.step_res_L2[i], linewidth=linewidth, color=colors[i], label=rf'{name} 3 reps. $r_\Phi$ k={i+1}')
+
+    for i in range(corr_loop_stat.step_res_count):
+        ax.plot(corr_loop_stat.time, corr_loop_stat.step_res_L2[i], linewidth=linewidth, color=colors[i], linestyle='dashed', label=rf'{name} corr. 3 reps. $r_\Phi$ k={i+1}')
+
+    ax.set_xlim(xmin=0, xmax=0.01)
+    plt.xlabel('t') 
+    plt.yscale('log')
+    ax.yaxis.grid()
+    ax.legend(bbox_to_anchor=(0.5, -0.1), loc="upper center", ncol=2)
+    fig.tight_layout()
+
+    if save == None:
+        plt.show() 
+    else:
+        fig.savefig(save, bbox_inches='tight', dpi=DPI)
+
+    plt.cla()
+
+DPI = 180
+font = {'size' : 22}
+matplotlib.rc('font', **font)
+
+# First showcase
+if False:
+    plot_temperature_interface_map("showcase", "show_low_xi", 5, background="U", save="showcase/exported/show_low_xi_U_5.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 13, background="U", save="showcase/exported/show_low_xi_U_13.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 20, background="U", save="showcase/exported/show_low_xi_U_20.png")
+
+# Def values 8-fold
+if False:
+    plot_temperature_interface_map("showcase", "show_low_xi_anisofold_8", 6, background="U", save="showcase/exported/show_low_xi_anisofold_8_U_6.png")
+    plot_temperature_interface_map("showcase", "show_low_xi_anisofold_8", 18, background="U", save="showcase/exported/show_low_xi_anisofold_8_U_18.png")
+    plot_temperature_interface_map("showcase", "show_low_xi_anisofold_8", 30, background="U", save="showcase/exported/show_low_xi_anisofold_8_U_30.png")
+
+# xi comparison
+if False:
+    plot_temperature_interface_map("showcase", "show_low_xi", 5, background="F", save="showcase/exported/show_low_xi_F_5.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 13, background="F", save="showcase/exported/show_low_xi_F_13.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 20, background="F", save="showcase/exported/show_low_xi_F_20.png")
+    plot_temperature_interface_map("showcase", "show_medium_xi", 5, background="F", save="showcase/exported/show_medium_xi_F_5.png")
+    plot_temperature_interface_map("showcase", "show_medium_xi", 13, background="F", save="showcase/exported/show_medium_xi_F_13.png")
+    plot_temperature_interface_map("showcase", "show_medium_xi", 20, background="F", save="showcase/exported/show_medium_xi_F_20.png")
+    plot_temperature_interface_map("showcase", "show_tiny_xi", 5, background="F", save="showcase/exported/show_tiny_xi_F_5.png")
+    plot_temperature_interface_map("showcase", "show_tiny_xi", 13, background="F", save="showcase/exported/show_tiny_xi_F_13.png")
+    plot_temperature_interface_map("showcase", "show_tiny_xi", 20, background="F", save="showcase/exported/show_tiny_xi_F_20.png")
+
+# aniso comparison
+if False:
+    plot_temperature_interface_map("showcase", "show_aniso_0", 5, background="F", save="showcase/exported/show_aniso_0_F_5.png")
+    plot_temperature_interface_map("showcase", "show_aniso_0", 13, background="F", save="showcase/exported/show_aniso_0_F_13.png")
+    plot_temperature_interface_map("showcase", "show_aniso_0", 20, background="F", save="showcase/exported/show_aniso_0_F_20.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 5, background="F", save="showcase/exported/show_aniso_0.3_F_5.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 13, background="F", save="showcase/exported/show_aniso_0.3_F_13.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 20, background="F", save="showcase/exported/show_aniso_0.3_F_20.png")
+    plot_temperature_interface_map("showcase", "show_aniso_0.5", 5, background="F", save="showcase/exported/show_aniso_0.5_F_5.png")
+    plot_temperature_interface_map("showcase", "show_aniso_0.5", 13, background="F", save="showcase/exported/show_aniso_0.5_F_13.png")
+    plot_temperature_interface_map("showcase", "show_aniso_0.5", 20, background="F", save="showcase/exported/show_aniso_0.5_F_20.png")
+
+# Dirichlet boundary comparison
 if True:
-    plot_temperature_interface_map("showcase", "show_medium_xi", 5, smoothness=.0035)
+    base = "showcase/exported/"
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 2, background="F", save=base+"semi_long_neumann_F_2.png")
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 10, background="F", save=base+"semi_long_neumann_F_10.png")
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 30, background="F", save=base+"semi_long_neumann_F_30.png")
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 60, background="F", save=base+"semi_long_neumann_F_60.png")
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 2, background="U", do_outlines=False, save=base+"semi_long_neumann_U_2.png")
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 10, background="U", do_outlines=False, save=base+"semi_long_neumann_U_10.png")
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 30, background="U", do_outlines=False, save=base+"semi_long_neumann_U_30.png")
+    # plot_temperature_interface_map("showcase", "semi_long_neumann", 60, background="U", do_outlines=False, save=base+"semi_long_neumann_U_60.png")
 
+    plot_temperature_interface_map("showcase", "semi_long_neumann", 2, background="U", save=base+"semi_long_neumann_FU_2.png")
+    plot_temperature_interface_map("showcase", "semi_long_neumann", 10, background="U", save=base+"semi_long_neumann_FU_10.png")
+    plot_temperature_interface_map("showcase", "semi_long_neumann", 30, background="U", save=base+"semi_long_neumann_FU_30.png")
+    plot_temperature_interface_map("showcase", "semi_long_neumann", 60, background="U", save=base+"semi_long_neumann_FU_60.png")
+if True:
+    base = "showcase/exported/"
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 2, background="F", save=base+"semi_long_dirichlet_F_2.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="F", save=base+"semi_long_dirichlet_F_10.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 30, background="F", save=base+"semi_long_dirichlet_F_30.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 60, background="F", save=base+"semi_long_dirichlet_F_60.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 2, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_2.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_10.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 30, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_30.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 60, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_60.png")
+    
+    # t = 0.02
+    # t = 0.1
+    # t = 0.3
+    # t = 0.6
 
-# stats = load_dir_stat_file(abs_path)
-# maps_set = load_dir_bin_map_file(abs_path, 1)
-# plot_map(maps_set, "grad_Phi")
-# plot_stats_l2(stats)
+# phase interface graph
+if False:
+    plot_phase_interface("showcase", "show_aniso_0", 13, save="showcase/exported/show_aniso_inteface_graph.pdf")
+
+#Model comparison
+if False:
+    plot_phase_comparison_maps("showcase", [
+        ("method_comp_euler", "Euler"), 
+        ("method_comp_rk4", "RK4"), 
+        ("method_comp_rkm", "RKM"), 
+        ("method_comp_semi", "S-I")
+    ], 20, save="showcase/exported/model_comp.pdf", print_comp_table=True)
+
+#Correction comparison
+if False:
+    plot_phase_comparison_maps("showcase", [
+        ("method_comp_semi",            "S-I", "black"),
+        ("method_comp_semi_corr",       "S-I corr."), 
+        ("method_comp_semi_loop3",      "S-I 3 reps."), 
+        ("method_comp_semi_corr_loop3", "S-I corr., 3 reps."), 
+        ("method_comp_rkm_corr",        "RKM corr."), 
+    ], 20, legend_under=True, save="showcase/exported/correction_comp.pdf")
+    # ], 20, legend_under=True)
+
+#Step residual graphs
+if True:
+    plot_step_residual_comp("showcase",
+        "method_comp_semi_loop3",
+        "method_comp_semi_corr_loop3",   
+        "S-I",    
+        save="showcase/exported/step_res_comp_semi.pdf")
+    
+    plot_step_residual_comp("showcase",
+        "method_comp_euler_loop3",
+        "method_comp_euler_corr_loop3",   
+        "Euler",    
+        save="showcase/exported/step_res_comp_euler.pdf")
+if False:
+    plot_setp_residual_comp("showcase",
+        "method_comp_semi",
+        "method_comp_semi_loop3",
+        "method_comp_semi_corr",       
+        "method_comp_semi_corr_loop3", 
+        "method_comp_rkm_corr",
+        "method_comp_rkm",
+        save="showcase/exported/step_res_comp_l1.pdf", l1=True)
+    
+        # "method_comp_euler_corr",
+        # "method_comp_euler",
+        # save="showcase/exported/step_res_comp.png")
+
+hue_colors = ['#7500E6', '#C000E6', '#E600A1', '#E60017', '#E65200', '#E6B200', '#00E630', '#00E6CC', '#00B5E6']
+distinct_colors = ['#E6DF00', '#E63E00', '#00E6BA', '#6912E6', '#30917E', '#666533',
+                    '#721DDB', '#00DBB8', '#DB531D', '#DBD813', '#86533E', '#493A5C']
+
+#         Euler   |         RK4     |         RKM     |         S-I     |        
+# Euler : 0       |0        4.30E+01|7.69E+01 7.33E+00|3.16E+01 1.84E+01|5.93E+01
+# RK4   : 4.30E+01|7.69E+01 0       |0        4.83E+01|8.13E+01 5.23E+01|9.02E+01
+# RKM   : 7.33E+00|3.16E+01 4.83E+01|8.13E+01 0       |0        1.49E+01|5.39E+01
+# S-I   : 1.84E+01|5.93E+01 5.23E+01|9.02E+01 1.49E+01|5.39E+01 0       |0       
