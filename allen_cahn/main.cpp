@@ -93,7 +93,7 @@ struct App_State {
 void sim_make_initial_conditions(Real* F, Real* U, const Sim_Config& config)
 {
     const Sim_Params& params = config.params;
-    Exact_Params exact_params = get_static_exact_params(params);
+    Exact_Params exact_params = get_static_exact_params();
     for(size_t y = 0; y < (size_t) params.ny; y++)
     {
         for(size_t x = 0; x < (size_t) params.nx; x++)
@@ -105,7 +105,7 @@ void sim_make_initial_conditions(Real* F, Real* U, const Sim_Config& config)
             {
                 Real r = hypot(pos.x - params.L0/2, pos.y - params.L0/2); 
 
-                F[i] = exact_corresponing_phi_ini(r, exact_params);
+                F[i] = exact_corresponing_phi_ini(r, exact_params, params.xi);
                 U[i] = exact_u(0, r, exact_params);
             }
             else
@@ -285,6 +285,7 @@ int main()
         int snapshot_times_i = 0;
         bool end_reached = false;
 
+        double start_time = clock_s();
 	    while (!glfwWindowShouldClose(window))
         {
             bool save_this_iter = false;
@@ -311,7 +312,7 @@ int main()
 
             if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
             {
-                LOG_INFO("app", "reached stop time %lfs. Simulation paused.", config.simul_stop_time);
+                LOG_INFO("app", "reached stop time %lfs. Took %lf seconds. Simulation paused.", config.simul_stop_time, clock_s() - start_time);
                 app->is_in_step_mode = true;
                 end_reached = true;
                 save_this_iter = true;

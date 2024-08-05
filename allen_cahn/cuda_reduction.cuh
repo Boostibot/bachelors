@@ -138,7 +138,7 @@ static T cuda_produce_reduce(csize N, Producer produce, Reduction reduce_dummy, 
     if(N > 0)
     {
         enum {
-            CPU_REDUCE_MAX = 256,
+            CPU_REDUCE_MAX = 1024,
             CPU_REDUCE_MIN = 32,
         };
 
@@ -151,7 +151,8 @@ static T cuda_produce_reduce(csize N, Producer produce, Reduction reduce_dummy, 
             bounds = cuda_get_launch_bounds(constraints);
         }
 
-        cpu_reduce = CLAMP(cpu_reduce, CPU_REDUCE_MIN, CPU_REDUCE_MAX);
+        // cpu_reduce = CLAMP(cpu_reduce, CPU_REDUCE_MIN, CPU_REDUCE_MAX);
+        cpu_reduce = CPU_REDUCE_MAX;
         Cache_Tag tag = cache_tag_make();
         T* partials[2] = {NULL, NULL};
 
@@ -582,6 +583,17 @@ static T cpu_reduce(const T *input, csize n, Reduction reduce_tag = Reduction())
         for(csize i = 0; i < to - from; i++)
             sum = _reduce_reduce<Reduction, T>(sum, cpu[i]);
     }
+
+    return sum;
+}
+
+
+template<class Reduction, typename T>
+static T cpu_reduce_host_mem(const T *input, csize n, Reduction reduce_tag = Reduction())
+{
+    T sum = _reduce_indentity<Reduction, T>();
+    for(csize i = 0; i < n; i++)
+        sum = _reduce_reduce<Reduction, T>(sum, input[i]);
 
     return sum;
 }

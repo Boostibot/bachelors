@@ -6,7 +6,6 @@ struct Exact_Params
     Real lambda;
     Real R_ini;
     Real epsilon;
-    Real xi;
 };
 
 #ifdef __CUDACC__
@@ -68,14 +67,12 @@ EXACT_API Real smootherstep(Real edge0, Real edge1, Real x) {
     return x * x * x * (x * (6.0f * x - 15.0f) + 10.0f);
 }
 
-EXACT_API Real exact_corresponing_phi_ini(Real r, Exact_Params params)
+EXACT_API Real exact_corresponing_phi_ini(Real r, Exact_Params params, Real xi)
 {
     Real p_ini = 0;
-    // Real lo = params.R_ini - params.xi/2; 
-    // Real hi = params.R_ini + params.xi/2; 
-    Real fade = 14; //TODO!
-    Real lo = params.R_ini - params.xi*fade/2; 
-    Real hi = params.R_ini + params.xi*fade/2; 
+    Real fade = 1; //TODO!
+    Real lo = params.R_ini - fade*xi/2; 
+    Real hi = params.R_ini + fade*xi/2; 
 
     if(r < lo)
         p_ini = 1;
@@ -83,16 +80,15 @@ EXACT_API Real exact_corresponing_phi_ini(Real r, Exact_Params params)
         p_ini = 0;
     else 
         // p_ini = (params.R_ini - r)/params.xi + 0.5;
-        // p_ini = 1 - (r - lo)/(hi - lo);
-        p_ini = 1 - smootherstep(lo, hi, r);
+        p_ini = 1 - (r - lo)/(hi - lo);
+        // p_ini = 1 - smootherstep(lo, hi, r);
 
     return p_ini;
 }
 
-EXACT_API Exact_Params get_static_exact_params(Sim_Params params)
+EXACT_API Exact_Params get_static_exact_params()
 {
     Exact_Params exact_params = {0};
-    exact_params.xi = params.xi;
     exact_params.epsilon = 0.001;
     exact_params.lambda = 0.5;
     exact_params.R_ini = 0.25;

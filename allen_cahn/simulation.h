@@ -9,11 +9,12 @@
 #define COMPILE_GRAPHICS  
     // #define COMPILE_NETCDF  
     #ifndef CUSTOM_SETTINGS
-    // #define COMPILE_BENCHMARKS
+    #define COMPILE_BENCHMARKS
     // #define COMPILE_TESTS
     #define COMPILE_SIMULATION
-    // #define COMPILE_THRUST
+    #define COMPILE_THRUST
     #define COMPILE_NOISE
+    #define COMPILE_EXACT
     // #define USE_FLOATS
 #endif
 

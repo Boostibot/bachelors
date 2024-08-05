@@ -26,7 +26,12 @@ SHARED Real custom_cos(Real theta) { return cos(theta); }
 #define assert(x)
 #endif
 
-SHARED Real boundary_sample(const Real* map, int x, int y, int nx, int ny, Sim_Boundary_Type bound)
+#ifdef COMPILE_EXACT
+    SHARED Real _boundary_sample(const Real* map, int x, int y, int nx, int ny, Sim_Boundary_Type bound, Sim_Params params)
+    #define boundary_sample(map, x, y, nx, ny, bound) _boundary_sample(map, x, y, nx, ny, bound, params)
+#else
+    SHARED Real boundary_sample(const Real* map, int x, int y, int nx, int ny, Sim_Boundary_Type bound)
+#endif
 {
     switch(bound)
     {
@@ -51,10 +56,18 @@ SHARED Real boundary_sample(const Real* map, int x, int y, int nx, int ny, Sim_B
                 return map[x + y*nx];
             else
             {
+                Real dirichlet = 0;
+                #ifdef COMPILE_EXACT
+                    Real dx = params.L0 / nx;
+                    Real dy = params.L0 / ny;
+                    Exact_Params exact = get_static_exact_params();
+                    Real r = hypot((x - nx/2)*dx, (y - ny/2)*dy);
+                    dirichlet = exact_u(params.time,  r, exact);
+                #endif
                 int clampx = CLAMP(x, 0, nx - 1);
                 int clampy = CLAMP(y, 0, ny - 1);
                 assert(0 <= clampx && clampx < nx && 0 <= clampy && clampy < ny );
-                return -map[clampx + clampy*nx];
+                return 2*dirichlet - map[clampx + clampy*nx];
             }              
         } break;
 
@@ -166,7 +179,7 @@ void explicit_solver_solve_lin_combination(Real* out_F, Real* out_U, Sim_Params 
     Real fu = 0;
     if(params.do_exact)
     {
-        Exact_Params exact_params = get_static_exact_params(params);
+        Exact_Params exact_params = get_static_exact_params();
         fu = exact_fu(params.iter*dt, exact_params);
     }
 
@@ -405,15 +418,15 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
         if(epsilon_F < params.Phi_tolerance && epsilon_U < params.T_tolerance)
             converged = true;
 
-        Real epsilon = (Real) MAX(epsilon_F + epsilon_U, 1e-20);
-        Real delta = (Real) MAX(params.Phi_tolerance + params.T_tolerance, 1e-20);
+        Real epsilon = (Real) MAX(MAX(epsilon_F, epsilon_U), 1e-20);
+        Real delta = (Real) MAX(MIN(params.Phi_tolerance, params.T_tolerance), 1e-20);
         used_tau = tau;
         tau = pow(delta / epsilon, (Real)0.2)*4/5*tau;
         tau = MAX(tau, params.min_dt);
 
         //If below the min limit there is no point in trying another loop
         if(tau <= params.min_dt && used_tau <= params.min_dt)
-            break;
+            break;;
     }
 
     cuda_for(0, params.ny*params.nx, [=]SHARED(int i){
@@ -444,8 +457,10 @@ struct Cross_Matrix_Static {
 
     int nx;
     int ny;
+    Real t;
 
     Sim_Boundary_Type boundary;
+    Sim_Params params;
 };
 
 struct Anisotrophy_Matrix {
@@ -458,11 +473,13 @@ struct Anisotrophy_Matrix {
     int ny;
 
     Sim_Boundary_Type boundary;
+    Sim_Params params;
 };
 
 void cross_matrix_static_multiply(Real* out, const void* _A, const Real* vec, int N)
 {
     Cross_Matrix_Static A = *(Cross_Matrix_Static*)_A;
+    Sim_Params params = A.params;
     int nx = A.nx;
     int ny = A.ny;
 
@@ -485,6 +502,7 @@ void cross_matrix_static_multiply(Real* out, const void* _A, const Real* vec, in
 void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* vec, int N)
 {
     Anisotrophy_Matrix A = * (Anisotrophy_Matrix*)_A;
+    Sim_Params params = A.params;
     int nx = A.nx;
     int ny = A.ny;
 
@@ -709,6 +727,7 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
     A_F.Y = -dt/(dy*dy);
     A_F.nx = nx;
     A_F.ny = ny;
+    A_F.params = params;
     A_F.boundary = params.Phi_boundary;
 
     Cross_Matrix_Static A_U = {0};
@@ -719,6 +738,7 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
     A_U.D = -dt/(dy*dy);
     A_U.nx = nx;
     A_U.ny = ny;
+    A_U.params = params;
     A_U.boundary = params.T_boundary;
 
     bool do_corrector_guess = params.do_corrector_guess;
@@ -998,7 +1018,7 @@ void exact_solver_step(Real* next_F, Real* next_U, Sim_Params params)
     int nx = params.nx;
     int ny = params.ny;
     
-    Exact_Params exact_params = get_static_exact_params(params);
+    Exact_Params exact_params = get_static_exact_params();
     Real t = params.time;
     cuda_for_2D(0, 0, nx, ny, [=]SHARED(int xi, int yi){
         Real x = ((Real) xi + 0.5)*dx - L0/2;
@@ -1095,54 +1115,189 @@ static void cache_prepare(int count, int item_size, int N)
     cache_free(&tag);
 }
 
+
+int intcmp(const void* a_, const void* b_)
+{
+    int64_t a = *(int64_t*) a_;
+    int64_t b = *(int64_t*) b_;
+    return (a < b) - (a > b);
+}
+
+struct Benchmark_Median {
+    int64_t iters;
+    double average;
+    double percentile_average;
+    double percentile_min;
+    double percentile_max;
+    double median;
+    double min;
+    double max;
+};
+
+template <typename Func>
+static Benchmark_Median benchmark_median(double percentile, int max_runs, double max_time, double warmup, Func func)
+{
+    int64_t* timings = (int64_t*) malloc((size_t) max_runs*sizeof *timings);
+
+    int64_t sec_to_ns = 1000000000;
+    int64_t start_time = clock_ns();
+    int64_t max_time_ns = (int64_t)(max_time * sec_to_ns);
+    int64_t warmup_ns = (int64_t)(warmup * sec_to_ns);
+
+    
+    int64_t before = 0;
+    int64_t after = 0;
+
+    int num_timings = 0;
+
+    //warmup
+    for(int64_t start = clock_ns(); clock_ns() < start + warmup_ns;)
+        func();
+
+    //measure
+    for(int64_t start = clock_ns(); after < start + max_time_ns && num_timings < max_runs;)
+    {
+        before = clock_ns();
+        func();
+        after = clock_ns();
+        timings[num_timings++] = after - before;
+    }
+
+    //calc stats
+    qsort(timings, (size_t) num_timings, sizeof *timings, intcmp);
+    if(num_timings == 0)
+    {
+        Benchmark_Median out = {0};
+        free(timings);
+        return out;
+    }
+
+    int64_t median = 0;
+    if(num_timings >= 1)
+    {
+        if(num_timings % 2 == 0)
+            median = (timings[num_timings/2] + timings[num_timings/2 + 1])/2;
+        else
+            median = timings[num_timings/2];
+    }
+
+    int64_t min = timings[0];
+    int64_t max = timings[num_timings - 1];
+    int64_t sum = 0;
+    for(int i = 0; i < num_timings; i++)
+        sum += timings[i];
+
+    int64_t sum_percentile = 0;
+    int percentage_from = (int) ceil(percentile * num_timings);
+    int percentage_to = (int) floor(num_timings - percentile * num_timings);
+
+    int64_t min_percentile = timings[percentage_from];
+    int64_t max_percentile = timings[percentage_to - 1];;
+    for(int i = percentage_from; i < percentage_to; i++)
+        sum_percentile += timings[i];
+
+    Benchmark_Median out = {0};
+    out.median = (double) median / (double) sec_to_ns; 
+    out.iters = num_timings;
+    out.average = (double) sum / (double) sec_to_ns / num_timings; 
+    out.min = (double) min / (double) sec_to_ns; 
+    out.max = (double) max / (double) sec_to_ns; 
+    out.percentile_average = (double) sum_percentile / (double) sec_to_ns / (percentage_to - percentage_from); 
+    out.percentile_min = (double) min_percentile / (double) sec_to_ns; 
+    out.percentile_max = (double) max_percentile / (double) sec_to_ns; 
+    free(timings);
+
+    return out;
+}
+
+void print_bencmark_median(const char* name, Benchmark_Median b, int N, int sizeof_item, bool all = false)
+{
+    int GB = 1024*1024*1024;
+    double total_gb = (double) N * sizeof_item / GB;
+    if(all)
+    {
+        printf("%s stats:%10lli median:%e Total{avg:%e min:%e max:%e} Percentile{avg:%e min:%e max:%e} N:%i (s)\n", name, (long long) b.iters, b.median, b.average, b.min, b.max, b.percentile_average, b.percentile_min, b.percentile_max, N);
+        printf("%s stats:%10lli median:%e Total{avg:%.2lf min:%.2lf max:%.2lf} Percentile{avg:%.2lf min:%.2lf max:%.2lf} N:%i (GB/s)\n", name, (long long) b.iters, total_gb/b.median, total_gb/b.average, total_gb/b.min, total_gb/b.max, total_gb/b.percentile_average, total_gb/b.percentile_min, total_gb/b.percentile_max, N);
+    }
+    else
+    {
+        printf("%s stats:%10lli median:%4.2lf avg:%4.2lf min:%4.2lf max:%4.2lf N:%i (GB/s)\n", name, (long long) b.iters, total_gb/b.median, total_gb/b.percentile_average, total_gb/b.percentile_min, total_gb/b.percentile_max, N);
+        // printf("%s stats:%10lli median:%4.2lf avg:%4.2lf min:%4.2lf max:%4.2lf N:%i (GB/s)\n", name, (long long) b.iters, total_gb/b.median, total_gb/b.average, total_gb/b.min, total_gb/b.max, N);
+    }
+}
+
+void print_bencmark_median_in_array(const char* name, Benchmark_Median* bs, int* Ns, int arrsize, int sizeof_item)
+{
+    int GB = 1024*1024*1024;
+    printf("%s = [", name);
+    for(int i = 0; i < arrsize; i++)
+    {
+        int N = Ns[i];
+        double total_gb = (double) N * sizeof_item / GB;
+        printf("(%e, %4.2lf), ", bs[i].median, total_gb/bs[i].median);
+    }
+    printf("]\n");
+}
+
+
+#include <unistd.h>
 extern "C" bool run_benchmarks(int N_)
 {
-    csize N = (csize) N_;
-    cache_prepare(3, sizeof(int), N);
-    cache_prepare(3, sizeof(float), N);
-    cache_prepare(3, sizeof(double), N);
-
-    Cache_Tag tag = cache_tag_make();
-    uint* rand_state = cache_alloc(uint, N, &tag);
-    random_map_seed_32(rand_state, N, (uint32_t) clock_ns());
-
-    int GB = 1024*1024*1024;
+    csize Ns[] = {256*256, 512*512, 1024*1024, 2048*2048, 4096*4096, 2*4096*4096};
+    Benchmark_Median cpu_f32[ARRAY_LEN(Ns)] = {0};
+    Benchmark_Median thrust_f32[ARRAY_LEN(Ns)] = {0};
+    Benchmark_Median cust_f32[ARRAY_LEN(Ns)] = {0};
+    for(int i = 0; i < (int)ARRAY_LEN(Ns); i++)    
     {
-        double* rand_map = cache_alloc(double, N, &tag);
-        random_map_32(rand_map, rand_state, N);
-        
-        double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_map, N, Reduce::ADD); });
-        double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_map, N, Reduce::ADD); });
-        double custom_time = benchmark(3, [=]{ cuda_reduce(rand_map, N, Reduce::ADD); });
-        double total_gb = (double) N / GB * sizeof(double);
-        LOG_OKAY("BENCH", "double (gb/s): cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
-            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes((size_t)N * sizeof(double)).str);
-        LOG_OKAY("BENCH", "double (time): cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
-    }
-    {
-        float* rand_map = cache_alloc(float, N, &tag);
-        random_map_32(rand_map, rand_state, N);
-        
-        double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_map, N, Reduce::ADD); });
-        double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_map, N, Reduce::ADD); });
-        double custom_time = benchmark(3, [=]{ cuda_reduce(rand_map, N, Reduce::ADD); });
-        double total_gb = (double) N / GB * sizeof(float);
-        LOG_OKAY("BENCH", "float (gb/s) : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
-            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes((size_t)N * sizeof(float)).str);
-        LOG_OKAY("BENCH", "float (time) : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
+        csize N = Ns[i];
+        printf("\n\nN:%i\n", N);
+        cache_prepare(3, sizeof(int), N);
+        cache_prepare(3, sizeof(float), N);
+        cache_prepare(3, sizeof(double), N);
+
+        Cache_Tag tag = cache_tag_make();
+        uint* rand_state = cache_alloc(uint, N, &tag);
+        random_map_seed_32(rand_state, N, (uint32_t) clock_ns());
+
+        int runs = 1024*1024;
+        double time = 3;
+        uint sleept = 5;
+        double warmup = 0.3;
+        double percentile = 0.1;
+        {
+            float* rand_map = cache_alloc(float, N, &tag);
+            random_map_32(rand_map, rand_state, N);
+
+            float* host_rand_map = (float*) malloc(sizeof(float)*(size_t)N);
+            for(int k = 0; k < N; k++)
+                host_rand_map[k] = random_f32(0, 1);
+            
+            sleep(sleept);
+            cpu_f32[i] = benchmark_median(percentile, runs, time, warmup, [=]{ 
+                //cause side effect through volatile thus preevnting the compile from optimizing thise
+                //entire thing away
+                volatile float do_not_optimize = cpu_reduce_host_mem(host_rand_map, N, Reduce::MAX);
+                do_not_optimize = do_not_optimize + 1; //silence unused variable warning
+            });
+            sleep(sleept);
+            cust_f32[i] = benchmark_median(percentile, runs, time, warmup, [=]{ cuda_reduce(rand_map, N, Reduce::MAX); });
+            sleep(sleept);
+            thrust_f32[i] = benchmark_median(percentile, runs, time, warmup, [=]{ thrust_reduce(rand_map, N, Reduce::MAX); });
+            sleep(sleept);
+            print_bencmark_median("CPU ", cpu_f32[i], N, sizeof(float));
+            print_bencmark_median("THRT", thrust_f32[i], N, sizeof(float));
+            print_bencmark_median("CUST", cust_f32[i], N, sizeof(float));
+
+            free(host_rand_map);
+        }
+        cache_free(&tag);
     }
 
-    {
-        double cpu_time = benchmark(3, [=]{ cpu_reduce(rand_state, N, Reduce::ADD); });
-        double thrust_time = benchmark(3, [=]{ thrust_reduce(rand_state, N, Reduce::ADD); });
-        double custom_time = benchmark(3, [=]{ cuda_reduce(rand_state, N, Reduce::ADD); });
-        double total_gb = (double) N / GB * sizeof(uint);
-        LOG_OKAY("BENCH", "uint (gb/s)  : cpu %5.2lf | thrust: %5.2lf | custom: %5.2lf (N:%i %s)", 
-            total_gb/cpu_time, total_gb/thrust_time, total_gb/custom_time, N, format_bytes((size_t)N * sizeof(uint)).str);
-        LOG_OKAY("BENCH", "uint (time)  : cpu: %e | thrust: %e | custom: %e", N, cpu_time, thrust_time, custom_time);
-    }
+    #define DO_THE_PRINT(x, type) print_bencmark_median_in_array(#x, x, Ns, ARRAY_LEN(Ns), sizeof(type))
+    DO_THE_PRINT(cpu_f32, uint);
+    DO_THE_PRINT(thrust_f32, uint);
+    DO_THE_PRINT(cust_f32, uint);
 
-    cache_free(&tag);
     return true;
 }
 #else

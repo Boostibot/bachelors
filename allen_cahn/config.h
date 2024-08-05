@@ -473,8 +473,13 @@ bool allen_cahn_read_config(const char* path, Sim_Config* config)
         //TODO: this should be more proper
         if(params->do_exact)
         {
+            double A = 1.0/16;
+            double h = MAX(params->L0/params->nx, params->L0/params->ny);
             params->Tm = 0;
             params->L = 1;
+            if(params->solver != SOLVER_TYPE_EXACT)
+                params->dt = A/4 * h*h;
+            LOG_WARN("config", "dt used: %e", params->dt);
             params->a = 1;
             params->b = 1;
             params->alpha = 1;

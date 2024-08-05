@@ -326,8 +326,6 @@ def extract_outline(values, star=0, threshold=0.5):
     def point_add(point, dir):
         return (point[0] + dir[0], point[1] + dir[1])
 
-    
-
     lines = []
     F_edge = convolved > 0
 
@@ -427,12 +425,15 @@ def dissable_plot_ticks(ax):
                     bottom=False, top=False, left=False, right=False,
                     labelbottom=False, labeltop=False, labelleft=False, labelright=False)
     
-def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', colorbar='inset', background="U", do_outlines=True):
+def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', text_color=None, colorbar='inset', background="U", do_outlines=True):
     label = 'T'
     cmap = 'RdBu_r'
     if background == "F":
         cmap = 'viridis'
         label = 'ϕ'
+
+    if text_color == None:
+        text_color = line_color
 
     outlines = []
     if do_outlines:
@@ -455,9 +456,9 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
     elif colorbar == 'inset':
         cbaxes = mpl_toolkits.axes_grid1.inset_locator.inset_axes(ax, width="5%", height="40%", loc=4, borderpad=2) 
         cb = plt.colorbar(img, cax=cbaxes, ax=ax, ticks=[0.,1], orientation='vertical')
-        cb.ax.tick_params(axis='both', direction='in', color=line_color)
-        cb.set_label(label, loc='center', rotation="horizontal", color=line_color, labelpad = 0.5)
-        plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color=line_color)
+        cb.ax.tick_params(axis='both', direction='in', color=text_color)
+        cb.set_label(label, loc='center', rotation="horizontal", color=text_color, labelpad = 0.5)
+        plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color=text_color)
         dissable_plot_ticks(ax)
     else:
         dissable_plot_ticks(ax)
@@ -470,10 +471,10 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
     else:
         plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
 
-def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, line_color='white', colorbar='inset', background="U", do_outlines=True):
+def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, text_color=None, line_color='white', colorbar='inset', background="U", do_outlines=True):
     maps1 = load_dir_bin_map_file(path_rel(base, path), i)
     plot_loaded_temperature_interface_map(
-        maps1, maps1.maps['F'], maps1.maps[background], smoothness=smoothness, line_color=line_color, min=min, max=max, 
+        maps1, maps1.maps['F'], maps1.maps[background], smoothness=smoothness, line_color=line_color, text_color=text_color, min=min, max=max, 
         save=save, colorbar=colorbar, background=background, do_outlines=do_outlines)
 
 def plot_phase_interface(base, path, i, xi = 0.0043, linewidth=4, save=None):
@@ -518,6 +519,13 @@ def plot_phase_interface(base, path, i, xi = 0.0043, linewidth=4, save=None):
     else:
         plt.show() 
 
+def format_e(n):
+    if n == 0:
+        return '$0$' 
+    a = '%.2E' % n
+    return '$' + a.split('E')[0] + '\\times 10^{' + a.split('E')[1] + '}$'
+
+
 def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, linewidth=1, xmin=1.6, xmax=2.4, ymin=2.6, ymax=None, legend_under=False, print_comp_table=False):
     if len(paths) == 0:
         return
@@ -529,26 +537,31 @@ def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, lin
         map_sets += [map_set]
         maps += [map_set.maps['F']]
 
-
-    def euclid_dist(a, b):
-        return np.linalg.norm((a - b).flatten())
-    
-    def phase_value_dist(a, b):
-        return np.linalg.norm((phi_map_discretize(a) - phi_map_discretize(b)).flatten())
-
     if print_comp_table:
-        out = []
-        for i,map in enumerate(maps):
-            results = []
-            formated = paths[i][1].ljust(5) + "&"
-            for compare_with in maps:
-                edist = euclid_dist(map, compare_with)
-                pdist = phase_value_dist(map, compare_with)
-                formated += "&{:.2f}&{:.2f}".format(edist, pdist)
+        def euclid_dist(a, b):
+            x = (a - b).flatten()
+            return np.linalg.norm(x)
+        
+        def phase_value_dist(a, b):
+            x = (phi_map_discretize(a) - phi_map_discretize(b)).flatten()
+            return np.linalg.norm(x, ord=1)
+        
+        def print_comp_table(maps, dist):
+            print(f"statst in {dist}")
+            for i,map in enumerate(maps):
+                formated = paths[i][1].ljust(5)
+                for compare_with in maps:
+                    val = 0
+                    if dist == 'edist':
+                        val = euclid_dist(map, compare_with)
+                    else:
+                        val = phase_value_dist(map, compare_with)
+                    formated += f" & {format_e(val)}"
+                
+                print(f'{formated} \\\\')
 
-                results += [(edist, pdist)]
-            
-            print(f'{formated} \\\\')
+        print_comp_table(maps, 'edist')
+        print_comp_table(maps, 'pdist')
 
     dx = map_sets[0].dx
     dy = map_sets[0].dy
@@ -620,6 +633,56 @@ def plot_step_residual_comp(base, loop, corr_loop, name, save=None, linewidth=1.
 
     plt.cla()
 
+def plot_bench_results(linewidth=2, save=None):
+
+    Ys = [3, 10, 20, 30, 40, 50, 60, 70]
+    Ns = [256**2, 512**2, 1024**2, 2048**2, 4096**2, 2*4096**2]
+    Ns_labels = ['$256^2$', '$512^2$', '$1024^2$', '$2048^2$', '$4096^2$', '$2×4096^2$']
+    inf = math.inf
+    cpu = [[6.257900e-05, 3.90], [2.502550e-04, 3.90], [1.006565e-03, 3.88], [4.038604e-03, 3.87], [1.612710e-02, 3.88], [3.218363e-02, 3.88], ]
+    thrust = [[2.048700e-05, 11.92], [3.345000e-05, 29.19], [7.647900e-05, 51.08], [2.468640e-04, 63.29], [1.086272e-03, 57.54], [2.353407e-03, 53.11], ]
+    cust = [[1.701700e-05, 14.35], [2.933800e-05, 33.29], [8.709500e-05, 44.85], [2.953550e-04, 52.90], [9.418090e-04, 66.36], [1.838005e-03, 68.01], ]
+
+    cpu = np.array(cpu)
+    thrust = np.array(thrust)
+    cust = np.array(cust)
+
+    fig = plt.figure(figsize=(11, 10))
+    ax = fig.add_subplot(111)
+    ax.tick_params(axis='both', which='major', pad=15)
+    ax.plot(Ns, cpu.T[1], color='black', linestyle='-', marker='o', label='cpu', linewidth=linewidth)
+    ax.plot(Ns, thrust.T[1], color='green', linestyle='-', marker='o', label='thrust', linewidth=linewidth)
+    ax.plot(Ns, cust.T[1], color='blue', linestyle='-', marker='o', label='custom', linewidth=linewidth)
+
+    str = "cpu "
+    for x in cpu.T[0]:
+        str += f"& {format_e(x)} "
+    print(str + '\\\\')
+
+    str = "thrust "
+    for x in thrust.T[0]:
+        str += f"& {format_e(x)} "
+    print(str + '\\\\')
+
+    str = "custom "
+    for x in cust.T[0]:
+        str += f"& {format_e(x)} "
+    print(str + '\\\\')
+
+    ax.set_xscale('log')
+    plt.xticks(Ns, Ns_labels, rotation=45)
+    plt.yticks(Ys)
+    plt.xlabel('N') 
+    plt.ylabel('GB/s', rotation="horizontal") 
+    plt.grid()
+    plt.legend() 
+    if save != None:
+        plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+    else:
+        plt.show() 
+
+    None
+
 DPI = 180
 font = {'size' : 22}
 matplotlib.rc('font', **font)
@@ -663,29 +726,20 @@ if False:
 # Dirichlet boundary comparison
 if True:
     base = "showcase/exported/"
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 2, background="F", save=base+"semi_long_neumann_F_2.png")
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 10, background="F", save=base+"semi_long_neumann_F_10.png")
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 30, background="F", save=base+"semi_long_neumann_F_30.png")
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 60, background="F", save=base+"semi_long_neumann_F_60.png")
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 2, background="U", do_outlines=False, save=base+"semi_long_neumann_U_2.png")
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 10, background="U", do_outlines=False, save=base+"semi_long_neumann_U_10.png")
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 30, background="U", do_outlines=False, save=base+"semi_long_neumann_U_30.png")
-    # plot_temperature_interface_map("showcase", "semi_long_neumann", 60, background="U", do_outlines=False, save=base+"semi_long_neumann_U_60.png")
-
     plot_temperature_interface_map("showcase", "semi_long_neumann", 2, background="U", save=base+"semi_long_neumann_FU_2.png")
     plot_temperature_interface_map("showcase", "semi_long_neumann", 10, background="U", save=base+"semi_long_neumann_FU_10.png")
     plot_temperature_interface_map("showcase", "semi_long_neumann", 30, background="U", save=base+"semi_long_neumann_FU_30.png")
     plot_temperature_interface_map("showcase", "semi_long_neumann", 60, background="U", save=base+"semi_long_neumann_FU_60.png")
 if True:
     base = "showcase/exported/"
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 2, background="F", save=base+"semi_long_dirichlet_F_2.png")
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="F", save=base+"semi_long_dirichlet_F_10.png")
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 30, background="F", save=base+"semi_long_dirichlet_F_30.png")
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 60, background="F", save=base+"semi_long_dirichlet_F_60.png")
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 2, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_2.png")
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_10.png")
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 30, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_30.png")
-    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 60, background="U", do_outlines=False, save=base+"semi_long_dirichlet_U_60.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 2, background="F", text_color="black", save=base+"semi_long_dirichlet_F_2.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="F", text_color="black", save=base+"semi_long_dirichlet_F_10.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 30, background="F", text_color="black", save=base+"semi_long_dirichlet_F_30.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 60, background="F", text_color="black", save=base+"semi_long_dirichlet_F_60.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 2, background="U", text_color="black", do_outlines=False, save=base+"semi_long_dirichlet_U_2.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="U", text_color="black", do_outlines=False, save=base+"semi_long_dirichlet_U_10.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 30, background="U", text_color="black", do_outlines=False, save=base+"semi_long_dirichlet_U_30.png")
+    plot_temperature_interface_map("showcase", "semi_long_dirichlet", 60, background="U", text_color="black", do_outlines=False, save=base+"semi_long_dirichlet_U_60.png")
     
     # t = 0.02
     # t = 0.1
@@ -697,7 +751,7 @@ if False:
     plot_phase_interface("showcase", "show_aniso_0", 13, save="showcase/exported/show_aniso_inteface_graph.pdf")
 
 #Model comparison
-if False:
+if True:
     plot_phase_comparison_maps("showcase", [
         ("method_comp_euler", "Euler"), 
         ("method_comp_rk4", "RK4"), 
@@ -706,18 +760,18 @@ if False:
     ], 20, save="showcase/exported/model_comp.pdf", print_comp_table=True)
 
 #Correction comparison
-if False:
+if True:
     plot_phase_comparison_maps("showcase", [
         ("method_comp_semi",            "S-I", "black"),
         ("method_comp_semi_corr",       "S-I corr."), 
         ("method_comp_semi_loop3",      "S-I 3 reps."), 
         ("method_comp_semi_corr_loop3", "S-I corr., 3 reps."), 
         ("method_comp_rkm_corr",        "RKM corr."), 
-    ], 20, legend_under=True, save="showcase/exported/correction_comp.pdf")
+    ], 20, legend_under=True, save="showcase/exported/correction_comp.pdf", print_comp_table=True)
     # ], 20, legend_under=True)
 
 #Step residual graphs
-if True:
+if False:
     plot_step_residual_comp("showcase",
         "method_comp_semi_loop3",
         "method_comp_semi_corr_loop3",   
@@ -743,12 +797,10 @@ if False:
         # "method_comp_euler",
         # save="showcase/exported/step_res_comp.png")
 
+# Plot bencmark results
+if True:
+    plot_bench_results(save="showcase/exported/benchmark.pdf")
+
 hue_colors = ['#7500E6', '#C000E6', '#E600A1', '#E60017', '#E65200', '#E6B200', '#00E630', '#00E6CC', '#00B5E6']
 distinct_colors = ['#E6DF00', '#E63E00', '#00E6BA', '#6912E6', '#30917E', '#666533',
                     '#721DDB', '#00DBB8', '#DB531D', '#DBD813', '#86533E', '#493A5C']
-
-#         Euler   |         RK4     |         RKM     |         S-I     |        
-# Euler : 0       |0        4.30E+01|7.69E+01 7.33E+00|3.16E+01 1.84E+01|5.93E+01
-# RK4   : 4.30E+01|7.69E+01 0       |0        4.83E+01|8.13E+01 5.23E+01|9.02E+01
-# RKM   : 7.33E+00|3.16E+01 4.83E+01|8.13E+01 0       |0        1.49E+01|5.39E+01
-# S-I   : 1.84E+01|5.93E+01 5.23E+01|9.02E+01 1.49E+01|5.39E+01 0       |0       
