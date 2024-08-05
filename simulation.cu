@@ -476,10 +476,11 @@ struct Anisotrophy_Matrix {
     Sim_Params params;
 };
 
+
 void cross_matrix_static_multiply(Real* out, const void* _A, const Real* vec, int N)
 {
     Cross_Matrix_Static A = *(Cross_Matrix_Static*)_A;
-    Sim_Params params = A.params;
+    Sim_Params params = A.params; params.a = params.a;
     int nx = A.nx;
     int ny = A.ny;
 
@@ -502,7 +503,7 @@ void cross_matrix_static_multiply(Real* out, const void* _A, const Real* vec, in
 void anisotrophy_matrix_multiply(Real* out, const void* _A, const Real* vec, int N)
 {
     Anisotrophy_Matrix A = * (Anisotrophy_Matrix*)_A;
-    Sim_Params params = A.params;
+    Sim_Params params = A.params; params.a = params.a;
     int nx = A.nx;
     int ny = A.ny;
 

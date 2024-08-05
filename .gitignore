@@ -1,1 +1,11 @@
 ignored/
+.vs/
+.vs
+x64/
+x64
+snapshots/
+snapshots
+build/
+build
+temp/
+showcase/

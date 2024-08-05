@@ -10,11 +10,11 @@
     // #define COMPILE_NETCDF  
     #ifndef CUSTOM_SETTINGS
     #define COMPILE_BENCHMARKS
-    // #define COMPILE_TESTS
+    #define COMPILE_TESTS
     #define COMPILE_SIMULATION
     #define COMPILE_THRUST
     #define COMPILE_NOISE
-    #define COMPILE_EXACT
+    // #define COMPILE_EXACT //do not use slightly broken!
     // #define USE_FLOATS
 #endif
 

@@ -12,15 +12,6 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "CUDA C++: Launch",
-            "type": "cuda-gdb",
-            "request": "launch",
-            "program": "${workspaceFolder}/build/main.out",
-            "preLaunchTask": "make",
-            "cwd": "${workspaceFolder}", //"${fileDirname}",
-            // "externalConsole": true,
-        },
-        {
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
