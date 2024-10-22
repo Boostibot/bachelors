@@ -122,6 +122,7 @@ typedef struct Sim_Params{
     bool do_stats;
     bool do_stats_step_residual;
     bool do_exact;
+    bool do_prints;
 
     Sim_Stats* stats;
     Sim_Map* temp_maps;

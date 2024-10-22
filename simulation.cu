@@ -426,7 +426,7 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
 
         //If below the min limit there is no point in trying another loop
         if(tau <= params.min_dt && used_tau <= params.min_dt)
-            break;;
+            break;
     }
 
     cuda_for(0, params.ny*params.nx, [=]SHARED(int i){
@@ -434,7 +434,8 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
         next_U[i] = U[i] + used_tau*((Real)1/6*(k1_U[i] + k5_U[i]) + (Real)2/3*k4_U[i]);
     });
 
-    LOG("SOLVER", converged ? LOG_DEBUG : LOG_WARN, "rk4-adaptive %s in %i iters with error F:%lf | U:%lf | tau:%e", converged ? "converged" : "diverged", i, (double) epsilon_F, (double) epsilon_U, (double)used_tau);
+    if(params.do_prints)
+        LOG("SOLVER", converged ? LOG_DEBUG : LOG_WARN, "rk4-adaptive %s in %i iters with error F:%lf | U:%lf | tau:%e", converged ? "converged" : "diverged", i, (double) epsilon_F, (double) epsilon_U, (double)used_tau);
     _initial_step = tau;
 
     if(params.stats)
@@ -547,7 +548,7 @@ typedef void(*Matrix_Vector_Mul_Func)(Real* out, const void* A, const Real* x, i
 
 Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, const Real* b, int N, Matrix_Vector_Mul_Func matrix_mul_func, const Conjugate_Gardient_Params* params_or_null)
 {
-    i64 start = clock_ns();
+    // i64 start = clock_ns();
     Conjugate_Gardient_Params params = {0};
     params.epsilon = (Real) 1.0e-10;
     params.tolerance = (Real) 1.0e-5;
@@ -634,8 +635,8 @@ Conjugate_Gardient_Convergence conjugate_gradient_solve(const void* A, Real* x, 
     out.converged = iter != params.max_iters;
     out.error = sqrt(r_dot_r/N);
 
-    i64 end = clock_ns();
-    LOG_DEBUG("KERNEL", "conjugate_gradient_solve(%lli) took: %.2ems", (lli)N, (double)(end - start)*1e-6);
+    // i64 end = clock_ns();
+    // LOG_DEBUG("KERNEL", "conjugate_gradient_solve(%lli) took: %.2ems", (lli)N, (double)(end - start)*1e-6);
 
     cache_free(&tag);
     return out;
@@ -745,7 +746,8 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
     bool do_corrector_guess = params.do_corrector_guess;
     bool is_tiled = true;
 
-    cuda_timer_start();
+    if(do_debug)
+        cuda_timer_start();
     if(do_corrector_guess)
     {
         cuda_tiled_for_2D<1, 1, Phase_Temp>(0, 0, nx, ny,
@@ -821,10 +823,13 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
         );
     }
 
-    double time = cuda_timer_stop();
-    LOG_DEBUG("SOLVER", "Prepare kernel time %.2ems corrector_guess:%s tiled:%s", (double)time, 
-        do_corrector_guess ? "true" : "false", 
-        is_tiled ? "true" : "false");
+    if(params.do_prints)
+    {
+        double time = cuda_timer_stop();
+        LOG_DEBUG("SOLVER", "Prepare kernel time %.2ems corrector_guess:%s tiled:%s", (double)time, 
+            do_corrector_guess ? "true" : "false", 
+            is_tiled ? "true" : "false");
+    }
 
     Conjugate_Gardient_Params solver_params = {0};
     solver_params.epsilon = (Real) 1.0e-12;
@@ -834,7 +839,8 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
 
     //Solve A_F*next_F = b_F
     Conjugate_Gardient_Convergence F_converged = conjugate_gradient_solve(&A_F, next_F, b_F, N, anisotrophy_matrix_multiply, &solver_params);
-    LOG_DEBUG("SOLVER", "%lli F %s in %i iters with error %e\n", (lli) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, (double)F_converged.error);
+    if(params.do_prints)
+        LOG_DEBUG("SOLVER", "%lli F %s in %i iters with error %e\n", (lli) iter, F_converged.converged ? "converged" : "diverged", F_converged.iters, (double)F_converged.error);
 
     //Calculate b_U
     cuda_for(0, nx*ny, [=]SHARED(csize i){
@@ -851,7 +857,8 @@ void semi_implicit_solver_step_based(const Real* F, const Real* U, const Real* U
 
     //Solve A_U*next_U = b_U
     Conjugate_Gardient_Convergence U_converged = conjugate_gradient_solve(&A_U, next_U, b_U, N, cross_matrix_static_multiply, &solver_params);
-    LOG_DEBUG("SOLVER", "%lli U %s in %i iters with error %e\n", (lli) iter, U_converged.converged ? "converged" : "diverged", U_converged.iters, (double)U_converged.error);
+    if(params.do_prints)
+        LOG_DEBUG("SOLVER", "%lli U %s in %i iters with error %e\n", (lli) iter, U_converged.converged ? "converged" : "diverged", U_converged.iters, (double)U_converged.error);
 
     if(do_debug && params.do_debug)
     {
@@ -933,8 +940,9 @@ void semi_implicit_and_euler_solver_step_corrector(const Real* F, const Real* U,
             params.stats->step_res_max[k] = (float) stats.max;
             params.stats->step_res_count = max_iters;
             
-            LOG_DEBUG("SOLVER", "step residual loop: %i | avg: %e | max: %e", k, 
-                (double) stats.L1, (double) step_residual_max_error, params.corrector_tolerance);
+            if(params.do_prints)
+                LOG_DEBUG("SOLVER", "step residual loop: %i | avg: %e | max: %e", k, 
+                    (double) stats.L1, (double) step_residual_max_error, params.corrector_tolerance);
         }
         log_ungroup();
         last_num_steps = k;

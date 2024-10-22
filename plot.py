@@ -519,12 +519,29 @@ def plot_phase_interface(base, path, i, xi = 0.0043, linewidth=4, save=None):
     else:
         plt.show() 
 
-def format_e(n):
+def format_latex_e(n):
     if n == 0:
         return '$0$' 
-    a = '%.2E' % n
-    return '$' + a.split('E')[0] + '\\times 10^{' + a.split('E')[1] + '}$'
+    formatted = '%.2E' % n
+    mantissa = formatted.split('E')[0]
+    exponent = formatted.split('E')[1]
+    if exponent[0] == '+':
+        exponent = exponent[1:].lstrip('0')
+    else:
+        exponent = exponent[0] + exponent[1:].lstrip('0')
+        
+    if exponent == '':
+        return '$.2f$' % n
+    else:
+        return '$' + mantissa + '\\times 10^{' + exponent + '}$'
 
+def phase_field_dist(a, b, area, ord=1):
+    x = (a - b).flatten()
+    return np.linalg.norm(x, ord=ord)*area
+
+def phase_field_discrete_dist(a, b, area, ord=1):
+    x = (phi_map_discretize(a) - phi_map_discretize(b)).flatten()
+    return np.linalg.norm(x, ord=ord)*area
 
 def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, linewidth=1, xmin=1.6, xmax=2.4, ymin=2.6, ymax=None, legend_under=False, print_comp_table=False):
     if len(paths) == 0:
@@ -538,30 +555,33 @@ def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, lin
         maps += [map_set.maps['F']]
 
     if print_comp_table:
-        def euclid_dist(a, b):
-            x = (a - b).flatten()
-            return np.linalg.norm(x)
-        
-        def phase_value_dist(a, b):
-            x = (phi_map_discretize(a) - phi_map_discretize(b)).flatten()
-            return np.linalg.norm(x, ord=1)
-        
-        def print_comp_table(maps, dist):
-            print(f"statst in {dist}")
-            for i,map in enumerate(maps):
-                formated = paths[i][1].ljust(5)
-                for compare_with in maps:
+        def print_comp_table(map_sets, dist):
+            print(f"stats in {dist} =========================")
+
+            separator_line = '\\hline\n' + '& '*len(map_sets) + '\\\\[-1em]'
+            first_line = ''
+            for i,map_set in enumerate(map_sets):
+                first_line += ' & \\multicolumn{1}{c|}{%s}' % paths[i][1]
+
+            print(separator_line)
+            print(f'Schemes {first_line} \\\\')
+
+            for i,map_set in enumerate(map_sets):
+                dxdy = map_set.dx*map_set.dy
+                formated = paths[i][1].ljust(7)
+                for compare_with in map_sets:
                     val = 0
-                    if dist == 'edist':
-                        val = euclid_dist(map, compare_with)
+                    if dist == 'PFD':
+                        val = phase_field_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
                     else:
-                        val = phase_value_dist(map, compare_with)
-                    formated += f" & {format_e(val)}"
+                        val = phase_field_discrete_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
+                    formated += f" & {format_latex_e(val)}"
                 
+                print(separator_line)
                 print(f'{formated} \\\\')
 
-        print_comp_table(maps, 'edist')
-        print_comp_table(maps, 'pdist')
+        print_comp_table(map_sets, 'PFD')
+        print_comp_table(map_sets, 'PFDD')
 
     dx = map_sets[0].dx
     dy = map_sets[0].dy
@@ -612,12 +632,13 @@ def plot_step_residual_comp(base, loop, corr_loop, name, save=None, linewidth=1.
     ax = fig.add_subplot(111)
 
     colors = ['#E6B200', '#00E630', '#00E6CC', '#00B5E6']
-    ax.plot(loop_stat.time, loop_stat.Phi_delta_L2, color='black', label=rf'{name} 3 reps. $\Delta\Phi$')
+    dxdy = 16/loop_stat.nx*loop_stat.ny
+    ax.plot(loop_stat.time, loop_stat.Phi_delta_L1*dxdy, color='black', label=rf'{name} 3 reps. $\Delta\Phi$')
     for i in range(loop_stat.step_res_count):
-        ax.plot(loop_stat.time, loop_stat.step_res_L2[i], linewidth=linewidth, color=colors[i], label=rf'{name} 3 reps. $r_\Phi$ k={i+1}')
+        ax.plot(loop_stat.time, loop_stat.step_res_L1[i]*dxdy, linewidth=linewidth, color=colors[i], label=rf'{name} 3 reps. $r_\Phi$ k={i+1}')
 
     for i in range(corr_loop_stat.step_res_count):
-        ax.plot(corr_loop_stat.time, corr_loop_stat.step_res_L2[i], linewidth=linewidth, color=colors[i], linestyle='dashed', label=rf'{name} corr. 3 reps. $r_\Phi$ k={i+1}')
+        ax.plot(corr_loop_stat.time, corr_loop_stat.step_res_L1[i]*dxdy, linewidth=linewidth, color=colors[i], linestyle='dashed', label=rf'{name} corr. 3 reps. $r_\Phi$ k={i+1}')
 
     ax.set_xlim(xmin=0, xmax=0.01)
     plt.xlabel('t') 
@@ -656,17 +677,17 @@ def plot_bench_results(linewidth=2, save=None):
 
     str = "cpu "
     for x in cpu.T[0]:
-        str += f"& {format_e(x)} "
+        str += f"& {format_latex_e(x)} "
     print(str + '\\\\')
 
     str = "thrust "
     for x in thrust.T[0]:
-        str += f"& {format_e(x)} "
+        str += f"& {format_latex_e(x)} "
     print(str + '\\\\')
 
     str = "custom "
     for x in cust.T[0]:
-        str += f"& {format_e(x)} "
+        str += f"& {format_latex_e(x)} "
     print(str + '\\\\')
 
     ax.set_xscale('log')
@@ -724,13 +745,13 @@ if False:
     plot_temperature_interface_map("showcase", "show_aniso_0.5", 20, background="F", save="showcase/exported/show_aniso_0.5_F_20.png")
 
 # Dirichlet boundary comparison
-if True:
+if False:
     base = "showcase/exported/"
     plot_temperature_interface_map("showcase", "semi_long_neumann", 2, background="U", save=base+"semi_long_neumann_FU_2.png")
     plot_temperature_interface_map("showcase", "semi_long_neumann", 10, background="U", save=base+"semi_long_neumann_FU_10.png")
     plot_temperature_interface_map("showcase", "semi_long_neumann", 30, background="U", save=base+"semi_long_neumann_FU_30.png")
     plot_temperature_interface_map("showcase", "semi_long_neumann", 60, background="U", save=base+"semi_long_neumann_FU_60.png")
-if True:
+if False:
     base = "showcase/exported/"
     plot_temperature_interface_map("showcase", "semi_long_dirichlet", 2, background="F", text_color="black", save=base+"semi_long_dirichlet_F_2.png")
     plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="F", text_color="black", save=base+"semi_long_dirichlet_F_10.png")
@@ -771,7 +792,7 @@ if True:
     # ], 20, legend_under=True)
 
 #Step residual graphs
-if False:
+if True:
     plot_step_residual_comp("showcase",
         "method_comp_semi_loop3",
         "method_comp_semi_corr_loop3",   
@@ -798,7 +819,7 @@ if False:
         # save="showcase/exported/step_res_comp.png")
 
 # Plot bencmark results
-if True:
+if False:
     plot_bench_results(save="showcase/exported/benchmark.pdf")
 
 hue_colors = ['#7500E6', '#C000E6', '#E600A1', '#E60017', '#E65200', '#E6B200', '#00E630', '#00E6CC', '#00B5E6']

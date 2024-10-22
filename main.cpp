@@ -17,9 +17,9 @@
 #define DEF_WINDOW_HEIGHT	        1024
 
 #define FPS_DISPLAY_PERIOD          0.0
-#define SCREEN_UPDATE_PERIOD        0.03
-#define SCREEN_UPDATE_IDLE_PERIOD   0.05
-#define POLL_EVENTS_PERIOD          0.03
+#define SCREEN_UPDATE_PERIOD        0.1
+#define SCREEN_UPDATE_IDLE_PERIOD   0.1
+#define POLL_EVENTS_PERIOD          0.1
 #define FREE_RUN_PERIOD             0.001
 
 static double clock_s();
@@ -189,6 +189,50 @@ enum {
 };
 bool save_state(App_State* app, int flags, int snapshot_index);
 
+void app_collect_stats(App_State* app)
+{
+    if(app->stat_vectors.step_res_count < app->stats.step_res_count)
+    {
+        size_t first_size = app->stat_vectors.step_res_L1[0].size();
+        for(int i = app->stat_vectors.step_res_count; i < app->stats.step_res_count; i++)
+        {
+            app->stat_vectors.step_res_L1[i].resize(first_size);
+            app->stat_vectors.step_res_L2[i].resize(first_size);
+            app->stat_vectors.step_res_max[i].resize(first_size);
+            app->stat_vectors.step_res_min[i].resize(first_size);
+        }
+        app->stat_vectors.step_res_count = app->stats.step_res_count;
+    }
+
+    app->stat_vectors.step_res_count = std::max(app->stat_vectors.step_res_count, app->stats.step_res_count);
+    app->stat_vectors.time.push_back(app->stats.time);
+    app->stat_vectors.iter.push_back(app->stats.iter);
+    
+    app->stat_vectors.Phi_iters.push_back(app->stats.Phi_iters);
+    app->stat_vectors.Phi_ellapsed_time.push_back(app->stats.Phi_ellapsed_time); //TODO
+    app->stat_vectors.T_iters.push_back(app->stats.T_iters);
+    app->stat_vectors.T_ellapsed_time.push_back(app->stats.T_ellapsed_time);
+
+    app->stat_vectors.T_delta_L1.push_back(app->stats.T_delta_L1);
+    app->stat_vectors.T_delta_L2.push_back(app->stats.T_delta_L2);
+    app->stat_vectors.T_delta_max.push_back(app->stats.T_delta_max);
+    app->stat_vectors.T_delta_min.push_back(app->stats.T_delta_min);
+
+    app->stat_vectors.Phi_delta_L1.push_back(app->stats.Phi_delta_L1);
+    app->stat_vectors.Phi_delta_L2.push_back(app->stats.Phi_delta_L2);
+    app->stat_vectors.Phi_delta_max.push_back(app->stats.Phi_delta_max);
+    app->stat_vectors.Phi_delta_min.push_back(app->stats.Phi_delta_min);
+
+    for(int i = 0; i < app->stat_vectors.step_res_count; i++)
+    {
+        app->stat_vectors.step_res_L1[i].push_back(app->stats.step_res_L1[i]);
+        app->stat_vectors.step_res_L2[i].push_back(app->stats.step_res_L2[i]);
+        app->stat_vectors.step_res_max[i].push_back(app->stats.step_res_max[i]);
+        app->stat_vectors.step_res_min[i].push_back(app->stats.step_res_min[i]);
+    }
+    app->last_stats_save = app->sim_time;
+}
+
 int main()
 {
     static App_State app_data = {};
@@ -280,6 +324,7 @@ int main()
         double poll_last_time = 0;
 
         double processing_time = 0;
+        double acumulated_processing_time = 0;
 
         int snapshot_every_i = 0;
         int snapshot_times_i = 0;
@@ -312,7 +357,7 @@ int main()
 
             if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
             {
-                LOG_INFO("app", "reached stop time %lfs. Took %lf seconds. Simulation paused.", config.simul_stop_time, clock_s() - start_time);
+                LOG_INFO("app", "reached stop time %lfs. Took raw processing %lfs total (with puases) %lfs. Simulation paused.", config.simul_stop_time, acumulated_processing_time, clock_s() - start_time);
                 app->is_in_step_mode = true;
                 end_reached = true;
                 save_this_iter = true;
@@ -343,8 +388,6 @@ int main()
 
             if(step_sym)
             {
-                simulated_last_time = frame_start_time;
-                app->remaining_steps -= 1;
 
                 Sim_Params params = app->config.params;
                 params.iter = app->iter;
@@ -352,6 +395,7 @@ int main()
                 params.do_debug = app->is_in_debug_mode;
                 params.do_stats = app->config.app_collect_stats;
                 params.do_stats_step_residual = app->config.app_collect_step_residuals;
+                params.do_prints = true;
                 params.stats = &app->stats;
                 params.temp_maps = app->maps.temp;
                 params.temp_map_count = sizeof app->maps.temp / sizeof *app->maps.temp;
@@ -361,50 +405,13 @@ int main()
                 double solver_end_time = clock_s();
 
                 if(params.do_stats && app->sim_time >= app->last_stats_save + app->config.app_collect_stats_every)
-                {
-                    if(app->stat_vectors.step_res_count < app->stats.step_res_count)
-                    {
-                        size_t first_size = app->stat_vectors.step_res_L1[0].size();
-                        for(int i = app->stat_vectors.step_res_count; i < app->stats.step_res_count; i++)
-                        {
-                            app->stat_vectors.step_res_L1[i].resize(first_size);
-                            app->stat_vectors.step_res_L2[i].resize(first_size);
-                            app->stat_vectors.step_res_max[i].resize(first_size);
-                            app->stat_vectors.step_res_min[i].resize(first_size);
-                        }
-                        app->stat_vectors.step_res_count = app->stats.step_res_count;
-                    }
+                    app_collect_stats(app);
 
-                    app->stat_vectors.step_res_count = std::max(app->stat_vectors.step_res_count, app->stats.step_res_count);
-                    app->stat_vectors.time.push_back(app->stats.time);
-                    app->stat_vectors.iter.push_back(app->stats.iter);
-                    
-                    app->stat_vectors.Phi_iters.push_back(app->stats.Phi_iters);
-                    app->stat_vectors.Phi_ellapsed_time.push_back(app->stats.Phi_ellapsed_time); //TODO
-                    app->stat_vectors.T_iters.push_back(app->stats.T_iters);
-                    app->stat_vectors.T_ellapsed_time.push_back(app->stats.T_ellapsed_time);
-
-                    app->stat_vectors.T_delta_L1.push_back(app->stats.T_delta_L1);
-                    app->stat_vectors.T_delta_L2.push_back(app->stats.T_delta_L2);
-                    app->stat_vectors.T_delta_max.push_back(app->stats.T_delta_max);
-                    app->stat_vectors.T_delta_min.push_back(app->stats.T_delta_min);
-
-                    app->stat_vectors.Phi_delta_L1.push_back(app->stats.Phi_delta_L1);
-                    app->stat_vectors.Phi_delta_L2.push_back(app->stats.Phi_delta_L2);
-                    app->stat_vectors.Phi_delta_max.push_back(app->stats.Phi_delta_max);
-                    app->stat_vectors.Phi_delta_min.push_back(app->stats.Phi_delta_min);
-
-                    for(int i = 0; i < app->stat_vectors.step_res_count; i++)
-                    {
-                        app->stat_vectors.step_res_L1[i].push_back(app->stats.step_res_L1[i]);
-                        app->stat_vectors.step_res_L2[i].push_back(app->stats.step_res_L2[i]);
-                        app->stat_vectors.step_res_max[i].push_back(app->stats.step_res_max[i]);
-                        app->stat_vectors.step_res_min[i].push_back(app->stats.step_res_min[i]);
-                    }
-                    app->last_stats_save = app->sim_time;
-                }
+                simulated_last_time = frame_start_time;
+                app->remaining_steps -= 1;
 
                 processing_time = solver_end_time - solver_start_time;
+                acumulated_processing_time += processing_time;
                 app->iter += 1;
 
                 std::swap(app->maps.F, app->maps.next_F);
@@ -433,7 +440,6 @@ int main()
     }
     else
     {
-        LOG_ERROR("APP", "Nom interactive mode is right now not maintained");
         app->is_in_debug_mode = false;
         i64 iters = (i64) ceil(config.simul_stop_time / config.params.dt);
         size_t snapshot_every_i = 0;
@@ -445,6 +451,7 @@ int main()
         for(; app->iter <= iters; app->iter++)
         {
             double now = clock_s();
+            bool save_this_iter = false;
             
             double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
             double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
@@ -452,25 +459,51 @@ int main()
             if(app->sim_time >= next_snapshot_every)
             {
                 snapshot_every_i += 1;
-                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+                save_this_iter = true;
             }
 
             if(app->sim_time >= next_snapshot_times && end_reached == false)
             {
                 snapshot_times_i += 1;
-                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+                save_this_iter = true;
             }
 
-            if(now - last_notif_time > 1 || app->iter == iters || app->iter == 0)
+            if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
+            {
+                end_reached = true;
+                save_this_iter = true;
+            }
+
+            if(now - last_notif_time > 1 || end_reached || app->iter == 0)
             {
                 last_notif_time = now;
                 LOG_INFO("app", "... completed %2lf%%", (double) app->iter * 100 / iters);
-                if(app->iter == iters)
-                    break;
             }
 
-            // Sim_Step_Info step_info = {app->iter, app->sim_time};
-            // app->sim_time += sim_solver_step(&app->solver, app->states, app->used_states, step_info, app->config.params, &app->stats);
+            if(save_this_iter)
+                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+
+            if(end_reached)
+                break;
+
+
+            Sim_Params params = app->config.params;
+            params.iter = app->iter;
+            params.time = app->sim_time;
+            params.do_debug = app->is_in_debug_mode;
+            params.do_stats = app->config.app_collect_stats;
+            params.do_stats_step_residual = app->config.app_collect_step_residuals;
+            params.do_prints = app->iter % 200 == 0;
+            params.stats = &app->stats;
+            params.temp_maps = app->maps.temp;
+            params.temp_map_count = sizeof app->maps.temp / sizeof *app->maps.temp;
+
+            app->sim_time += sim_step(app->maps.F, app->maps.U, &app->maps.next_F, &app->maps.next_U, params);
+            if(params.do_stats && app->sim_time >= app->last_stats_save + app->config.app_collect_stats_every)
+                app_collect_stats(app);
+
+            std::swap(app->maps.F, app->maps.next_F);
+            std::swap(app->maps.U, app->maps.next_U);
         }
         double end_time = clock_s();
         double runtime = end_time - start_time;
