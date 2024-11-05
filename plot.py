@@ -12,6 +12,7 @@ import scipy
 import scipy.ndimage
 import mpl_toolkits
 
+# I ❤︎ C++
 class Map_Set:
     nx = 0
     ny = 0
@@ -404,6 +405,157 @@ def extract_outline(values, star=0, threshold=0.5, close_paths=False):
 
     return lines
 
+
+from collections import defaultdict
+def join_path_segments(segments):
+    def first_item(collection):
+        if len(collection) == 0:
+            return None
+        return next(iter(collection))
+
+    if len(segments) == 0:
+        return []
+
+    conectivity = defaultdict(set)
+    for line in segments:
+        p1 = (line[0], line[1])
+        p2 = (line[2], line[3])
+
+        conectivity[p1].add(p2)
+        conectivity[p2].add(p1)
+
+    lines = []
+    while len(conectivity) > 0:
+        (p1, set1) = first_item(conectivity.items())
+        if len(set1) == 0:
+            break
+
+        line = [p1]
+        while True:
+            p2 = first_item(set1)
+            if p2 == None:
+                break
+            
+            set2:set = conectivity[p2]
+
+            line.append(p2)
+            set1.remove(p2)
+            set2.remove(p1)
+
+            if len(set1) == 0:
+                conectivity.pop(p1)
+                
+            if len(set2) == 0:
+                conectivity.pop(p2)
+
+            set1 = set2
+            p1 = p2
+
+        lines += [np.array(line)]
+    return lines
+
+def marching_squares(field, treshold):
+    (nx, ny) = field.shape
+    discretized = field > treshold
+    states = (
+        discretized[0:nx-1, 0:ny-1]     # bot left
+        + 2*discretized[1:nx,   0:ny-1] # bot right
+        + 4*discretized[1:nx,   1:ny]   # top right
+        + 8*discretized[0:nx-1, 1:ny]   # top left
+    )
+
+    fxt_arr = (treshold - field[:nx-1, 1:ny]) /(field[1:nx,  1:ny] - field[:nx-1,  1:ny])
+    fxb_arr = (treshold - field[:nx-1, :ny-1])/(field[1:nx, :ny-1] - field[:nx-1, :ny-1])
+    fyr_arr = (treshold - field[1:nx,  :ny-1])/(field[1:nx,  1:ny] - field[1:nx,  :ny-1])
+    fyl_arr = (treshold - field[:nx-1, :ny-1])/(field[:nx-1, 1:ny] - field[:nx-1, :ny-1])
+
+    lines = []
+    with_values_mask = np.logical_and(states > 0, states < 15)
+    nonzeros = np.nonzero(with_values_mask)
+    for x,y in zip(nonzeros[0], nonzeros[1]):
+        fxt = fxt_arr[x,y]
+        fxb = fxb_arr[x,y]
+        fyr = fyr_arr[x,y]
+        fyl = fyl_arr[x,y]
+
+        state = states[x,y]
+
+        if state == 1 or state == 14:
+            lines.append((x, y+fyl, x+fxb, y))
+        elif state == 2 or state == 13:
+            lines.append((x+1, y+fyr, x+fxb, y))
+        elif state == 3 or state == 12:
+            lines.append((x, y+fyl, x+1, y+fyr))
+        elif state == 4 or state == 11:
+            lines.append((x+fxt, y+1, x+1, y+fyr))
+        elif state == 5:
+            lines.append((x, y+fyl, x+fxt, y+1))
+            lines.append((x+1, y+fyr, x+fxb, y))
+        elif state == 6 or state == 9:
+            lines.append((x+fxb, y, x+fxt, y+1))
+        elif state == 7 or state == 8:
+            lines.append((x, y+fyl, x+fxt, y+1))
+        elif state == 10:
+            lines.append((x, y+fyl, x+fxb, y))
+            lines.append((x+fxt, y+1, x+1, y+fyr))
+        else:
+            assert False 
+
+    return lines
+
+def marching_squares_naive(field, treshold):
+    lines = []
+    (nx, ny) = field.shape
+    states = np.zeros((nx,ny))
+    for y in range(0, ny-1):
+        for x in range(0, nx-1):
+            top_right = field[x+1,y+1] > treshold
+            top_left  = field[x,y+1] > treshold
+            bot_right = field[x+1,y] > treshold
+            bot_left  = field[x,y] > treshold
+
+            state = (0
+                | int(top_left)  << 3
+                | int(top_right) << 2
+                | int(bot_right) << 1
+                | int(bot_left)  << 0)
+
+            fxt = (treshold - field[x,y+1])/(field[x+1,y+1] - field[x,y+1])
+            fxb = (treshold - field[x,  y])/(field[x+1,y  ] - field[x  ,y])
+            fyr = (treshold - field[x+1,y])/(field[x+1,y+1] - field[x+1,y])
+            fyl = (treshold - field[x  ,y])/(field[x,  y+1] - field[x  ,y])
+
+            # fxt = 0.5
+            # fxb = 0.5
+            # fyr = 0.5
+            # fyl = 0.5
+
+            states[x,y] = state
+            if state == 1 or state == 14:
+                lines.append((x, y+fyl, x+fxb, y))
+            elif state == 2 or state == 13:
+                lines.append((x+1, y+fyr, x+fxb, y))
+            elif state == 3 or state == 12:
+                lines.append((x, y+fyl, x+1, y+fyr))
+            elif state == 4 or state == 11:
+                lines.append((x+fxt, y+1, x+1, y+fyr))
+            elif state == 5:
+                lines.append((x, y+fyl, x+fxt, y+1))
+                lines.append((x+1, y+fyr, x+fxb, y))
+            elif state == 6 or state == 9:
+                lines.append((x+fxb, y, x+fxt, y+1))
+            elif state == 7 or state == 8:
+                lines.append((x, y+fyl, x+fxt, y+1))
+            elif state == 10:
+                lines.append((x, y+fyl, x+fxb, y))
+                lines.append((x+fxt, y+1, x+1, y+fyr))
+            elif state == 0 or state == 15:
+                pass
+            else:
+                assert False 
+
+    return lines
+
 def interpolate_outline(line, samples=10, k=3, smoothness=5, per=True):
     linex, liney = zip(*np.array(line))
     linex = np.array(linex) 
@@ -457,7 +609,7 @@ def dissable_plot_ticks(ax):
                     bottom=False, top=False, left=False, right=False,
                     labelbottom=False, labeltop=False, labelleft=False, labelright=False)
     
-def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', text_color=None, colorbar='inset', background="U", do_outlines=True, per=True):
+def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', text_color=None, colorbar='inset', background="U", do_outlines=True, old_outline=True, per=True):
     label = 'T'
     cmap = 'RdBu_r'
     if background == "F":
@@ -469,7 +621,11 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
 
     outlines = []
     if do_outlines:
-        outlines = extract_outline(F)
+        if old_outline:
+            outlines = extract_outline(F)
+        else:
+            outlines = join_path_segments(marching_squares(F, 0.5))
+
     linx = np.linspace(0, maps1.dx*maps1.nx, maps1.nx+1)
     liny = np.linspace(0, maps1.dy*maps1.ny, maps1.ny+1)
     X, Y = np.meshgrid(linx, liny)
@@ -503,11 +659,11 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
     else:
         plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
 
-def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, text_color=None, line_color='white', colorbar='inset', background="U", do_outlines=True, per=True):
+def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, text_color=None, line_color='white', colorbar='inset', background="U", do_outlines=True, old_outline=True, per=True):
     maps1 = load_dir_bin_map_file(path_rel(base, path), i)
     plot_loaded_temperature_interface_map(
         maps1, maps1.maps['F'], maps1.maps[background], smoothness=smoothness, line_color=line_color, text_color=text_color, min=min, max=max, 
-        save=save, colorbar=colorbar, background=background, do_outlines=do_outlines, per=per)
+        save=save, colorbar=colorbar, background=background, do_outlines=do_outlines, old_outline=old_outline, per=per)
 
 def plot_phase_interface(base, path, i, xi = 0.0043, linewidth=4, save=None):
     maps1 = load_dir_bin_map_file(path_rel(base, path), i)
@@ -563,7 +719,7 @@ def format_latex_e(n):
         exponent = exponent[0] + exponent[1:].lstrip('0')
         
     if exponent == '':
-        return '$.2f$' % n
+        return '$%.2f$' % n
     else:
         return '$' + mantissa + '\\times 10^{' + exponent + '}$'
 
@@ -574,6 +730,40 @@ def phase_field_dist(a, b, area, ord=1):
 def phase_field_discrete_dist(a, b, area, ord=1):
     x = (phi_map_discretize(a) - phi_map_discretize(b)).flatten()
     return np.linalg.norm(x, ord=ord)*area
+
+def format_latex_table(middle_label:str, left_labels:list[str], top_labels:list[str], series:list[list[float | int]], spacing:str='[-1em]') -> str:
+    output = ''
+    separator_line = '\\hline\n' + '& '*len(top_labels) + '\\\\' + spacing + '\n'
+    first_line = ''
+    for label in top_labels:
+        first_line += ' & \\multicolumn{1}{c|}{%s}' % label
+
+    output += separator_line
+    output += middle_label + first_line + '\\\\\n'
+
+    max_label_size = 0
+    for label in left_labels:
+        max_label_size = max(max_label_size, len(label))
+
+    max_column_sizes = []
+    if len(series) > 0:
+        max_column_sizes = [0]*len(series[0])
+
+    for datapoints in series:
+        for i,val in enumerate(datapoints):
+            fmt = format_latex_e(val)
+            max_column_sizes[i] = max(max_column_sizes[i], len(fmt))
+
+    for label, datapoints in zip(left_labels, series):
+        line = f'{label: <{max_label_size}}'
+        for i,val in enumerate(datapoints):
+            line += f" & {format_latex_e(val): <{max_column_sizes[i]}}"
+        
+        output += separator_line
+        output += line + '\\\\\n'
+
+    return output
+    
 
 def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, linewidth=1, xmin=1.6, xmax=2.4, ymin=2.6, ymax=None, legend_under=False, print_comp_table=False):
     if len(paths) == 0:
@@ -587,54 +777,74 @@ def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, lin
         maps += [map_set.maps['F']]
 
     if print_comp_table:
-        def print_comp_table(map_sets, dist):
-            print(f"stats in {dist} =========================")
+        if False:
+            def print_comp_table(map_sets, dist):
+                print(f"stats in {dist} =========================")
 
-            separator_line = '\\hline\n' + '& '*len(map_sets) + '\\\\[-1em]'
-            first_line = ''
-            for i,map_set in enumerate(map_sets):
-                first_line += ' & \\multicolumn{1}{c|}{%s}' % paths[i][1]
+                separator_line = '\\hline\n' + '& '*len(map_sets) + '\\\\[-1em]'
+                first_line = ''
+                for i,map_set in enumerate(map_sets):
+                    first_line += ' & \\multicolumn{1}{c|}{%s}' % paths[i][1]
 
-            print(separator_line)
-            print(f'Schemes {first_line} \\\\')
-
-            for i,map_set in enumerate(map_sets):
-                dxdy = map_set.dx*map_set.dy
-                formated = paths[i][1].ljust(7)
-                for compare_with in map_sets:
-                    val = 0
-                    if dist == 'PFD':
-                        val = phase_field_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
-                    else:
-                        val = phase_field_discrete_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
-                    formated += f" & {format_latex_e(val)}"
-                
                 print(separator_line)
-                print(f'{formated} \\\\')
+                print(f'Schemes {first_line} \\\\')
 
-        print_comp_table(map_sets, 'PFD')
-        print_comp_table(map_sets, 'PFDD')
+                for i,map_set in enumerate(map_sets):
+                    dxdy = map_set.dx*map_set.dy
+                    formated = paths[i][1].ljust(7)
+                    for compare_with in map_sets:
+                        val = 0
+                        if dist == 'PFD':
+                            val = phase_field_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
+                        else:
+                            val = phase_field_discrete_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
+                        formated += f" & {format_latex_e(val)}"
+                    
+                    print(separator_line)
+                    print(f'{formated} \\\\')
 
-    dx = map_sets[0].dx
-    dy = map_sets[0].dy
-    nx = map_sets[0].nx
-    ny = map_sets[0].ny
-    linx = np.linspace(0, map_sets[0].dx*map_sets[0].nx, map_sets[0].nx+1)
-    liny = np.linspace(0, map_sets[0].dy*map_sets[0].ny, map_sets[0].ny+1)
-    X, Y = np.meshgrid(linx, liny)
+            print_comp_table(map_sets, 'PFD')
+            print_comp_table(map_sets, 'PFDD')
+
+        assert len(paths) == len(map_sets)
+        labels = []
+        seiries_pfd = []
+        seiries_pfdd = []
+        for i, map_set in enumerate(map_sets):
+            labels += [paths[i][1]]
+            dxdy = map_set.dx*map_set.dy
+            datapoints_pfd = []
+            datapoints_pfdd = []
+            for compare_with in map_sets:
+                pfd = phase_field_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
+                pfdd = phase_field_discrete_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
+                datapoints_pfd += [pfd]
+                datapoints_pfdd += [pfdd]
+
+            seiries_pfd += [datapoints_pfd]
+            seiries_pfdd += [datapoints_pfdd]
+
+        latex_table_PFD = format_latex_table("Schemes ", labels, labels, seiries_pfd)
+        latex_table_PFDD = format_latex_table("Schemes ", labels, labels, seiries_pfdd)
+
+        print("============== printing PFD table =============")
+        print(latex_table_PFD)
+        print("============== printing PFDD table =============")
+        print(latex_table_PFDD)
 
     fig_width = 10
     if legend_under:
         fig_width = 16
+
     fig = plt.figure(figsize=(fig_width, 10))
     ax = fig.add_subplot(111, aspect='equal')
     ax.tick_params(axis='both', which='major', pad=15)
-    for i, map in enumerate(maps):
-        outlines = extract_outline(map)
+    for i, map_set in enumerate(map_sets):
+        outlines = extract_outline(map_set.maps['F'])
         xints = np.array([])
         yints = np.array([])
         for outline in outlines:
-            scaled = (np.array(outline) + 0.5)*(dx, dy) 
+            scaled = (np.array(outline) + 0.5)*(map_set.dx, map_set.dy) 
             xint, yint = interpolate_outline2(scaled, k=5, smoothness=smoothness)
             xints = np.concatenate((xints, xint))
             yints = np.concatenate((yints, yint))
@@ -741,22 +951,108 @@ def plot_bench_results(linewidth=2, save=None):
 
     None
 
+# module load
+# 
+def plot_ellpased_time_comp_methods(linewidth=2, save=None):
+
+    Ys = [1, 4, 16, 64, 256, 1024, 4096]
+    Ns = [128**2, 256**2, 512**2, 1024**2, 2048**2]
+    Ns_labels = ['$128^2$', '$256^2$', '$512^2$', '$1024^2$', '$2048^2$']
+    
+    inf = math.inf
+
+    running_times = {
+        'Euler':[0.86,  1.65,  4.93,  14.11,  50.58],
+        'RK4'  :[3.53,  8.38, 24.16,  82.75, 313.40],
+        'RKM'  :[4.77, 16.10, 47.77, 189.25, 18*60],
+        'SI'   :[3.65, 11.18, 40.26, 187.20, 18*60],
+    }
+
+
+    colors=['#4E4DF0', '#944DF0', '#DA4DF0', '#F04D97', '#F05C4D']
+    wider_color = ['#4DB4F0', '#5E4DF0', '#DA4DF0', '#F0544D', '#FA8E34', '#F5D63D', '#ABFF24']
+    
+
+    print('% ============== Running times ==============')
+    print(format_latex_table('Running times ', list(running_times.keys()), Ns_labels, list(running_times.values())))
+
+    fig = plt.figure(figsize=(11, 10))
+    ax = fig.add_subplot(111)
+    ax.tick_params(axis='both', which='major', pad=15)
+    ax.set_xscale('log', base=2)
+    ax.set_yscale('log', base=2)
+
+    i = 0
+    for key, value in running_times.items():
+        ax.plot(Ns, value, linestyle='-', marker='o', color=wider_color[i], label=key, linewidth=linewidth)
+        i += 1
+
+    plt.xticks(Ns, Ns_labels, rotation=45)
+    plt.yticks(Ys)
+    plt.xlabel('Number of cells') 
+    plt.ylabel('Computation time [s]') 
+    plt.subplots_adjust(bottom=0.2)
+    plt.autoscale()
+    plt.grid()
+    plt.legend() 
+    if save != None:
+        plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+    else:
+        plt.show() 
+
+    scalings = {}
+    for key, series in running_times.items():
+        scaling = []
+        for i in range(1, len(series)):
+            scaling += [series[i]/series[i - 1]]
+        scalings[key] = scaling
+
+    print('% ============== Scaling times ==============')
+    print(format_latex_table('Running times ', list(scalings.keys()), Ns_labels[1:], list(scalings.values())))
+
+    fig = plt.figure(figsize=(11, 10))
+    ax = fig.add_subplot(111)
+    ax.tick_params(axis='both', which='major', pad=15)
+    ax.set_xscale('log', base=2)
+
+    i = 0
+    for key, value in scalings.items():
+        ax.plot(Ns[1:], value, linestyle='-', marker='o', color=wider_color[i], label=key, linewidth=linewidth)
+        i += 1
+
+    plt.xticks(Ns, Ns_labels, rotation=45)
+    # plt.yticks(Ys)
+    plt.xlabel('Number of cells') 
+    plt.ylabel('Computation time scaling') 
+    plt.subplots_adjust(bottom=0.2)
+    plt.autoscale()
+    plt.grid()
+    plt.legend() 
+    if save != None:
+        plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+    else:
+        plt.show() 
+
+
 DPI = 180
 font = {'size' : 22}
 matplotlib.rc('font', **font)
 
-if True:
+if False:
+    plot_ellpased_time_comp_methods()
+
+if False:
     plot_phase_comparison_maps("showcase", [
         ("0_aniso_comp_256__explicit", "Euler"), 
         ("0_aniso_comp_256__explicit-rk4", "RK4"), 
         ("0_aniso_comp_256__explicit-rk4-adaptive", "RKM"), 
         ("0_aniso_comp_256__semi-implicit", "S-I")
-    ], 10, save="showcase/exported/0_aniso_model_comp.pdf", print_comp_table=True)
+    ], 10, print_comp_table=True)
 
+plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4-adaptive", 10, background="U", smoothness=0.0005, old_outline=False)
 if False:
     plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit", 10, background="U")
     plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4", 10, background="U", per=False)
-    plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4-adaptive", 10, background="U")
     plot_temperature_interface_map("showcase", "0_aniso_comp_256__semi-implicit", 10, background="U")
 exit()
 
