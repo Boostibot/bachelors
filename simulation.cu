@@ -352,6 +352,14 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
     Cache_Tag tag = cache_tag_make();
     int N = params.ny * params.nx;
 
+    static cudaStream_t stream1 = 0;
+    static cudaStream_t stream2 = 0;
+    if(stream1 == 0)
+    {
+        cudaStreamCreate(&stream1);
+        cudaStreamCreate(&stream2);
+    }
+
     static Real _initial_step = 0;
     if(_initial_step <= 0)
         _initial_step = (Real) params.dt;
@@ -385,9 +393,9 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
     {
         // k1 = f(t, x);
         // k2 = f(t + tau/3, x + tau/3*k1);
-        // k3 = f(t + tau/3, x + tau/6*(k1 + k2));
-        // k4 = f(t + tau/2, x + tau/8*(k1 + 3*k3));
-        // k5 = f(t + tau/1, x + tau*(0.5f*k1 - 1.5f*k3 + 2*k4));
+        // k3 = f(t + tau/3, x + tau/6*(k1 + k2);
+        // k4 = f(t + tau/2, x + tau/8*(k1 + 3*k3);
+        // k5 = f(t + tau/1, x + tau/2*(k1 - 3*k3 + 4*k4);
         
         // k1 = f(x);
         // k2 = f(x + tau/3*k1);
@@ -399,21 +407,51 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
         explicit_solver_solve_lin_combination<false>(k3_F, k3_U, params, W{1, F, U}, W{tau/6, k1_F, k1_U}, W{tau/6, k2_F, k2_U});
         explicit_solver_solve_lin_combination<false>(k4_F, k4_U, params, W{1, F, U}, W{tau/8, k1_F, k1_U}, W{tau*3/8, k3_F, k3_U});
         explicit_solver_solve_lin_combination<false>(k5_F, k5_U, params, W{1, F, U}, W{tau/2, k1_F, k1_U}, W{-tau*3/2, k3_F, k3_U}, W{tau*2, k4_F, k4_U});
+        CUDA_DEBUG_TEST(cudaStreamSynchronize(0));
 
-        cuda_for(0, params.ny*params.nx, [=]SHARED(int i){
-            Real F = (Real)0.2*k1_F[i] - (Real)0.9*k3_F[i] + (Real)0.8*k4_F[i] - (Real)0.1*k5_F[i];
-            Real U = (Real)0.2*k1_U[i] - (Real)0.9*k3_U[i] + (Real)0.8*k4_U[i] - (Real)0.1*k5_U[i];
+        #define RKM_ADAPTIVE_MODE 2
+        #if RKM_ADAPTIVE_MODE == 1
+            Real L2_norm_Epsilon_F_squared = cuda_produce_reduce<Real, Reduce::Add>(N, [=]SHARED(csize i){
+                Real F = (Real)0.2*k1_F[i] - (Real)0.9*k3_F[i] + (Real)0.8*k4_F[i] - (Real)0.1*k5_F[i];
+                return F*F;
+            }, Reduce::ADD, cuda_launch_params_from_stream(stream1));
 
-            Epsilon_F[i] = F >= 0 ? F : -F;
-            Epsilon_U[i] = U >= 0 ? U : -U;
-        });
+            Real L2_norm_Epsilon_U_squared = cuda_produce_reduce<Real, Reduce::Add>(N, [=]SHARED(csize i){
+                Real U = (Real)0.2*k1_U[i] - (Real)0.9*k3_U[i] + (Real)0.8*k4_U[i] - (Real)0.1*k5_U[i];
+                return U*U;
+            }, Reduce::ADD, cuda_launch_params_from_stream(stream2));
 
-        // L2 instead of max norm!
-        epsilon_F = cuda_L2_norm(Epsilon_F, N)/sqrt((Real)N);
-        epsilon_U = cuda_L2_norm(Epsilon_U, N)/sqrt((Real)N);
+            epsilon_F = tau/3*sqrt(L2_norm_Epsilon_F_squared/(Real)N);
+            epsilon_U = tau/3*sqrt(L2_norm_Epsilon_U_squared/(Real)N);
+        #elif RKM_ADAPTIVE_MODE == 2
+            Real Lmax_norm_Epsilon_F = cuda_produce_reduce<Real, Reduce::Max>(N, [=]SHARED(csize i){
+                Real F = (Real)0.2*k1_F[i] - (Real)0.9*k3_F[i] + (Real)0.8*k4_F[i] - (Real)0.1*k5_F[i];
+                return F >= 0 ? F : -F;
+            }, Reduce::MAX, cuda_launch_params_from_stream(stream1));
 
-        // epsilon_F = cuda_max(Epsilon_F, N);
-        // epsilon_U = cuda_max(Epsilon_U, N);
+            Real Lmax_norm_Epsilon_U = cuda_produce_reduce<Real, Reduce::Max>(N, [=]SHARED(csize i){
+                Real U = (Real)0.2*k1_U[i] - (Real)0.9*k3_U[i] + (Real)0.8*k4_U[i] - (Real)0.1*k5_U[i];
+                return U >= 0 ? U : -U;
+            }, Reduce::MAX, cuda_launch_params_from_stream(stream2));
+
+            epsilon_F = tau/3*Lmax_norm_Epsilon_F;
+            epsilon_U = tau/3*Lmax_norm_Epsilon_U;
+        #else
+            cuda_for(0, params.ny*params.nx, [=]SHARED(int i){
+                Real F = (Real)0.2*k1_F[i] - (Real)0.9*k3_F[i] + (Real)0.8*k4_F[i] - (Real)0.1*k5_F[i];
+                Real U = (Real)0.2*k1_U[i] - (Real)0.9*k3_U[i] + (Real)0.8*k4_U[i] - (Real)0.1*k5_U[i];
+
+                Epsilon_F[i] = F >= 0 ? F : -F;
+                Epsilon_U[i] = U >= 0 ? U : -U;
+            });
+
+            // L2 instead of max norm!
+            epsilon_F = tau/3*cuda_L2_norm(Epsilon_F, N)/sqrt((Real)N);
+            epsilon_U = tau/3*cuda_L2_norm(Epsilon_U, N)/sqrt((Real)N);
+
+            // epsilon_F = tau/3*cuda_max(Epsilon_F, N);
+            // epsilon_U = tau/3*cuda_max(Epsilon_U, N);
+        #endif
 
         if(epsilon_F < params.Phi_tolerance && epsilon_U < params.T_tolerance)
             converged = true;
@@ -429,13 +467,22 @@ double explicit_solver_rk4_adaptive_step(const Real* F, const Real* U, Real* nex
             break;
     }
 
-    cuda_for(0, params.ny*params.nx, [=]SHARED(int i){
-        next_F[i] = F[i] + used_tau*((Real)1/6*(k1_F[i] + k5_F[i]) + (Real)2/3*k4_F[i]);
-        next_U[i] = U[i] + used_tau*((Real)1/6*(k1_U[i] + k5_U[i]) + (Real)2/3*k4_U[i]);
-    });
+    #if 1
+        cuda_for(0, N, [=]SHARED(int i){
+            next_F[i] = F[i] + used_tau/6*(k1_F[i] + 4*k4_F[i] + k5_F[i]);
+        }, cuda_launch_params_from_stream(stream1));
+        cuda_for(0, N, [=]SHARED(int i){
+            next_U[i] = U[i] + used_tau/6*(k1_U[i] + 4*k4_U[i] + k5_U[i]);
+        }, cuda_launch_params_from_stream(stream2));
+    #else
+        cuda_for(0, N, [=]SHARED(int i){
+            next_F[i] = F[i] + used_tau/6*(k1_F[i] + 4*k4_F[i] + k5_F[i]);
+            next_U[i] = U[i] + used_tau/6*(k1_U[i] + 4*k4_U[i] + k5_U[i]);
+        });
+    #endif
 
     if(params.do_prints)
-        LOG("SOLVER", converged ? LOG_DEBUG : LOG_WARN, "rk4-adaptive %s in %i iters with error F:%lf | U:%lf | tau:%e", converged ? "converged" : "diverged", i, (double) epsilon_F, (double) epsilon_U, (double)used_tau);
+        LOG("SOLVER", converged ? LOG_DEBUG : LOG_WARN, "rk4-adaptive %s in %i iters with error F:%e | U:%e | tau:%e", converged ? "converged" : "diverged", i, (double) epsilon_F, (double) epsilon_U, (double)used_tau);
     _initial_step = tau;
 
     if(params.stats)

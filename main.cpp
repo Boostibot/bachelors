@@ -444,18 +444,21 @@ int main()
         i64 iters = (i64) ceil(config.simul_stop_time / config.params.dt);
         size_t snapshot_every_i = 0;
         size_t snapshot_times_i = 0;
+
         bool end_reached = false;
         double start_time = clock_s();
         double last_notif_time = 0;
 
-        for(; app->iter <= iters; app->iter++)
+        // size_t snapshot_count = 1;
+        for(;; app->iter++)
         {
             double now = clock_s();
             bool save_this_iter = false;
-            
+
             double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
             double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
 
+            #if 1
             if(app->sim_time >= next_snapshot_every)
             {
                 snapshot_every_i += 1;
@@ -467,25 +470,41 @@ int main()
                 snapshot_times_i += 1;
                 save_this_iter = true;
             }
-
             if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
+            {
+                end_reached = true;
+                if(config.snapshot_times > 0)
+                    save_this_iter = true;
+            }
+            #else
+            size_t snapshot_next_iter = snapshot_count*iters/config.snapshot_times;
+            if(app->iter >= iters)
             {
                 end_reached = true;
                 save_this_iter = true;
             }
 
+            if(app->iter >= snapshot_next_iter)
+            {
+                snapshot_count += 1;
+                save_this_iter = true;
+            }
+            #endif
+
             if(now - last_notif_time > 1 || end_reached || app->iter == 0)
             {
                 last_notif_time = now;
-                LOG_INFO("app", "... completed %2lf%%", (double) app->iter * 100 / iters);
+                LOG_INFO("app", "... completed %.2lf%%", app->sim_time/config.simul_stop_time*100);
             }
 
             if(save_this_iter)
+            {
+                LOG_INFO("app", "saving snaphsot %i", app->count_written_snapshots);
                 save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+            }
 
             if(end_reached)
                 break;
-
 
             Sim_Params params = app->config.params;
             params.iter = app->iter;
@@ -509,7 +528,7 @@ int main()
         double runtime = end_time - start_time;
 
         LOG_INFO("app", "Finished!");
-        LOG_INFO("app", "runtime: %.2lfs | iters: %lli | average step time: %.2lf ms", runtime, (long long) iters, runtime / (double) iters * 1000);
+        LOG_INFO("app", "runtime: %.2lfs | iters: %lli | average step time: %.2lf ms", runtime, (long long) app->iter, runtime / (double) app->iter * 1000);
     }
 
     return 0;    

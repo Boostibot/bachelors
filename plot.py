@@ -298,11 +298,21 @@ def plot_phase_comparison(base,path1, path2, name, i, filter=False):
     fig.show()
     plt.show()
 
-def extract_outline(values, star=0, threshold=0.5):
+
+def extract_outline(values, star=0, threshold=0.5, close_paths=False):
     (nx, ny) = values.shape
     F_levelset = phi_map_discretize(values, threshold)
 
-    edge = [
+    # 0 0 0 0
+    # 0 0 0 0
+    # 1 1 1 1
+    # 1 1 1 1
+
+    #  -1-1
+    #   1 1
+    #   0 0 
+
+    kernel = [
         [ 0, -1,  0],
         [-1,  4, -1],
         [ 0, -1,  0],
@@ -310,29 +320,33 @@ def extract_outline(values, star=0, threshold=0.5):
 
     directions = [
         (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (-1, 1),
         (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
         (-1, -1),
+        (0, -1),
         (1, -1),
     ]
 
-    convolved = scipy.ndimage.convolve(F_levelset, edge, mode='constant')
+    convolved = scipy.ndimage.convolve(F_levelset, kernel, mode='constant')
 
-    visited = np.zeros(shape=(nx, ny), dtype=np.uint8)
+    visited = np.zeros(shape=(nx, ny), dtype=np.uint32)
 
     def point_add(point, dir):
         return (point[0] + dir[0], point[1] + dir[1])
 
     lines = []
-    F_edge = convolved > 0
+    edge = convolved > 0
 
+    iter = 0
     while True:
         # Select nice start position. That is a posisiton that has both left and right
         # or top and bot neighbours thus the line can be joined up nicely
-        F_starts = (convolved - visited*20) == 1 
+        # F_starts = (convolved - visited*20) == 1 
+        F_starts = np.logical_and(convolved == 1, visited == 0) 
+        iter += 1
+
         nonzero = np.nonzero(F_starts)
         if len(nonzero[0]) == 0:
             break
@@ -340,27 +354,45 @@ def extract_outline(values, star=0, threshold=0.5):
         # iterate around shape
         point = (nonzero[0][star], nonzero[1][star])
         line = []
+        step = 1
+
         while True:
-            assert F_edge[point] > 0
+            assert edge[point] > 0
             line.append([point[0], point[1]])
             visited[point] = 1
+            step += 1
             found = False
             dir = None
+            last_i = 0
             for i in range(8):
-                dir = directions[i]
+                last_i += 1
+                dir = directions[last_i % 8]
                 off = point_add(point, dir)
                 if 0 <= off[0] and off[0] < nx and 0 <= off[1] and off[1] < ny:
-                    if F_edge[off] > 0 and visited[off] == 0:
+                    if edge[off] > 0 and visited[off] == 0:
                         found = True
                         break
-            
             if found == False:
                 break
-
             point = point_add(point, dir)
 
+        if False:
+            linx = np.linspace(0, 1, nx+1)
+            liny = np.linspace(0, 1, ny+1)
+            X, Y = np.meshgrid(linx, liny)
+            fig = plt.figure(figsize=(10, 10))
+            ax = fig.add_subplot(111)
+            ax.set_aspect('equal')
+            ax.pcolormesh(Y, X, edge + 3*visited, cmap='RdBu_r', shading='flat')
+            start_circle = plt.Circle((line[0][0]/nx, line[0][1]/ny), 1/(2*nx), color='g')
+            end_circle = plt.Circle((line[-1][0]/nx, line[-1][1]/ny), 1/(2*nx), color='r')
+            ax.add_patch(start_circle)
+            ax.add_patch(end_circle)
+            plt.show()
+
         # close loop
-        line.append(line[0])
+        if close_paths:
+            line.append(line[0])
         if len(line) > 3:
             # if not degenerate shape (line)
             points = np.array(line)
@@ -372,18 +404,18 @@ def extract_outline(values, star=0, threshold=0.5):
 
     return lines
 
-def interpolate_outline(line, samples=10, k=3, smoothness=5):
+def interpolate_outline(line, samples=10, k=3, smoothness=5, per=True):
     linex, liney = zip(*np.array(line))
     linex = np.array(linex) 
     liney = np.array(liney)
     try:
-        f, u = scipy.interpolate.splprep([linex, liney], k=k, s=smoothness, per=True)
+        f, u = scipy.interpolate.splprep([linex, liney], k=k, s=smoothness, per=per)
         xint, yint = scipy.interpolate.splev(np.linspace(0, 1, len(line)*samples), f)
         return xint, yint
     except:
         return linex, liney
 
-def interpolate_outline2(line, samples=10, k=3, smoothness=5):
+def interpolate_outline2(line, samples=10, k=3, smoothness=5, per=True):
     points = np.array(line)
 
     try:
@@ -425,7 +457,7 @@ def dissable_plot_ticks(ax):
                     bottom=False, top=False, left=False, right=False,
                     labelbottom=False, labeltop=False, labelleft=False, labelright=False)
     
-def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', text_color=None, colorbar='inset', background="U", do_outlines=True):
+def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', text_color=None, colorbar='inset', background="U", do_outlines=True, per=True):
     label = 'T'
     cmap = 'RdBu_r'
     if background == "F":
@@ -448,7 +480,7 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
 
     for outline in outlines:
         outline = (np.array(outline) + 0.5)*(maps1.dx, maps1.dy) 
-        xint, yint = interpolate_outline(outline, k=3, smoothness=smoothness)
+        xint, yint = interpolate_outline(outline, k=3, smoothness=smoothness, per=per)
         ax.plot(yint, xint, c=line_color, linewidth=1)
 
     if colorbar == 'default':
@@ -471,11 +503,11 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
     else:
         plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
 
-def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, text_color=None, line_color='white', colorbar='inset', background="U", do_outlines=True):
+def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, text_color=None, line_color='white', colorbar='inset', background="U", do_outlines=True, per=True):
     maps1 = load_dir_bin_map_file(path_rel(base, path), i)
     plot_loaded_temperature_interface_map(
         maps1, maps1.maps['F'], maps1.maps[background], smoothness=smoothness, line_color=line_color, text_color=text_color, min=min, max=max, 
-        save=save, colorbar=colorbar, background=background, do_outlines=do_outlines)
+        save=save, colorbar=colorbar, background=background, do_outlines=do_outlines, per=per)
 
 def plot_phase_interface(base, path, i, xi = 0.0043, linewidth=4, save=None):
     maps1 = load_dir_bin_map_file(path_rel(base, path), i)
@@ -598,15 +630,20 @@ def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, lin
     ax = fig.add_subplot(111, aspect='equal')
     ax.tick_params(axis='both', which='major', pad=15)
     for i, map in enumerate(maps):
-        outline = extract_outline(map)[0]
-        outline = (np.array(outline) + 0.5)*(dx, dy) 
-        xint, yint = interpolate_outline2(outline, k=5, smoothness=smoothness)
+        outlines = extract_outline(map)
+        xints = np.array([])
+        yints = np.array([])
+        for outline in outlines:
+            scaled = (np.array(outline) + 0.5)*(dx, dy) 
+            xint, yint = interpolate_outline2(scaled, k=5, smoothness=smoothness)
+            xints = np.concatenate((xints, xint))
+            yints = np.concatenate((yints, yint))
 
         color = None
         if len(paths[i]) >= 3:
             color = paths[i][2]
 
-        ax.plot(xint, yint, color=color, label=paths[i][1], linewidth=linewidth)
+        ax.plot(xints, yints, color=color, label=paths[i][1], linewidth=linewidth)
 
     ax.set_xlim(xmin=xmin, xmax=xmax)
     ax.set_ylim(ymin=ymin, ymax=ymax)
@@ -707,6 +744,21 @@ def plot_bench_results(linewidth=2, save=None):
 DPI = 180
 font = {'size' : 22}
 matplotlib.rc('font', **font)
+
+if True:
+    plot_phase_comparison_maps("showcase", [
+        ("0_aniso_comp_256__explicit", "Euler"), 
+        ("0_aniso_comp_256__explicit-rk4", "RK4"), 
+        ("0_aniso_comp_256__explicit-rk4-adaptive", "RKM"), 
+        ("0_aniso_comp_256__semi-implicit", "S-I")
+    ], 10, save="showcase/exported/0_aniso_model_comp.pdf", print_comp_table=True)
+
+if False:
+    plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit", 10, background="U")
+    plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4", 10, background="U", per=False)
+    plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4-adaptive", 10, background="U")
+    plot_temperature_interface_map("showcase", "0_aniso_comp_256__semi-implicit", 10, background="U")
+exit()
 
 # First showcase
 if False:

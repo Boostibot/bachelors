@@ -68,6 +68,13 @@ struct Cuda_Launch_Constraints {
     cudaFuncAttributes attributes;
 };
 
+static Cuda_Launch_Params cuda_launch_params_from_stream(cudaStream_t stream)
+{
+    Cuda_Launch_Params params = {};
+    params.stream = stream;
+    return params;
+}
+
 static Cuda_Launch_Config cuda_get_launch_config(csize N, Cuda_Launch_Bounds bounds, Cuda_Launch_Params params)
 {
     Cuda_Info info = cuda_one_time_setup();
