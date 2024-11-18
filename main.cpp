@@ -233,161 +233,311 @@ void app_collect_stats(App_State* app)
     app->last_stats_save = app->sim_time;
 }
 
-int main()
+bool make_save_folder(const Sim_Config& config, time_t init_time, std::string* out, bool create_in_filesystem);
+
+int main(int argc, char** argv)
 {
-    static App_State app_data = {};
-    static Sim_Config config = {};
-    if(allen_cahn_read_config("config.ini", &config) == false)
-        return 1;
+    static File_Logger file_logger = {0};
 
-    if(config.app_run_tests)
-        run_tests();
-    if(config.app_run_benchmarks)
-        run_benchmarks(config.params.nx * config.params.ny);
-    if(config.app_run_simulation == false)
-        return 0;
+    int main_out = 0;
+    int config_count = argc > 1 ? argc - 1 : 1;
+    for(int app_run = 0; app_run < config_count; app_run += 1)
+    {
+        const char* config_path = "config.ini";
+        if(argc > 1)
+            config_path = argv[app_run+1];
 
-    App_State* app = (App_State*) &app_data;
-    app->is_in_step_mode = true;
-    app->remaining_steps = 0;
-    app->step_by = 1;
-    
-    simulation_state_reload(app, config);
-    
-    if(config.snapshot_initial_conditions)
-        save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG, 0);
+        App_State app_data = {};
+        Sim_Config config = {};
 
-    #define LOG_INFO_CONFIG_FLOAT(var) LOG_INFO("config", #var " = %.2lf", (double) config.params.var);
-    #define LOG_INFO_CONFIG_INT(var) LOG_INFO("config", #var " = %i", (int) config.params.var);
-
-    LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.params.solver));
-
-    LOG_INFO_CONFIG_INT(nx);
-    LOG_INFO_CONFIG_INT(ny);
-    LOG_INFO_CONFIG_FLOAT(L0);
-
-    LOG_INFO_CONFIG_FLOAT(dt); 
-    LOG_INFO_CONFIG_FLOAT(L);  
-    LOG_INFO_CONFIG_FLOAT(xi); 
-    LOG_INFO_CONFIG_FLOAT(a);  
-    LOG_INFO_CONFIG_FLOAT(b);
-    LOG_INFO_CONFIG_FLOAT(alpha);
-    LOG_INFO_CONFIG_FLOAT(beta);
-    LOG_INFO_CONFIG_FLOAT(Tm);
-
-    LOG_INFO_CONFIG_FLOAT(S);
-    LOG_INFO_CONFIG_FLOAT(theta0);
-
-    #undef LOG_INFO_CONFIG_FLOAT
-    #undef LOG_INFO_CONFIG_INT
-
-    #ifndef COMPILE_GRAPHICS
-    config.interactive_mode = false;
-    #endif // COMPILE_GRAPHICS
-
-    //OPENGL setup
-    if(config.app_interactive_mode)
-    {   
-        #ifdef COMPILE_GRAPHICS
-        TEST(glfwInit(), "Failed to init glfw");
-
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, true);  
- 
-        GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-        ASSERT(monitor && mode);
-        if(monitor != NULL && mode != NULL)
+        if(allen_cahn_read_config(config_path, &config, NULL, 0) == false)
         {
-            glfwWindowHint(GLFW_RED_BITS, mode->redBits);
-            glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
-            glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
-            glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+            LOG_ERROR("app", "failed to read config '%s'. Skipping to next config.", config_path);
+            main_out = 1;
+            continue;
         }
- 
-        GLFWwindow* window = glfwCreateWindow(DEF_WINDOW_WIDTH, DEF_WINDOW_HEIGHT, WINDOW_TITLE, NULL, NULL);
-        TEST(window != NULL, "Failed to make glfw window");
 
-        //glfwSetWindowUserPointer(window, &app);
-        glfwMakeContextCurrent(window);
-        glfwSetWindowUserPointer(window, app);
-        glfwSetFramebufferSizeCallback(window, glfw_resize_func);
-        glfwSetKeyCallback(window, glfw_key_func);
-        glfwSwapInterval(0);
-        gl_init((void*) glfwGetProcAddress);
+        main_out = 0;
+        if(config.app_run_tests)
+            run_tests();
+        if(config.app_run_benchmarks)
+            run_benchmarks(config.params.nx * config.params.ny);
+        if(config.app_run_simulation == false)
+            continue;
+
+        App_State* app = (App_State*) &app_data;
+        app->is_in_step_mode = true;
+        app->remaining_steps = 0;
+        app->step_by = 1;
+        
+        simulation_state_reload(app, config);
+        
+        std::string save_folder;
+        bool state = make_save_folder(app->config, app->init_time, &save_folder, true);
+        TEST(state);
+
+        file_logger_deinit(&file_logger);
+        file_logger_init(&file_logger, (save_folder + "/log_").data(), 0);
+        log_system_set_logger(&file_logger.logger);
+
+        if(config.snapshot_initial_conditions)
+            save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG, 0);
+
+        #define LOG_INFO_CONFIG_FLOAT(var)  LOG_INFO("config", #var " = %.2lf", (double) config.params.var);
+        #define LOG_INFO_CONFIG_INT(var)    LOG_INFO("config", #var " = %i", (int) config.params.var);
+        #define LOG_INFO_CONFIG_BOOL(var)   LOG_INFO("config", #var " = %s", config.params.var ? "true" : "false");
+
+        LOG_INFO("config", "solver = %s", solver_type_to_cstring(config.params.solver));
+        LOG_INFO("config", "T_boundary = %s", boundary_type_to_cstring(config.params.T_boundary));
+        LOG_INFO("config", "Phi_boundary = %s", boundary_type_to_cstring(config.params.Phi_boundary));
+
+        LOG_INFO_CONFIG_FLOAT(L0);
+        LOG_INFO_CONFIG_INT(nx);
+        LOG_INFO_CONFIG_INT(ny);
+
+        LOG_INFO_CONFIG_INT(T_max_iters);
+        LOG_INFO_CONFIG_INT(Phi_max_iters);
+        LOG_INFO_CONFIG_INT(corrector_max_iters);
+
+        LOG_INFO_CONFIG_BOOL(do_corrector_guess);
+        LOG_INFO_CONFIG_BOOL(do_corrector_loop);
+        LOG_INFO_CONFIG_BOOL(do_debug);
+        LOG_INFO_CONFIG_BOOL(do_stats);
+        LOG_INFO_CONFIG_BOOL(do_stats_step_residual);
+
+        LOG_INFO_CONFIG_FLOAT(T_tolerance);
+        LOG_INFO_CONFIG_FLOAT(Phi_tolerance);
+        LOG_INFO_CONFIG_FLOAT(corrector_tolerance);
+
+        LOG_INFO_CONFIG_FLOAT(dt); 
+        LOG_INFO_CONFIG_FLOAT(min_dt); 
+        LOG_INFO_CONFIG_FLOAT(L);  
+        LOG_INFO_CONFIG_FLOAT(xi); 
+        LOG_INFO_CONFIG_FLOAT(a);  
+        LOG_INFO_CONFIG_FLOAT(b);
+        LOG_INFO_CONFIG_FLOAT(alpha);
+        LOG_INFO_CONFIG_FLOAT(beta);
+        LOG_INFO_CONFIG_FLOAT(Tm);
+
+        LOG_INFO_CONFIG_FLOAT(S);
+        LOG_INFO_CONFIG_FLOAT(m0);
+        LOG_INFO_CONFIG_FLOAT(theta0);
+
+        #undef LOG_INFO_CONFIG_FLOAT
+        #undef LOG_INFO_CONFIG_INT
+        #undef LOG_INFO_CONFIG_BOOL
+
+        #ifndef COMPILE_GRAPHICS
+        config.interactive_mode = false;
+        #endif // COMPILE_GRAPHICS
+
+        //OPENGL setup
+        if(config.app_interactive_mode)
+        {   
+            #ifdef COMPILE_GRAPHICS
+            TEST(glfwInit(), "Failed to init glfw");
+
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+            glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, true);  
     
-        double time_display_last_time = 0;
-        double render_last_time = 0;
-        double simulated_last_time = 0;
-        double poll_last_time = 0;
+            GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+            ASSERT(monitor && mode);
+            if(monitor != NULL && mode != NULL)
+            {
+                glfwWindowHint(GLFW_RED_BITS, mode->redBits);
+                glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
+                glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
+                glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+            }
+    
+            GLFWwindow* window = glfwCreateWindow(DEF_WINDOW_WIDTH, DEF_WINDOW_HEIGHT, WINDOW_TITLE, NULL, NULL);
+            TEST(window != NULL, "Failed to make glfw window");
 
-        double processing_time = 0;
-        double acumulated_processing_time = 0;
+            //glfwSetWindowUserPointer(window, &app);
+            glfwMakeContextCurrent(window);
+            glfwSetWindowUserPointer(window, app);
+            glfwSetFramebufferSizeCallback(window, glfw_resize_func);
+            glfwSetKeyCallback(window, glfw_key_func);
+            glfwSwapInterval(0);
+            gl_init((void*) glfwGetProcAddress);
+        
+            double time_display_last_time = 0;
+            double render_last_time = 0;
+            double simulated_last_time = 0;
+            double poll_last_time = 0;
 
-        int snapshot_every_i = 0;
-        int snapshot_times_i = 0;
-        bool end_reached = false;
+            double processing_time = 0;
+            double acumulated_processing_time = 0;
 
-        double start_time = clock_s();
-	    while (!glfwWindowShouldClose(window))
+            int snapshot_every_i = 0;
+            int snapshot_times_i = 0;
+            bool end_reached = false;
+
+            double start_time = clock_s();
+            while (!glfwWindowShouldClose(window))
+            {
+                bool save_this_iter = false;
+                double frame_start_time = clock_s();
+
+                bool update_screen = frame_start_time - render_last_time > SCREEN_UPDATE_PERIOD;
+                bool update_frame_time_display = frame_start_time - time_display_last_time > FPS_DISPLAY_PERIOD;
+                bool poll_events = frame_start_time - poll_last_time > POLL_EVENTS_PERIOD;
+
+                double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
+                double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
+
+                if(app->sim_time >= next_snapshot_every)
+                {
+                    snapshot_every_i += 1;
+                    save_this_iter = true;
+                }
+
+                if(app->sim_time >= next_snapshot_times && end_reached == false)
+                {
+                    snapshot_times_i += 1;
+                    save_this_iter = true;
+                }
+
+                if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
+                {
+                    LOG_INFO("app", "reached stop time %lfs. Took raw processing %lfs total (with puases) %lfs. Simulation paused.", config.simul_stop_time, acumulated_processing_time, clock_s() - start_time);
+                    app->is_in_step_mode = true;
+                    end_reached = true;
+                    save_this_iter = true;
+                }
+
+                if(save_this_iter)
+                    save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+
+                if(update_screen)
+                {
+                    render_last_time = frame_start_time;
+                    Sim_Map render_target = app->maps.all[app->render_target];
+                    draw_sci_cuda_memory("main", render_target.nx, render_target.ny, (float) app->config.app_display_min, (float) app->config.app_display_max, config.app_linear_filtering, render_target.data);
+                    glfwSwapBuffers(window);
+                }
+
+                if(update_frame_time_display)
+                {
+                    glfwSetWindowTitle(window, format_string("%s step: %3.3lfms | real: %8.6lfms", solver_type_to_cstring(app->config.params.solver), processing_time * 1000, app->sim_time*1000).c_str());
+                    time_display_last_time = frame_start_time;
+                }
+
+                bool step_sym = false;
+                if(app->is_in_step_mode)
+                    step_sym = app->remaining_steps > 0.5;
+                else
+                    step_sym = frame_start_time - simulated_last_time > FREE_RUN_PERIOD/app->step_by;
+
+                if(step_sym)
+                {
+
+                    Sim_Params params = app->config.params;
+                    params.iter = app->iter;
+                    params.time = app->sim_time;
+                    params.do_debug = app->is_in_debug_mode;
+                    params.do_stats = app->config.app_collect_stats;
+                    params.do_stats_step_residual = app->config.app_collect_step_residuals;
+                    params.do_prints = true;
+                    params.stats = &app->stats;
+                    params.temp_maps = app->maps.temp;
+                    params.temp_map_count = sizeof app->maps.temp / sizeof *app->maps.temp;
+
+                    double solver_start_time = clock_s();
+                    app->sim_time += sim_step(app->maps.F, app->maps.U, &app->maps.next_F, &app->maps.next_U, params);
+                    double solver_end_time = clock_s();
+
+                    if(params.do_stats && app->sim_time >= app->last_stats_save + app->config.app_collect_stats_every)
+                        app_collect_stats(app);
+
+                    simulated_last_time = frame_start_time;
+                    app->remaining_steps -= 1;
+
+                    processing_time = solver_end_time - solver_start_time;
+                    acumulated_processing_time += processing_time;
+                    app->iter += 1;
+
+                    std::swap(app->maps.F, app->maps.next_F);
+                    std::swap(app->maps.U, app->maps.next_U);
+                }
+
+                if(poll_events)
+                {
+                    poll_last_time = frame_start_time;
+                    glfwPollEvents();
+                }
+
+                double end_frame_time = clock_s();
+                app->dt = end_frame_time - frame_start_time;
+
+                //if is idle for the last 0.5 seconds limit the framerate to IDLE_RENDER_FREQ
+                bool do_frame_limiting = simulated_last_time + 0.5 < frame_start_time;
+                do_frame_limiting = true;
+                if(do_frame_limiting && app->dt < SCREEN_UPDATE_IDLE_PERIOD)
+                    wait_s(SCREEN_UPDATE_IDLE_PERIOD - app->dt);
+            }
+
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            #endif
+        }
+        else
         {
-            bool save_this_iter = false;
-            double frame_start_time = clock_s();
+            app->is_in_debug_mode = false;
+            // i64 iters = (i64) ceil(config.simul_stop_time / config.params.dt);
+            size_t snapshot_every_i = 0;
+            size_t snapshot_times_i = 0;
 
-            bool update_screen = frame_start_time - render_last_time > SCREEN_UPDATE_PERIOD;
-            bool update_frame_time_display = frame_start_time - time_display_last_time > FPS_DISPLAY_PERIOD;
-            bool poll_events = frame_start_time - poll_last_time > POLL_EVENTS_PERIOD;
+            bool end_reached = false;
+            double start_time = clock_s();
+            double last_notif_time = 0;
 
-            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
-            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
-
-            if(app->sim_time >= next_snapshot_every)
+            // size_t snapshot_count = 1;
+            for(;; app->iter++)
             {
-                snapshot_every_i += 1;
-                save_this_iter = true;
-            }
+                double now = clock_s();
+                bool save_this_iter = false;
 
-            if(app->sim_time >= next_snapshot_times && end_reached == false)
-            {
-                snapshot_times_i += 1;
-                save_this_iter = true;
-            }
+                double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
+                double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
 
-            if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
-            {
-                LOG_INFO("app", "reached stop time %lfs. Took raw processing %lfs total (with puases) %lfs. Simulation paused.", config.simul_stop_time, acumulated_processing_time, clock_s() - start_time);
-                app->is_in_step_mode = true;
-                end_reached = true;
-                save_this_iter = true;
-            }
+                if(app->sim_time >= next_snapshot_every)
+                {
+                    snapshot_every_i += 1;
+                    save_this_iter = true;
+                }
 
-            if(save_this_iter)
-                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+                if(app->sim_time >= next_snapshot_times && end_reached == false)
+                {
+                    snapshot_times_i += 1;
+                    save_this_iter = true;
+                }
+                if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
+                {
+                    end_reached = true;
+                    if(config.snapshot_times > 0)
+                        save_this_iter = true;
+                }
 
-            if(update_screen)
-            {
-                render_last_time = frame_start_time;
-                Sim_Map render_target = app->maps.all[app->render_target];
-                draw_sci_cuda_memory("main", render_target.nx, render_target.ny, (float) app->config.app_display_min, (float) app->config.app_display_max, config.app_linear_filtering, render_target.data);
-                glfwSwapBuffers(window);
-            }
+                bool print_this_iter = false;
+                if(now - last_notif_time > 1 || end_reached || app->iter == 0)
+                {
+                    last_notif_time = now;
+                    print_this_iter = true;
+                    LOG_INFO("app", "... completed %.2lf%%", app->sim_time/config.simul_stop_time*100);
+                }
 
-            if(update_frame_time_display)
-            {
-                glfwSetWindowTitle(window, format_string("%s step: %3.3lfms | real: %8.6lfms", solver_type_to_cstring(app->config.params.solver), processing_time * 1000, app->sim_time*1000).c_str());
-                time_display_last_time = frame_start_time;
-            }
+                if(save_this_iter)
+                {
+                    LOG_INFO("app", "saving snaphsot %i", app->count_written_snapshots);
+                    save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
+                }
 
-            bool step_sym = false;
-            if(app->is_in_step_mode)
-                step_sym = app->remaining_steps > 0.5;
-            else
-                step_sym = frame_start_time - simulated_last_time > FREE_RUN_PERIOD/app->step_by;
-
-            if(step_sym)
-            {
+                if(end_reached)
+                    break;
 
                 Sim_Params params = app->config.params;
                 params.iter = app->iter;
@@ -395,143 +545,33 @@ int main()
                 params.do_debug = app->is_in_debug_mode;
                 params.do_stats = app->config.app_collect_stats;
                 params.do_stats_step_residual = app->config.app_collect_step_residuals;
-                params.do_prints = true;
+                params.do_prints = print_this_iter && app->config.app_print_in_noninteractive;
                 params.stats = &app->stats;
                 params.temp_maps = app->maps.temp;
                 params.temp_map_count = sizeof app->maps.temp / sizeof *app->maps.temp;
 
-                double solver_start_time = clock_s();
                 app->sim_time += sim_step(app->maps.F, app->maps.U, &app->maps.next_F, &app->maps.next_U, params);
-                double solver_end_time = clock_s();
-
                 if(params.do_stats && app->sim_time >= app->last_stats_save + app->config.app_collect_stats_every)
                     app_collect_stats(app);
-
-                simulated_last_time = frame_start_time;
-                app->remaining_steps -= 1;
-
-                processing_time = solver_end_time - solver_start_time;
-                acumulated_processing_time += processing_time;
-                app->iter += 1;
 
                 std::swap(app->maps.F, app->maps.next_F);
                 std::swap(app->maps.U, app->maps.next_U);
             }
+            double end_time = clock_s();
+            double runtime = end_time - start_time;
 
-            if(poll_events)
-            {
-                poll_last_time = frame_start_time;
-                glfwPollEvents();
-            }
-
-            double end_frame_time = clock_s();
-            app->dt = end_frame_time - frame_start_time;
-
-            //if is idle for the last 0.5 seconds limit the framerate to IDLE_RENDER_FREQ
-            bool do_frame_limiting = simulated_last_time + 0.5 < frame_start_time;
-            do_frame_limiting = true;
-            if(do_frame_limiting && app->dt < SCREEN_UPDATE_IDLE_PERIOD)
-                wait_s(SCREEN_UPDATE_IDLE_PERIOD - app->dt);
+            LOG_INFO("app", "Finished!");
+            LOG_INFO("app", "runtime: %.2lfs | iters: %lli | average step time: %.2lf ms", runtime, (long long) app->iter, runtime / (double) app->iter * 1000);
         }
-    
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        #endif
-    }
-    else
-    {
-        app->is_in_debug_mode = false;
-        i64 iters = (i64) ceil(config.simul_stop_time / config.params.dt);
-        size_t snapshot_every_i = 0;
-        size_t snapshot_times_i = 0;
 
-        bool end_reached = false;
-        double start_time = clock_s();
-        double last_notif_time = 0;
-
-        // size_t snapshot_count = 1;
-        for(;; app->iter++)
+        if(app_run + 1 < config_count)
         {
-            double now = clock_s();
-            bool save_this_iter = false;
-
-            double next_snapshot_every = (double) (snapshot_every_i + 1) * config.snapshot_every;
-            double next_snapshot_times = (double) (snapshot_times_i + 1) * config.simul_stop_time / config.snapshot_times;
-
-            #if 1
-            if(app->sim_time >= next_snapshot_every)
-            {
-                snapshot_every_i += 1;
-                save_this_iter = true;
-            }
-
-            if(app->sim_time >= next_snapshot_times && end_reached == false)
-            {
-                snapshot_times_i += 1;
-                save_this_iter = true;
-            }
-            if(config.simul_stop_time - app->sim_time < 1e-16 && end_reached == false)
-            {
-                end_reached = true;
-                if(config.snapshot_times > 0)
-                    save_this_iter = true;
-            }
-            #else
-            size_t snapshot_next_iter = snapshot_count*iters/config.snapshot_times;
-            if(app->iter >= iters)
-            {
-                end_reached = true;
-                save_this_iter = true;
-            }
-
-            if(app->iter >= snapshot_next_iter)
-            {
-                snapshot_count += 1;
-                save_this_iter = true;
-            }
-            #endif
-
-            if(now - last_notif_time > 1 || end_reached || app->iter == 0)
-            {
-                last_notif_time = now;
-                LOG_INFO("app", "... completed %.2lf%%", app->sim_time/config.simul_stop_time*100);
-            }
-
-            if(save_this_iter)
-            {
-                LOG_INFO("app", "saving snaphsot %i", app->count_written_snapshots);
-                save_state(app, SAVE_NETCDF | SAVE_BIN | SAVE_CONFIG | SAVE_STATS, ++app->count_written_snapshots);
-            }
-
-            if(end_reached)
-                break;
-
-            Sim_Params params = app->config.params;
-            params.iter = app->iter;
-            params.time = app->sim_time;
-            params.do_debug = app->is_in_debug_mode;
-            params.do_stats = app->config.app_collect_stats;
-            params.do_stats_step_residual = app->config.app_collect_step_residuals;
-            params.do_prints = app->iter % 200 == 0;
-            params.stats = &app->stats;
-            params.temp_maps = app->maps.temp;
-            params.temp_map_count = sizeof app->maps.temp / sizeof *app->maps.temp;
-
-            app->sim_time += sim_step(app->maps.F, app->maps.U, &app->maps.next_F, &app->maps.next_U, params);
-            if(params.do_stats && app->sim_time >= app->last_stats_save + app->config.app_collect_stats_every)
-                app_collect_stats(app);
-
-            std::swap(app->maps.F, app->maps.next_F);
-            std::swap(app->maps.U, app->maps.next_U);
+            for(isize i = 0; i < (isize) ARRAY_LEN(app->maps.all); i++)
+                sim_realloc(&app->maps.all[i], "all", 0, 0, app->sim_time, app->iter);
         }
-        double end_time = clock_s();
-        double runtime = end_time - start_time;
-
-        LOG_INFO("app", "Finished!");
-        LOG_INFO("app", "runtime: %.2lfs | iters: %lli | average step time: %.2lf ms", runtime, (long long) app->iter, runtime / (double) app->iter * 1000);
     }
 
-    return 0;    
+    return main_out;    
 }
 
 #ifdef COMPILE_GRAPHICS
@@ -716,6 +756,29 @@ Small_String int_vec_string_at(const std::vector<T>& arr, size_t at)
     return out;
 }
 
+#include <filesystem>
+bool make_save_folder(const Sim_Config& config, time_t init_time, std::string* out, bool create_in_filesystem)
+{
+    tm* t = localtime(&init_time);
+    std::string folder = format_string("%s%s%s%04i-%02i-%02i__%02i-%02i-%02i__%s%s", 
+        config.snapshot_folder.data(),
+        config.snapshot_folder.size() > 0 ? "/" : "",
+        config.snapshot_prefix.data(), 
+        t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
+        solver_type_to_cstring(config.params.solver),
+        config.snapshot_postfix.data()
+    );
+    std::error_code error = {};
+    if(folder.empty() == false && create_in_filesystem)
+        std::filesystem::create_directory(folder, error);
+
+    if(error)
+        LOG_ERROR("APP", "Error creating save folder '%s': %s", folder.data(), error.message().data());
+
+    *out = folder;
+    return !error;
+}
+
 bool save_csv_stat_file(const char* filename, int nx, int ny, double dt, size_t from, size_t to, const App_Stats& stats, bool append)
 {
     bool state = false;
@@ -757,29 +820,6 @@ bool save_csv_stat_file(const char* filename, int nx, int ny, double dt, size_t 
         fclose(file);
     }
     return state;
-}
-
-#include <filesystem>
-bool make_save_folder(const Sim_Config& config, time_t init_time, std::string* out, bool create_in_filesystem)
-{
-    tm* t = localtime(&init_time);
-    std::string folder = format_string("%s%s%s%04i-%02i-%02i__%02i-%02i-%02i__%s%s", 
-        config.snapshot_folder.data(),
-        config.snapshot_folder.size() > 0 ? "/" : "",
-        config.snapshot_prefix.data(), 
-        t->tm_year + 1900, t->tm_mon, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec,
-        solver_type_to_cstring(config.params.solver),
-        config.snapshot_postfix.data()
-    );
-    std::error_code error = {};
-    if(folder.empty() == false && create_in_filesystem)
-        std::filesystem::create_directory(folder, error);
-
-    if(error)
-        LOG_ERROR("APP", "Error creating save folder '%s': %s", folder.data(), error.message().data());
-
-    *out = folder;
-    return !error;
 }
 
 bool save_state(App_State* app, int flags, int snapshot_index)

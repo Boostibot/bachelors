@@ -39,7 +39,6 @@ void vlog_message(const char* module, Log_Type type, int line, const char* file,
 void log_flush();
 
 const char* log_type_to_string(Log_Type type);
-Logger def_logger_make();
 
 //Logs a message. Does not get dissabled.
 #define LOG(module, log_type, format, ...)   log_message(module, log_type, __LINE__, __FILE__, __FUNCTION__, format, ##__VA_ARGS__)
@@ -73,15 +72,35 @@ Str_Buffer16 format_bytes(size_t bytes);
 #define STRING_PRINT(string) (int) (string).size, (string).data
 
 #define DO_LOG
+
+#include <stdio.h>
+#include <string.h>
+
+enum {
+    FILE_LOGGER_FILE_PATH = 1,
+    FILE_LOGGER_FILE_APPEND = 2,
+    FILE_LOGGER_NO_CONSOLE_PRINT = 4,
+    FILE_LOGGER_NO_CONSOLE_COLORS = 8,
+};
+typedef struct File_Logger {
+    Logger logger;
+    FILE* file;
+    char* path;
+
+    int flags;
+} File_Logger;
+
+void file_logger_log(Logger* gen_logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args);
+bool file_logger_init(File_Logger* logger, const char* path, int flags);
+void file_logger_deinit(File_Logger* logger);
+Logger* console_logger();
 #endif
 
+// #define JOT_ALL_IMPL
 #if (defined(JOT_ALL_IMPL) || defined(JOT_LOG_IMPL)) && !defined(JOT_LOG_HAS_IMPL)
 #define JOT_LOG_HAS_IMPL
-
-static void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args);
-
-static Logger _global_def_logger = {def_logger_func};
-static Logger* _global_logger = &_global_def_logger;
+static File_Logger _console_logger = {file_logger_log, NULL, NULL, 0};
+static Logger* _global_logger = &_console_logger.logger;
 static size_t _global_log_group_depth = 0;
 
 Logger* log_system_get_logger()
@@ -154,15 +173,48 @@ const char* log_type_to_string(Log_Type type)
     }
 }
 
-Logger def_logger_make()
+char* malloc_vfmt(size_t* count_or_null, char* backing, size_t backing_size, const char* fmt, va_list args)
 {
-    Logger out = {def_logger_func};
+    va_list copy;
+    va_copy(copy, args);
+
+    int count = 0;
+    char* out = NULL;
+    if(backing_size >= 0) 
+    {
+        count = vsnprintf(backing, backing_size, fmt, copy);
+        out = backing;
+    }
+    if(out == NULL || (size_t) count >= backing_size)
+    {
+        va_list copy2;
+        va_copy(copy2, args);
+        count = vsnprintf(backing, backing_size, fmt, copy2);
+
+        out = (char*) malloc((size_t) count + 1);
+        vsnprintf(out, (size_t) count + 1, fmt, args);
+        out[count] = '\0';
+    }
+    if(count_or_null)
+        *count_or_null = (size_t) count;
     return out;
 }
 
-#include <ctime>
-static void def_logger_func(Logger* logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args)
+char* malloc_fmt_custom(size_t* count_or_null, char* backing, size_t backing_size, const char* fmt, ...)
 {
+    va_list args;               
+    va_start(args, fmt);    
+    char* out =  malloc_vfmt(count_or_null, backing, backing_size, fmt, args);
+    va_end(args);  
+    return out;
+}
+
+#include <string.h>
+#include <ctype.h>
+	
+void file_logger_log(Logger* gen_logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args)
+{
+    File_Logger* logger = (File_Logger*) (void*) gen_logger;
     //Some of the ansi colors that can be used within logs. 
     //However their usage is not recommended since these will be written to log files and thus make their parsing more difficult.
     #define ANSI_COLOR_NORMAL       "\x1B[0m"
@@ -176,50 +228,110 @@ static void def_logger_func(Logger* logger, const char* module, Log_Type type, s
     #define ANSI_COLOR_WHITE        "\x1B[37m"
     #define ANSI_COLOR_GRAY         "\x1B[90m"
 
-    (void) logger;
     (void) line;
     (void) file;
     (void) function;
     if(type == LOG_FLUSH)
-        return;
-
-    std::timespec ts = {0};
-    (void) std::timespec_get(&ts, TIME_UTC);
-    struct tm* now = std::gmtime(&ts.tv_sec);
-
-    const char* color_mode = ANSI_COLOR_NORMAL;
-    if(type == LOG_ERROR || type == LOG_FATAL)
-        color_mode = ANSI_COLOR_BRIGHT_RED;
-    else if(type == LOG_WARN)
-        color_mode = ANSI_COLOR_YELLOW;
-    else if(type == LOG_OKAY)
-        color_mode = ANSI_COLOR_GREEN;
-    else if(type == LOG_TRACE || type == LOG_DEBUG)
-        color_mode = ANSI_COLOR_GRAY;
-
-    typedef long long int lli;
-
-    printf("%s%02i:%02i:%02lli %5s %6s: ", color_mode, now->tm_hour, now->tm_min, (lli) now->tm_sec, log_type_to_string(type), module);
-
-    //We only do fancy stuff when there is something to print.
-    //We also only print extra newline if there is none already.
-    size_t fmt_size = strlen(format);
-    bool print_newline = true;
-    if(fmt_size > 0)
     {
-        for(size_t i = 0; i < indentation; i++)
-            printf("   ");
+        if(logger->file)
+            fflush(logger->file);
+    }
+    else
+    {
+        timespec ts = {0};
+        (void) timespec_get(&ts, TIME_UTC);
+        struct tm* now = gmtime(&ts.tv_sec);
 
-        vprintf(format, args);
-        if(format[fmt_size - 1] == '\n')
-            print_newline = false; 
+        size_t user_max_len = 0;
+        char user_backing[512]; (void) user_backing;
+        char* user = malloc_vfmt(&user_max_len, user_backing, sizeof user_backing, format, args);
+        size_t user_len = user_max_len;
+
+        //trim trailing whitespace
+        for(; user_len > 0; user_len--)
+            if(!isspace(user[user_len - 1]))
+                break;
+
+        size_t complete_len = 0;
+        char complete_backing[512]; (void) complete_backing;
+         char* complete = malloc_fmt_custom(&complete_len, complete_backing, sizeof complete_backing, 
+            "%02i:%02i:%02i %5s %6s: %.*s%.*s", 
+            now->tm_hour, now->tm_min, now->tm_sec, log_type_to_string(type), module, (int) indentation, "", (int) user_len, user);
+
+        if((logger->flags & FILE_LOGGER_NO_CONSOLE_PRINT) == 0)
+        {
+            if(logger->flags & FILE_LOGGER_NO_CONSOLE_COLORS)
+                puts(complete);
+            else
+            {
+                const char* line_begin = "";
+                const char* line_end = "";
+                if(type == LOG_ERROR || type == LOG_FATAL)
+                    line_begin = ANSI_COLOR_BRIGHT_RED;
+                else if(type == LOG_WARN)
+                    line_begin = ANSI_COLOR_YELLOW;
+                else if(type == LOG_OKAY)
+                    line_begin = ANSI_COLOR_GREEN;
+                else if(type == LOG_TRACE || type == LOG_DEBUG)
+                    line_begin = ANSI_COLOR_GRAY;
+                else    
+                    line_begin = ANSI_COLOR_NORMAL;
+
+                line_end = ANSI_COLOR_NORMAL;
+                printf("%s%s%s\n", line_begin, complete, line_end);
+            }
+        }
+        
+        if(logger->file)
+            fprintf(logger->file, "%s\n", complete);
+
+        if(user != user_backing)
+            free(user);
+
+        if(complete != complete_backing)
+            free(complete);
+    }
+}
+
+void file_logger_deinit(File_Logger* logger)
+{
+    if(logger->file)
+        fclose(logger->file);
+    free(logger->path);
+    memset(logger, 0, sizeof *logger);
+}
+
+bool file_logger_init(File_Logger* logger, const char* path, int flags)
+{
+    file_logger_deinit(logger);
+
+    const char* open_mode = flags & FILE_LOGGER_FILE_APPEND ? "ab" : "wb"; 
+    char* filename = NULL;
+    if((flags & FILE_LOGGER_FILE_PATH) && path)
+        filename = malloc_fmt_custom(NULL, NULL, 0, "%s", path);
+    else
+    {
+        timespec ts = {0};
+        (void) timespec_get(&ts, TIME_UTC);
+        struct tm* now = localtime(&ts.tv_sec);
+        filename = malloc_fmt_custom(NULL, NULL, 0, 
+            "%s%02i-%02i-%02i__%02i-%02i-%02i.log", 
+            path ? path : "logs/", now->tm_year, now->tm_mon, now->tm_mday, now->tm_hour, now->tm_min, now->tm_sec);
     }
 
-    if(print_newline)
-        printf(ANSI_COLOR_NORMAL"\n");
-    else
-        printf(ANSI_COLOR_NORMAL);
-        
+    FILE* file = fopen(filename, open_mode);
+    
+    logger->file = file;
+    logger->path = filename;
+    logger->flags = flags;
+    logger->logger.log = file_logger_log;
+
+    return file != NULL;
+}
+
+Logger* console_logger()
+{
+    return &_console_logger.logger;
 }
 
 void assertion_report(const char* expression, int line, const char* file, const char* function, const char* message, ...)

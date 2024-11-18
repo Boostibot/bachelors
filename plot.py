@@ -299,113 +299,6 @@ def plot_phase_comparison(base,path1, path2, name, i, filter=False):
     fig.show()
     plt.show()
 
-
-def extract_outline(values, star=0, threshold=0.5, close_paths=False):
-    (nx, ny) = values.shape
-    F_levelset = phi_map_discretize(values, threshold)
-
-    # 0 0 0 0
-    # 0 0 0 0
-    # 1 1 1 1
-    # 1 1 1 1
-
-    #  -1-1
-    #   1 1
-    #   0 0 
-
-    kernel = [
-        [ 0, -1,  0],
-        [-1,  4, -1],
-        [ 0, -1,  0],
-    ]
-
-    directions = [
-        (1, 0),
-        (1, 1),
-        (0, 1),
-        (-1, 1),
-        (-1, 0),
-        (-1, -1),
-        (0, -1),
-        (1, -1),
-    ]
-
-    convolved = scipy.ndimage.convolve(F_levelset, kernel, mode='constant')
-
-    visited = np.zeros(shape=(nx, ny), dtype=np.uint32)
-
-    def point_add(point, dir):
-        return (point[0] + dir[0], point[1] + dir[1])
-
-    lines = []
-    edge = convolved > 0
-
-    iter = 0
-    while True:
-        # Select nice start position. That is a posisiton that has both left and right
-        # or top and bot neighbours thus the line can be joined up nicely
-        # F_starts = (convolved - visited*20) == 1 
-        F_starts = np.logical_and(convolved == 1, visited == 0) 
-        iter += 1
-
-        nonzero = np.nonzero(F_starts)
-        if len(nonzero[0]) == 0:
-            break
-        
-        # iterate around shape
-        point = (nonzero[0][star], nonzero[1][star])
-        line = []
-        step = 1
-
-        while True:
-            assert edge[point] > 0
-            line.append([point[0], point[1]])
-            visited[point] = 1
-            step += 1
-            found = False
-            dir = None
-            last_i = 0
-            for i in range(8):
-                last_i += 1
-                dir = directions[last_i % 8]
-                off = point_add(point, dir)
-                if 0 <= off[0] and off[0] < nx and 0 <= off[1] and off[1] < ny:
-                    if edge[off] > 0 and visited[off] == 0:
-                        found = True
-                        break
-            if found == False:
-                break
-            point = point_add(point, dir)
-
-        if False:
-            linx = np.linspace(0, 1, nx+1)
-            liny = np.linspace(0, 1, ny+1)
-            X, Y = np.meshgrid(linx, liny)
-            fig = plt.figure(figsize=(10, 10))
-            ax = fig.add_subplot(111)
-            ax.set_aspect('equal')
-            ax.pcolormesh(Y, X, edge + 3*visited, cmap='RdBu_r', shading='flat')
-            start_circle = plt.Circle((line[0][0]/nx, line[0][1]/ny), 1/(2*nx), color='g')
-            end_circle = plt.Circle((line[-1][0]/nx, line[-1][1]/ny), 1/(2*nx), color='r')
-            ax.add_patch(start_circle)
-            ax.add_patch(end_circle)
-            plt.show()
-
-        # close loop
-        if close_paths:
-            line.append(line[0])
-        if len(line) > 3:
-            # if not degenerate shape (line)
-            points = np.array(line)
-            pointsT = points.T
-            allx = np.all(pointsT[0] == line[0][0])
-            ally = np.all(pointsT[1] == line[0][1])
-            if allx == False and ally == False:
-                lines += [points]
-
-    return lines
-
-
 from collections import defaultdict
 def join_path_segments(segments):
     def first_item(collection):
@@ -503,59 +396,6 @@ def marching_squares(field, treshold):
 
     return lines
 
-def marching_squares_naive(field, treshold):
-    lines = []
-    (nx, ny) = field.shape
-    states = np.zeros((nx,ny))
-    for y in range(0, ny-1):
-        for x in range(0, nx-1):
-            top_right = field[x+1,y+1] > treshold
-            top_left  = field[x,y+1] > treshold
-            bot_right = field[x+1,y] > treshold
-            bot_left  = field[x,y] > treshold
-
-            state = (0
-                | int(top_left)  << 3
-                | int(top_right) << 2
-                | int(bot_right) << 1
-                | int(bot_left)  << 0)
-
-            fxt = (treshold - field[x,y+1])/(field[x+1,y+1] - field[x,y+1])
-            fxb = (treshold - field[x,  y])/(field[x+1,y  ] - field[x  ,y])
-            fyr = (treshold - field[x+1,y])/(field[x+1,y+1] - field[x+1,y])
-            fyl = (treshold - field[x  ,y])/(field[x,  y+1] - field[x  ,y])
-
-            # fxt = 0.5
-            # fxb = 0.5
-            # fyr = 0.5
-            # fyl = 0.5
-
-            states[x,y] = state
-            if state == 1 or state == 14:
-                lines.append((x, y+fyl, x+fxb, y))
-            elif state == 2 or state == 13:
-                lines.append((x+1, y+fyr, x+fxb, y))
-            elif state == 3 or state == 12:
-                lines.append((x, y+fyl, x+1, y+fyr))
-            elif state == 4 or state == 11:
-                lines.append((x+fxt, y+1, x+1, y+fyr))
-            elif state == 5:
-                lines.append((x, y+fyl, x+fxt, y+1))
-                lines.append((x+1, y+fyr, x+fxb, y))
-            elif state == 6 or state == 9:
-                lines.append((x+fxb, y, x+fxt, y+1))
-            elif state == 7 or state == 8:
-                lines.append((x, y+fyl, x+fxt, y+1))
-            elif state == 10:
-                lines.append((x, y+fyl, x+fxb, y))
-                lines.append((x+fxt, y+1, x+1, y+fyr))
-            elif state == 0 or state == 15:
-                pass
-            else:
-                assert False 
-
-    return lines
-
 def interpolate_outline(line, samples=10, k=3, smoothness=5, per=True):
     linex, liney = zip(*np.array(line))
     linex = np.array(linex) 
@@ -588,28 +428,12 @@ def interpolate_outline2(line, samples=10, k=3, smoothness=5, per=True):
         transp = points.T
         return transp[0], transp[1]
 
-def chaikins_corner_cutting(coords, refinements=10):
-    coords = np.array(coords)
-
-    for i in range(refinements):
-        L = coords.repeat(2, axis=0)
-        R = np.empty_like(L)
-        R[0] = L[0]
-        R[2::2] = L[1:-1:2]
-        R[1:-1:2] = L[2::2]
-        R[-1] = L[-1]
-        coords = L * 0.75 + R * 0.25
-
-        print(f"refinement {i}")
-
-    return coords
-
 def dissable_plot_ticks(ax):
     ax.tick_params(axis='both', which='both', 
                     bottom=False, top=False, left=False, right=False,
                     labelbottom=False, labeltop=False, labelleft=False, labelright=False)
     
-def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0, max=1, save=None, line_color='white', text_color=None, colorbar='inset', background="U", do_outlines=True, old_outline=True, per=True):
+def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0005, min=0, max=1, save=None, line_color='white', text_color=None, colorbar='inset', background="U", do_outlines=True, per=True):
     label = 'T'
     cmap = 'RdBu_r'
     if background == "F":
@@ -621,10 +445,7 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
 
     outlines = []
     if do_outlines:
-        if old_outline:
-            outlines = extract_outline(F)
-        else:
-            outlines = join_path_segments(marching_squares(F, 0.5))
+        outlines = join_path_segments(marching_squares(F, 0.5))
 
     linx = np.linspace(0, maps1.dx*maps1.nx, maps1.nx+1)
     liny = np.linspace(0, maps1.dy*maps1.ny, maps1.ny+1)
@@ -634,9 +455,13 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
     ax.set_aspect('equal')
     img = ax.pcolormesh(X, Y, U, cmap=cmap, shading='flat', vmin=min, vmax=max)
 
+    interpolate = False
     for outline in outlines:
         outline = (np.array(outline) + 0.5)*(maps1.dx, maps1.dy) 
-        xint, yint = interpolate_outline(outline, k=3, smoothness=smoothness, per=per)
+        if interpolate:
+            xint, yint = interpolate_outline(outline, k=3, smoothness=smoothness, per=per)
+        else:
+            xint, yint = outline.T[0], outline.T[1]
         ax.plot(yint, xint, c=line_color, linewidth=1)
 
     if colorbar == 'default':
@@ -659,11 +484,11 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0055, min=0,
     else:
         plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
 
-def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, text_color=None, line_color='white', colorbar='inset', background="U", do_outlines=True, old_outline=True, per=True):
+def plot_temperature_interface_map(base, path, i, smoothness=0.0035, min=0, max=1, save=None, text_color=None, line_color='white', colorbar='inset', background="U", do_outlines=True, per=True):
     maps1 = load_dir_bin_map_file(path_rel(base, path), i)
     plot_loaded_temperature_interface_map(
         maps1, maps1.maps['F'], maps1.maps[background], smoothness=smoothness, line_color=line_color, text_color=text_color, min=min, max=max, 
-        save=save, colorbar=colorbar, background=background, do_outlines=do_outlines, old_outline=old_outline, per=per)
+        save=save, colorbar=colorbar, background=background, do_outlines=do_outlines, per=per)
 
 def plot_phase_interface(base, path, i, xi = 0.0043, linewidth=4, save=None):
     maps1 = load_dir_bin_map_file(path_rel(base, path), i)
@@ -764,8 +589,15 @@ def format_latex_table(middle_label:str, left_labels:list[str], top_labels:list[
 
     return output
     
+brown_blue_color = ['#003f5c', '#58508d', '#bc5090', '#ff6361', '#ffa600']
+brown_blue_color2 = ['#00429d', '#73a2c6', '#ffffe0', '#f4777f', '#93003a']
+wider_color = ['#4DB4F0', '#5E4DF0', '#DA4DF0', '#F0544D', '#FA8E34', '#F5D63D', '#ABFF24']
+vibrat_colors = ['#47FA02', '#FA0288', '#0276FA', '#6A11FA', '#02FAA9',  '']
+pink_blue_brown = ["#f90088", "#0577fb", "#a5e841", "#871d32", "#11c385"]
+pink_green_brown = ['#02faa9', '#c6a894', '#fc0080', '#00a45c', '#003f01']
+def_pallete = pink_green_brown
 
-def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, linewidth=1, xmin=1.6, xmax=2.4, ymin=2.6, ymax=None, legend_under=False, print_comp_table=False):
+def plot_phase_comparison_maps(base, paths, i, save=None, pallete=pink_blue_brown, smoothness=0.000, interpolate=True, linewidth=2, xmin=1.6, xmax=2.4, ymin=2.6, ymax=None, legend_under=False, print_comp_table=False):
     if len(paths) == 0:
         return
 
@@ -777,35 +609,6 @@ def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, lin
         maps += [map_set.maps['F']]
 
     if print_comp_table:
-        if False:
-            def print_comp_table(map_sets, dist):
-                print(f"stats in {dist} =========================")
-
-                separator_line = '\\hline\n' + '& '*len(map_sets) + '\\\\[-1em]'
-                first_line = ''
-                for i,map_set in enumerate(map_sets):
-                    first_line += ' & \\multicolumn{1}{c|}{%s}' % paths[i][1]
-
-                print(separator_line)
-                print(f'Schemes {first_line} \\\\')
-
-                for i,map_set in enumerate(map_sets):
-                    dxdy = map_set.dx*map_set.dy
-                    formated = paths[i][1].ljust(7)
-                    for compare_with in map_sets:
-                        val = 0
-                        if dist == 'PFD':
-                            val = phase_field_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
-                        else:
-                            val = phase_field_discrete_dist(map_set.maps['F'], compare_with.maps['F'], dxdy)
-                        formated += f" & {format_latex_e(val)}"
-                    
-                    print(separator_line)
-                    print(f'{formated} \\\\')
-
-            print_comp_table(map_sets, 'PFD')
-            print_comp_table(map_sets, 'PFDD')
-
         assert len(paths) == len(map_sets)
         labels = []
         seiries_pfd = []
@@ -827,9 +630,9 @@ def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, lin
         latex_table_PFD = format_latex_table("Schemes ", labels, labels, seiries_pfd)
         latex_table_PFDD = format_latex_table("Schemes ", labels, labels, seiries_pfdd)
 
-        print("============== printing PFD table =============")
+        print("% ============== printing PFD table =============")
         print(latex_table_PFD)
-        print("============== printing PFDD table =============")
+        print("% ============== printing PFDD table =============")
         print(latex_table_PFDD)
 
     fig_width = 10
@@ -840,20 +643,20 @@ def plot_phase_comparison_maps(base, paths, i, save=None, smoothness=0.0035, lin
     ax = fig.add_subplot(111, aspect='equal')
     ax.tick_params(axis='both', which='major', pad=15)
     for i, map_set in enumerate(map_sets):
-        outlines = extract_outline(map_set.maps['F'])
+        outlines = join_path_segments(marching_squares(map_set.maps['F'], 0.5))
         xints = np.array([])
         yints = np.array([])
         for outline in outlines:
             scaled = (np.array(outline) + 0.5)*(map_set.dx, map_set.dy) 
-            xint, yint = interpolate_outline2(scaled, k=5, smoothness=smoothness)
+            xint = None 
+            yint = None
+            if interpolate:
+                xint, yint = interpolate_outline2(scaled, k=5, smoothness=smoothness)
+            else:
+                xint, yint = scaled.T[0], scaled.T[1]
             xints = np.concatenate((xints, xint))
             yints = np.concatenate((yints, yint))
-
-        color = None
-        if len(paths[i]) >= 3:
-            color = paths[i][2]
-
-        ax.plot(xints, yints, color=color, label=paths[i][1], linewidth=linewidth)
+        ax.plot(xints, yints, color=pallete[i], label=paths[i][1], linewidth=linewidth)
 
     ax.set_xlim(xmin=xmin, xmax=xmax)
     ax.set_ylim(ymin=ymin, ymax=ymax)
@@ -918,9 +721,9 @@ def plot_bench_results(linewidth=2, save=None):
     fig = plt.figure(figsize=(11, 10))
     ax = fig.add_subplot(111)
     ax.tick_params(axis='both', which='major', pad=15)
-    ax.plot(Ns, cpu.T[1], color='black', linestyle='-', marker='o', label='cpu', linewidth=linewidth)
+    ax.plot(Ns, cpu.T[1], color='black', linestyle='-', marker='s', label='cpu', linewidth=linewidth)
     ax.plot(Ns, thrust.T[1], color='green', linestyle='-', marker='o', label='thrust', linewidth=linewidth)
-    ax.plot(Ns, cust.T[1], color='blue', linestyle='-', marker='o', label='custom', linewidth=linewidth)
+    ax.plot(Ns, cust.T[1], color=wider_color[1], linestyle='-', marker='^', label='custom', linewidth=linewidth)
 
     str = "cpu "
     for x in cpu.T[0]:
@@ -953,8 +756,7 @@ def plot_bench_results(linewidth=2, save=None):
 
 # module load
 # 
-def plot_ellpased_time_comp_methods(linewidth=2, save=None):
-
+def plot_ellpased_time_comp_methods(which, linewidth=2, save=None, pallete=def_pallete):
     Ys = [1, 4, 16, 64, 256, 1024, 4096]
     Ns = [128**2, 256**2, 512**2, 1024**2, 2048**2]
     Ns_labels = ['$128^2$', '$256^2$', '$512^2$', '$1024^2$', '$2048^2$']
@@ -964,82 +766,132 @@ def plot_ellpased_time_comp_methods(linewidth=2, save=None):
     running_times = {
         'Euler':[0.86,  1.65,  4.93,  14.11,  50.58],
         'RK4'  :[3.53,  8.38, 24.16,  82.75, 313.40],
-        'RKM'  :[4.77, 16.10, 47.77, 189.25, 18*60],
-        'SI'   :[3.65, 11.18, 40.26, 187.20, 18*60],
+        'RKM'  :[4.77, 16.10, 47.77, 189.25, 1796.03],
+        'SI'   :[3.65, 11.18, 40.26, 187.20, 1045.14],
+        'CPU'  :[29.16, 220.94, 928.34, 3861.69, 17556.53],
     }
 
-
-    colors=['#4E4DF0', '#944DF0', '#DA4DF0', '#F04D97', '#F05C4D']
-    wider_color = ['#4DB4F0', '#5E4DF0', '#DA4DF0', '#F0544D', '#FA8E34', '#F5D63D', '#ABFF24']
+    marker_size = [10, 10, 10, 10, 14] 
+    markers = ['o', 'v', '^', 's', '*']
+    # colors=['#4E4DF0', '#944DF0', '#DA4DF0', '#F04D97', '#F05C4D']
     
 
-    print('% ============== Running times ==============')
-    print(format_latex_table('Running times ', list(running_times.keys()), Ns_labels, list(running_times.values())))
+    # print('% ============== Running times ==============')
+    # print(format_latex_table('Running times ', list(running_times.keys()), Ns_labels, list(running_times.values())))
 
-    fig = plt.figure(figsize=(11, 10))
-    ax = fig.add_subplot(111)
-    ax.tick_params(axis='both', which='major', pad=15)
-    ax.set_xscale('log', base=2)
-    ax.set_yscale('log', base=2)
+    if which == 'time':
+        fig = plt.figure(figsize=(11, 10))
+        ax = fig.add_subplot(111)
+        ax.tick_params(axis='both', which='major', pad=15)
+        ax.set_xscale('log', base=2)
+        ax.set_yscale('log', base=2)
 
-    i = 0
-    for key, value in running_times.items():
-        ax.plot(Ns, value, linestyle='-', marker='o', color=wider_color[i], label=key, linewidth=linewidth)
-        i += 1
+        i = 0
+        for key, value in running_times.items():
+            ax.plot(Ns, value, linestyle='-', marker=markers[i], markersize=marker_size[i], color=pallete[i], label=key, linewidth=linewidth)
+            i += 1
 
-    plt.xticks(Ns, Ns_labels, rotation=45)
-    plt.yticks(Ys)
-    plt.xlabel('Number of cells') 
-    plt.ylabel('Computation time [s]') 
-    plt.subplots_adjust(bottom=0.2)
-    plt.autoscale()
-    plt.grid()
-    plt.legend() 
-    if save != None:
-        plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
-    else:
-        plt.show() 
+        plt.xticks(Ns, Ns_labels, rotation=45)
+        plt.yticks(Ys)
+        plt.xlabel('Number of cells') 
+        plt.ylabel('Computation time [s]') 
+        plt.subplots_adjust(bottom=0.2)
+        plt.autoscale()
+        plt.grid()
+        plt.legend() 
+        if save != None:
+            plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+        else:
+            plt.show() 
 
-    scalings = {}
-    for key, series in running_times.items():
-        scaling = []
-        for i in range(1, len(series)):
-            scaling += [series[i]/series[i - 1]]
-        scalings[key] = scaling
+    if which == 'scaling':
+        scalings = {}
+        for key, series in running_times.items():
+            scaling = []
+            for i in range(1, len(series)):
+                scaling += [series[i]/series[i - 1]]
+            scalings[key] = scaling
 
-    print('% ============== Scaling times ==============')
-    print(format_latex_table('Running times ', list(scalings.keys()), Ns_labels[1:], list(scalings.values())))
+        # print('% ============== Scaling times ==============')
+        # print(format_latex_table('Running times ', list(scalings.keys()), Ns_labels[1:], list(scalings.values())))
 
-    fig = plt.figure(figsize=(11, 10))
-    ax = fig.add_subplot(111)
-    ax.tick_params(axis='both', which='major', pad=15)
-    ax.set_xscale('log', base=2)
+        fig = plt.figure(figsize=(11, 10))
+        ax = fig.add_subplot(111)
+        ax.tick_params(axis='both', which='major', pad=15)
+        ax.set_xscale('log', base=2)
 
-    i = 0
-    for key, value in scalings.items():
-        ax.plot(Ns[1:], value, linestyle='-', marker='o', color=wider_color[i], label=key, linewidth=linewidth)
-        i += 1
+        i = 0
+        for key, value in scalings.items():
+            ax.plot(Ns[1:], value, linestyle='-', marker=markers[i], markersize=marker_size[i], color=pallete[i], label=key, linewidth=linewidth)
+            i += 1
 
-    plt.xticks(Ns, Ns_labels, rotation=45)
-    # plt.yticks(Ys)
-    plt.xlabel('Number of cells') 
-    plt.ylabel('Computation time scaling') 
-    plt.subplots_adjust(bottom=0.2)
-    plt.autoscale()
-    plt.grid()
-    plt.legend() 
-    if save != None:
-        plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
-    else:
-        plt.show() 
+        plt.xticks(Ns, Ns_labels, rotation=45)
+        # plt.yticks(Ys)
+        plt.xlabel('Number of cells') 
+        plt.ylabel('Computation time scaling') 
+        plt.subplots_adjust(bottom=0.2)
+        plt.autoscale()
+        plt.grid()
+        plt.legend() 
+        if save != None:
+            plt.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+        else:
+            plt.show() 
+
+    if which == 'speedup':
+        speedup = []
+        for ours, theirs in zip(running_times["RKM"], running_times["CPU"]):
+            speedup += [theirs/ours]
+
+        fig = plt.figure(figsize=(11, 5))
+        ax = fig.add_subplot(111)
+        ax.tick_params(axis='both', which='major', pad=15)
+        ax.set_xscale('log', base=2)
+        ax.set_xticks(Ns, Ns_labels, rotation=45)
+        ax.set_yticks(np.linspace(0, 20, 5))
+        ax.plot(Ns, speedup, linestyle='-', marker=markers[0], markersize=marker_size[0], color=pallete[0], linewidth=linewidth)
+
+        ax.set_xlabel('Number of cells') 
+        ax.set_ylabel('Speedup times') 
+        ax.autoscale()
+        ax.grid()
+        fig.subplots_adjust(bottom=0.2)
+        # plt.legend() 
+        if save != None:
+            fig.savefig(save, bbox_inches='tight', pad_inches=0.0, dpi=DPI)
+        else:
+            fig.show() 
+            plt.show()
 
 
 DPI = 180
 font = {'size' : 22}
 matplotlib.rc('font', **font)
+# def_pallete = wider_color
+
+import os
+if True:
+    def newest_file_in_dir(path):
+        files = os.listdir(path)
+        paths = [os.path.join(path, basename) for basename in files]
+        return max(paths, key=os.path.getctime)
+    
+    def latest_map_file(path):
+        files = os.listdir(path)
+        paths = []
+        for file in files:
+            if str(file).startswith("maps_") and str(file).endswith(".bin"):
+                paths += [os.path.join(path, file)]
+
+        return max(paths, key=os.path.getctime)
+
+    dir = newest_file_in_dir("snapshots/")
+    plot_temperature_interface_map("", dir, 10, background="U")
 
 if False:
-    plot_ellpased_time_comp_methods()
+    plot_ellpased_time_comp_methods("time", pallete=wider_color, save="showcase/exported/comp_time_broad.pdf")
+    plot_ellpased_time_comp_methods("scaling", pallete=wider_color, save="showcase/exported/comp_time_broad_scaling.pdf")
+    plot_ellpased_time_comp_methods("speedup", pallete=wider_color, save="showcase/exported/comp_time_broad_speedup.pdf")
 
 if False:
     plot_phase_comparison_maps("showcase", [
@@ -1049,12 +901,11 @@ if False:
         ("0_aniso_comp_256__semi-implicit", "S-I")
     ], 10, print_comp_table=True)
 
-plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4-adaptive", 10, background="U", smoothness=0.0005, old_outline=False)
 if False:
+    plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4-adaptive", 10, background="U")
     plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit", 10, background="U")
     plot_temperature_interface_map("showcase", "0_aniso_comp_256__explicit-rk4", 10, background="U", per=False)
     plot_temperature_interface_map("showcase", "0_aniso_comp_256__semi-implicit", 10, background="U")
-exit()
 
 # First showcase
 if False:
@@ -1069,16 +920,17 @@ if False:
     plot_temperature_interface_map("showcase", "show_low_xi_anisofold_8", 30, background="U", save="showcase/exported/show_low_xi_anisofold_8_U_30.png")
 
 # xi comparison
+# plot_temperature_interface_map("showcase", "show_low_xi", 5, background="F", do_outlines=False)
 if False:
-    plot_temperature_interface_map("showcase", "show_low_xi", 5, background="F", save="showcase/exported/show_low_xi_F_5.png")
-    plot_temperature_interface_map("showcase", "show_low_xi", 13, background="F", save="showcase/exported/show_low_xi_F_13.png")
-    plot_temperature_interface_map("showcase", "show_low_xi", 20, background="F", save="showcase/exported/show_low_xi_F_20.png")
-    plot_temperature_interface_map("showcase", "show_medium_xi", 5, background="F", save="showcase/exported/show_medium_xi_F_5.png")
-    plot_temperature_interface_map("showcase", "show_medium_xi", 13, background="F", save="showcase/exported/show_medium_xi_F_13.png")
-    plot_temperature_interface_map("showcase", "show_medium_xi", 20, background="F", save="showcase/exported/show_medium_xi_F_20.png")
-    plot_temperature_interface_map("showcase", "show_tiny_xi", 5, background="F", save="showcase/exported/show_tiny_xi_F_5.png")
-    plot_temperature_interface_map("showcase", "show_tiny_xi", 13, background="F", save="showcase/exported/show_tiny_xi_F_13.png")
-    plot_temperature_interface_map("showcase", "show_tiny_xi", 20, background="F", save="showcase/exported/show_tiny_xi_F_20.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 5, background="F", do_outlines=False, save="showcase/exported/show_low_xi_F_5.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 13, background="F", do_outlines=False, save="showcase/exported/show_low_xi_F_13.png")
+    plot_temperature_interface_map("showcase", "show_low_xi", 20, background="F", do_outlines=False, save="showcase/exported/show_low_xi_F_20.png")
+    plot_temperature_interface_map("showcase", "show_medium_xi", 5, background="F", do_outlines=False, save="showcase/exported/show_medium_xi_F_5.png")
+    plot_temperature_interface_map("showcase", "show_medium_xi", 13, background="F", do_outlines=False, save="showcase/exported/show_medium_xi_F_13.png")
+    plot_temperature_interface_map("showcase", "show_medium_xi", 20, background="F", do_outlines=False, save="showcase/exported/show_medium_xi_F_20.png")
+    plot_temperature_interface_map("showcase", "show_tiny_xi", 5, background="F", do_outlines=False, save="showcase/exported/show_tiny_xi_F_5.png")
+    plot_temperature_interface_map("showcase", "show_tiny_xi", 13, background="F", do_outlines=False, save="showcase/exported/show_tiny_xi_F_13.png")
+    plot_temperature_interface_map("showcase", "show_tiny_xi", 20, background="F", do_outlines=False, save="showcase/exported/show_tiny_xi_F_20.png")
 
 # aniso comparison
 if False:
@@ -1109,27 +961,23 @@ if False:
     plot_temperature_interface_map("showcase", "semi_long_dirichlet", 10, background="U", text_color="black", do_outlines=False, save=base+"semi_long_dirichlet_U_10.png")
     plot_temperature_interface_map("showcase", "semi_long_dirichlet", 30, background="U", text_color="black", do_outlines=False, save=base+"semi_long_dirichlet_U_30.png")
     plot_temperature_interface_map("showcase", "semi_long_dirichlet", 60, background="U", text_color="black", do_outlines=False, save=base+"semi_long_dirichlet_U_60.png")
-    
-    # t = 0.02
-    # t = 0.1
-    # t = 0.3
-    # t = 0.6
 
 # phase interface graph
 if False:
     plot_phase_interface("showcase", "show_aniso_0", 13, save="showcase/exported/show_aniso_inteface_graph.pdf")
 
 #Model comparison
-if True:
+if False:
     plot_phase_comparison_maps("showcase", [
         ("method_comp_euler", "Euler"), 
         ("method_comp_rk4", "RK4"), 
         ("method_comp_rkm", "RKM"), 
         ("method_comp_semi", "S-I")
     ], 20, save="showcase/exported/model_comp.pdf", print_comp_table=True)
+    # ], 20, print_comp_table=True)
 
 #Correction comparison
-if True:
+if False:
     plot_phase_comparison_maps("showcase", [
         ("method_comp_semi",            "S-I", "black"),
         ("method_comp_semi_corr",       "S-I corr."), 
@@ -1140,7 +988,7 @@ if True:
     # ], 20, legend_under=True)
 
 #Step residual graphs
-if True:
+if False:
     plot_step_residual_comp("showcase",
         "method_comp_semi_loop3",
         "method_comp_semi_corr_loop3",   
@@ -1169,6 +1017,7 @@ if False:
 # Plot bencmark results
 if False:
     plot_bench_results(save="showcase/exported/benchmark.pdf")
+    # plot_bench_results()
 
 hue_colors = ['#7500E6', '#C000E6', '#E600A1', '#E60017', '#E65200', '#E6B200', '#00E630', '#00E6CC', '#00B5E6']
 distinct_colors = ['#E6DF00', '#E63E00', '#00E6BA', '#6912E6', '#30917E', '#666533',

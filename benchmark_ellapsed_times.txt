@@ -5,7 +5,7 @@ Eul: runtime: 0.86s | iters: 8000 | average step time: 0.11 ms
 RK4: runtime: 3.53s | iters: 8000 | average step time: 0.44 ms
 RKM: runtime: 4.77s | iters: 7075 | average step time: 0.67 ms
 S-I: runtime: 3.65s | iters: 8000 | average step time: 0.46 ms
-CPU:
+CPU: 29.16
 Total wall time:        0:00:29.16
 Overall wall time:      0:00:29.20
 Elapsed calendar time:  0:00:29.00
@@ -17,7 +17,7 @@ Eul: runtime:  1.65s | iters: 8000 | average step time: 0.21 ms
 RK4: runtime:  8.38s | iters: 8000 | average step time: 1.05 ms
 RKM: runtime: 16.10s | iters: 9552 | average step time: 1.69 ms
 S-I: runtime: 11.18s | iters: 8000 | average step time: 1.40 ms
-CPU:
+CPU: 220.94
 Total wall time:        0:03:40.94
 Overall wall time:      0:03:41.09
 Elapsed calendar time:  0:03:41.00
@@ -31,7 +31,12 @@ Eul: runtime:  4.93s | iters: 8000 | average step time: 0.62 ms
 RK4: runtime: 24.16s | iters: 8000 | average step time: 3.02 ms
 RKM: runtime: 47.77s | iters: 9522 | average step time: 5.02 ms
 S-I: runtime: 40.26s | iters: 8000 | average step time: 5.03 ms
-CPU: 8:45 at 40% => 20:115 at 100% 
+CPU: 928.34
+Total wall time:        0:15:28.34
+Overall wall time:      0:15:28.55
+Elapsed calendar time:  0:15:28.00
+Total successful R-K steps:     9519
+Total R-K steps:                9525
 
 
 1024
@@ -39,11 +44,16 @@ Eul: runtime:  14.11s | iters: 8000 | average step time: 1.76 ms
 RK4: runtime:  82.75s | iters: 8000 | average step time: 10.34 ms
 RKM: runtime: 189.25s | iters: 10094 | average step time: 18.75 ms
 S-I: runtime: 187.20s | iters: 8000 | average step time: 23.40 ms
-CPU:
+CPU: 3861.69
+Total wall time:        1:04:21.69
+Overall wall time:      1:04:22.58
+Elapsed calendar time:  1:04:23.00
+Total successful R-K steps:     10063
+Total R-K steps:                10081
 
 2048
 Eul: runtime:  50.58s | iters: 8000 | average step time: 6.32 ms
 RK4: runtime: 313.40s | iters: 8000 | average step time: 39.17 ms
-RKM: 6 min to 33% => around 18 min
-S-I: 
-CPU:
+RKM: runtime: 1796.03s | iters: 24029 | average step time: 74.74 ms
+S-I: runtime: 1045.14s | iters: 8000 | average step time: 130.64 ms
+CPU: 43891.32s 24055 R-K steps

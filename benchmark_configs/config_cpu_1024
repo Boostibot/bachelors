@@ -1,0 +1,90 @@
+
+# INTERTRACK phase interface evolution simulator
+# sample parameters file
+# ---------------------------------------------
+
+# Initial conditions definition
+# ----------------------------
+
+resolution_multiplier	2
+
+set icond_formula_u = "0"
+set icond_formula_p = "((y-L2/2)^2+(z-L3/2)^2) < 0.05^2"
+
+# File names definition
+# ---------------------
+
+set logfile = OUTPUT/intertrack.log
+set out_file = OUTPUT/image out_file_suffix = .ncd
+
+# Debug settings
+# ----------------
+
+#set debug_logfile=OUTPUT/RK.log
+#set snapshot_trigger=OUTPUT/t
+
+# Batch mode postprocessing options
+# ---------------------------------
+
+#set pproc_script = PostProc_Scripts/Compress
+#set pproc_nofail pproc_nowait #pproc_waitfirst
+
+# =============================================
+
+# Model parameters
+# ----------------
+
+# domain dimensions
+L1		1
+L2		4*resolution_multiplier
+L3		4*resolution_multiplier
+
+xi		0.0043
+a		2
+b		1
+alpha		3
+beta		1400
+L		2
+u_star		1
+
+# gamma_0 is not used in model 3
+gamma_0		1
+
+u_noise_amp	0
+
+# anisotropy strength (A2 used for 6-fold anisotropy only)
+A1		0
+A2		0
+
+# Calculation parameters
+# ----------------------
+
+final_time	0.04
+saved_files	11
+delta		5e-9
+h_min		1e-10
+h		5e-6
+
+# calc_mode help (bit flags)
+# Bit		ZERO			ONE
+# --------------------------------------------------------
+# 0	(1)	2nd_order flux		MPFA
+# 1	(2)	Dirichlet b.c. for u	Neumann b.c. for u
+# 2	(4)	Dirichlet b.c. for p	Neumann b.c. for p
+# 3	(8)	4-fold anisotropy	6-fold anisotropy
+# 4	(16)	anis. set by bit 3	8-fold anisotropy
+
+calc_mode	2+4
+
+# Grid dimensions
+# ---------------
+
+# The grid will have 'grid_nodes' along the longest side of the domain
+
+grid_nodes	512*resolution_multiplier
+
+n1		1
+n2		grid_nodes
+n3		grid_nodes
+
+set comment="Testing run, isotropic"
