@@ -274,7 +274,7 @@ void draw_sci_texture(unsigned texture, float min, float max)
                         case 2 : r = s; g = 1.0; b = 0.0; break;
                         case 3 : r = 1.0; g = 1.0 - s; b = 0.0; break;
                     }
-
+                    
                     //color = vec4(val, val, val, 1.0);
 
                     color = vec4(r, g, b, 1.0);

@@ -1,59 +1,214 @@
-
+SERVER HARDWARE A100 16CPU
 
 128
-Eul: runtime: 0.86s | iters: 8000 | average step time: 0.11 ms
-RK4: runtime: 3.53s | iters: 8000 | average step time: 0.44 ms
-RKM: runtime: 4.77s | iters: 7075 | average step time: 0.67 ms
-S-I: runtime: 3.65s | iters: 8000 | average step time: 0.46 ms
-CPU: 29.16
-Total wall time:        0:00:29.16
-Overall wall time:      0:00:29.20
-Elapsed calendar time:  0:00:29.00
-Total successful R-K steps:     7080
-Total R-K steps:                7085
+Eul: runtime: 0.20s | iters: 8000 | average step time: 0.03 ms
+RK4: runtime: 0.76s | iters: 8000 | average step time: 0.09 ms
+RKM: runtime: 1.59s | iters: 8920 | average step time: 0.18 ms
+S-I: runtime: 3.86s | iters: 8000 | average step time: 0.48 ms
+
+[16x16 - cpu_a] ERROR
+[16x1 - cpu_a] ERROR
+
+[16x1 - gpuA] (Error was after some debugging resolved)
+CPU: runtime: 8.16s | iters: 8915
+    Total wall time:	0:00:08.16
+    Overall wall time:	0:00:08.58
+    Elapsed calendar time:	0:00:09.00
+    Total successful R-K steps:	8908
+    Total R-K steps: 		8915
 
 256
-Eul: runtime:  1.65s | iters: 8000 | average step time: 0.21 ms
-RK4: runtime:  8.38s | iters: 8000 | average step time: 1.05 ms
-RKM: runtime: 16.10s | iters: 9552 | average step time: 1.69 ms
-S-I: runtime: 11.18s | iters: 8000 | average step time: 1.40 ms
-CPU: 220.94
-Total wall time:        0:03:40.94
-Overall wall time:      0:03:41.09
-Elapsed calendar time:  0:03:41.00
-Total successful R-K steps:     9557
-Total R-K steps:                9559
+Eul: runtime: 0.35s | iters: 8000 | average step time: 0.04 ms
+RK4: runtime: 1.42s | iters: 8000 | average step time: 0.18 ms
+RKM: runtime: 2.85s | iters: 9522 | average step time: 0.30 ms
+S-I: runtime: 4.45s | iters: 8000 | average step time: 0.56 ms
+[16x16 - cpu_a]
+CPU: runtime: 68.53s | iters: 9521
+    Total wall time:	0:01:08.53
+    Overall wall time:	0:01:09.75
+    Elapsed calendar time:	0:01:09.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
 
-RKM: runtime: 9.17 | iters: 9552 | average step time: 1.69 ms
+[16x1 - cpu_a]
+CPU: runtime: 35.17s | iters: 9521
+    Total wall time:	0:00:35.17
+    Overall wall time:	0:00:35.38
+    Elapsed calendar time:	0:00:36.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+[16x1 - gpuA]
+CPU: runtime: 34.17s | iters: 
+    Total wall time:	0:00:34.17
+    Overall wall time:	0:00:34.66
+    Elapsed calendar time:	0:00:35.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+
 
 512
-Eul: runtime:  4.93s | iters: 8000 | average step time: 0.62 ms
-RK4: runtime: 24.16s | iters: 8000 | average step time: 3.02 ms
-RKM: runtime: 47.77s | iters: 9522 | average step time: 5.02 ms
-S-I: runtime: 40.26s | iters: 8000 | average step time: 5.03 ms
-CPU: 928.34
-Total wall time:        0:15:28.34
-Overall wall time:      0:15:28.55
-Elapsed calendar time:  0:15:28.00
-Total successful R-K steps:     9519
-Total R-K steps:                9525
+Eul: runtime: 0.66s | iters: 8000 | average step time: 0.08 ms
+RK4: runtime: 2.88s | iters: 8000 | average step time: 0.36 ms
+RKM: runtime: 5.39s | iters: 9522 | average step time: 0.57 ms
+S-I: runtime: 5.67s | iters: 8000 | average step time: 0.71 ms
+[16x16 - cpu_a]
+CPU: runtime: 264.96s | iters: 9521
+    Total wall time:	0:04:24.96
+    Overall wall time:	0:04:26.82
+    Elapsed calendar time:	0:04:27.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
 
+[16x1 - cpu_a]
+CPU: runtime: 141.45s | iters: 9521
+    Total wall time:	0:02:21.45
+    Overall wall time:	0:02:21.67
+    Elapsed calendar time:	0:02:22.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+[16x1 - gpuA]
+CPU: runtime: 135.46s | iters: 9521
+    Total wall time:	0:02:15.46
+    Overall wall time:	0:02:16.09
+    Elapsed calendar time:	0:02:16.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
 
 1024
-Eul: runtime:  14.11s | iters: 8000 | average step time: 1.76 ms
-RK4: runtime:  82.75s | iters: 8000 | average step time: 10.34 ms
-RKM: runtime: 189.25s | iters: 10094 | average step time: 18.75 ms
-S-I: runtime: 187.20s | iters: 8000 | average step time: 23.40 ms
-CPU: 3861.69
-Total wall time:        1:04:21.69
-Overall wall time:      1:04:22.58
-Elapsed calendar time:  1:04:23.00
-Total successful R-K steps:     10063
-Total R-K steps:                10081
+Eul: runtime: 1.64s | iters: 8000 | average step time: 0.21 ms
+RK4: runtime: 8.73s | iters: 8000 | average step time: 1.09 ms
+RKM: runtime: 16.92s | iters: 9522 | average step time: 1.78 ms
+S-I: runtime: 12.43s | iters: 8000 | average step time: 1.55 ms
+[16x16 - cpu_a]
+CPU: runtime: 956.97s | iters: 9521
+    Total wall time:	0:00:35.17
+    Overall wall time:	0:00:35.38
+    Elapsed calendar time:	0:00:36.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+[16x1 - cpu_a]
+CPU: runtime: 689.06s | iters: 9521
+    Total wall time:	0:11:29.06
+    Overall wall time:	0:11:29.59
+    Elapsed calendar time:	0:11:29.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+[16x1 - gpuA]
+CPU: runtime: 593.14s | iters: 9521
+    Total wall time:	0:09:53.14
+    Overall wall time:	0:09:53.90
+    Elapsed calendar time:	0:09:54.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
 
 2048
-Eul: runtime:  50.58s | iters: 8000 | average step time: 6.32 ms
-RK4: runtime: 313.40s | iters: 8000 | average step time: 39.17 ms
-RKM: runtime: 1796.03s | iters: 24029 | average step time: 74.74 ms
-S-I: runtime: 1045.14s | iters: 8000 | average step time: 130.64 ms
-CPU: 43891.32s 24055 R-K steps
+Eul: runtime: 3.50s | iters: 8000 | average step time: 0.44 ms
+RK4: runtime: 18.73s | iters: 8000 | average step time: 2.34 ms
+RKM: runtime: 35.87s | iters: 9522 | average step time: 3.77 ms
+S-I: runtime: 34.05s | iters: 8000 | average step time: 4.26 ms
+[16x16 - cpu_a]
+CPU: runtime: 3780.90s | iters: 9521
+    Total wall time:	1:03:00.90
+    Overall wall time:	1:03:02.48
+    Elapsed calendar time:	1:03:02.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+[16x1 - cpu_a]
+CPU: runtime: 2925.7s | iters: 9521
+    Total wall time:	0:48:45.70
+    Overall wall time:	0:48:47.49
+    Elapsed calendar time:	0:48:48.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+[16x1 - gpuA]
+CPU: runtime: 2515.05s | iters: 9521
+    Total wall time:	0:41:55.05
+    Overall wall time:	0:41:57.20
+    Elapsed calendar time:	0:41:57.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+[0.20, 0.35, 0.66, 1.64, 3.50]
+[0.76, 1.42, 2.88, 8.73, 18.73]
+[1.59, 2.85, 5.39, 16.92, 35.87]
+[3.86, 4.45, 5.67, 12.43, 34.05]
+[None, 68.53, 264.96, 956.97, 3780.90] #16*16 cpu_a
+[None, 35.17, 141.45, 689.06, 2925.7] #16*1 cpu_a
+[8.16, 34.17, 135.46, 593.14, 2515.05] #16*1 gpuA
+
+CONSUMER HARDWARE
+
+128
+Eul: runtime: 0.80s | iters: 8000 | average step time: 0.10 ms
+RK4: runtime: 3.35s | iters: 8000 | average step time: 0.42 ms
+RKM: runtime: 5.89s | iters: 8922 | average step time: 0.66 ms
+S-I: runtime: 5.40s | iters: 8000 | average step time: 0.67 ms
+CPU: runtime: 40.59s | iters: 8915
+    Total wall time:	0:00:40.59
+    Overall wall time:	0:00:40.64
+    Elapsed calendar time:	0:00:41.00
+    Total successful R-K steps:	8908
+    Total R-K steps: 		8915
+
+256
+Eul: runtime: 1.50s | iters: 8000 | average step time: 0.19 ms
+RK4: runtime: 8.11s | iters: 8000 | average step time: 1.01 ms
+RKM: runtime: 15.79s | iters: 9521 | average step time: 1.66 ms
+S-I: runtime: 13.71s | iters: 8000 | average step time: 1.71 ms
+CPU: runtime: 277.8s | iters: 9521
+    Total wall time:	0:04:37.80
+    Overall wall time:	0:04:37.86
+    Elapsed calendar time:	0:04:38.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+512
+Eul: runtime: 4.60s | iters: 8000 | average step time: 0.57 ms
+RK4: runtime: 23.22s | iters: 8000 | average step time: 2.90 ms
+RKM: runtime: 47.02s | iters: 9522 | average step time: 4.94 ms
+S-I: runtime: 47.02s | iters: 9522 | average step time: 4.94 ms
+CPU: runtime: 1034.75s | iters: 9521
+    Total wall time:	0:17:14.75
+    Overall wall time:	0:17:14.86
+    Elapsed calendar time:	0:17:15.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+1024
+Eul: runtime: 13.41s | iters: 8000 | average step time: 1.68 ms
+RK4: runtime: 84.11s | iters: 8000 | average step time: 10.51 ms
+RKM: runtime: 178.69s | iters: 9523 | average step time: 18.76 ms
+S-I: runtime: 143.51s | iters: 8000 | average step time: 17.94 ms
+CPU: runtime: 3509.33s | iters: 9521
+    Total wall time:	0:58:29.33
+    Overall wall time:	0:58:29.57
+    Elapsed calendar time:	0:58:29.00
+    Total successful R-K steps:	9514
+    Total R-K steps: 		9521
+
+2048
+Eul: runtime: 48.71s | iters: 8000 | average step time: 6.09 ms
+RK4: runtime: 313.90s | iters: 8000 | average step time: 39.24 ms
+RKM: runtime: 653.95s | iters: 9523 | average step time: 68.67 ms
+S-I: runtime: 563.34s | iters: 8000 | average step time: 70.42 ms
+CPU: runtime: 14833.55s | iters: 9521 
+    Total wall time:        4:07:13.55
+    Overall wall time:      4:07:14.31
+    Elapsed calendar time:  4:07:14.00
+    Total successful R-K steps:     9514
+    Total R-K steps:                9521
+    80% 3:11:40.02, 7692 R-K steps = runtime: 11500.02s | iters: 7692
+    100% runtime: 14375.02s | iters: 9615 
+
+[0.80, 1.50, 4.60, 13.41, 48.71]
+[3.35, 8.11, 23.22, 84.11, 313.90]
+[5.89, 15.79, 47.02, 178.69, 653.95]
+[5.40, 13.71, 47.02, 143.51, 563.34]
+[40.59, 277.8, 1034.75, 3509.33, 14833.55]

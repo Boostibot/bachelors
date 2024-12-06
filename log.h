@@ -211,6 +211,7 @@ char* malloc_fmt_custom(size_t* count_or_null, char* backing, size_t backing_siz
 
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 	
 void file_logger_log(Logger* gen_logger, const char* module, Log_Type type, size_t indentation, int line, const char* file, const char* function, const char* format, va_list args)
 {

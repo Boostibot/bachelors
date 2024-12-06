@@ -438,6 +438,9 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0005, min=0,
     cmap = 'RdBu_r'
     if background == "F":
         cmap = 'viridis'
+        # cmap = 'plasma'
+        # cmap = 'inferno'
+        # cmap = 'magma'
         label = 'ϕ'
 
     if text_color == None:
@@ -453,7 +456,7 @@ def plot_loaded_temperature_interface_map(maps1, F, U, smoothness=0.0005, min=0,
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111)
     ax.set_aspect('equal')
-    img = ax.pcolormesh(X, Y, U, cmap=cmap, shading='flat', vmin=min, vmax=max)
+    img = ax.pcolormesh(X, Y, U*0.8 + 0.2, cmap=cmap, shading='flat', vmin=min, vmax=max)
 
     interpolate = False
     for outline in outlines:
@@ -591,7 +594,22 @@ def format_latex_table(middle_label:str, left_labels:list[str], top_labels:list[
     
 brown_blue_color = ['#003f5c', '#58508d', '#bc5090', '#ff6361', '#ffa600']
 brown_blue_color2 = ['#00429d', '#73a2c6', '#ffffe0', '#f4777f', '#93003a']
-wider_color = ['#4DB4F0', '#5E4DF0', '#DA4DF0', '#F0544D', '#FA8E34', '#F5D63D', '#ABFF24']
+wider_color = ['#4DB4F0', '#5E4DF0', '#DA4DF0', '#e64240', '#FA8E34', '#F5D63D', '#ABFF24']
+wider_color2 = ["#35caf7",
+"#2020bb",
+"#f083d5",
+"#b93f06",
+"#ffdb61",
+"#5dbe20",
+"#4ee7af"]
+
+wider_color3 = ["#35caf7",
+"#2020bb",
+"#b853c6",
+"#b93f06",
+"#ffca61",
+"#5dbe20",
+"#4ee7af"]
 vibrat_colors = ['#47FA02', '#FA0288', '#0276FA', '#6A11FA', '#02FAA9',  '']
 pink_blue_brown = ["#f90088", "#0577fb", "#a5e841", "#871d32", "#11c385"]
 pink_green_brown = ['#02faa9', '#c6a894', '#fc0080', '#00a45c', '#003f01']
@@ -756,26 +774,26 @@ def plot_bench_results(linewidth=2, save=None):
 
 # module load
 # 
-def plot_ellpased_time_comp_methods(which, linewidth=2, save=None, pallete=def_pallete):
+def plot_ellpased_time_comp_methods(which, running_times, Ys=None, linewidth=2, save=None, pallete=def_pallete):
     Ys = [1, 4, 16, 64, 256, 1024, 4096]
     Ns = [128**2, 256**2, 512**2, 1024**2, 2048**2]
     Ns_labels = ['$128^2$', '$256^2$', '$512^2$', '$1024^2$', '$2048^2$']
-    
-    inf = math.inf
 
-    running_times = {
-        'Euler':[0.86,  1.65,  4.93,  14.11,  50.58],
-        'RK4'  :[3.53,  8.38, 24.16,  82.75, 313.40],
-        'RKM'  :[4.77, 16.10, 47.77, 189.25, 1796.03],
-        'SI'   :[3.65, 11.18, 40.26, 187.20, 1045.14],
-        'CPU'  :[29.16, 220.94, 928.34, 3861.69, 17556.53],
-    }
+    filtered_times = {}
+    for key, values in running_times.items():
+        ticks = []
+        filtered = []
+        for N, val in zip(Ns, values):
+            if val != None:
+                ticks += [N]
+                filtered += [val]
 
-    marker_size = [10, 10, 10, 10, 14] 
-    markers = ['o', 'v', '^', 's', '*']
+        filtered_times[key] = (ticks, filtered)
+
+    marker_size = [10, 10, 10, 10, 15, 10] 
+    markers = ['o', 'v', '^', 's', '*', '>']
     # colors=['#4E4DF0', '#944DF0', '#DA4DF0', '#F04D97', '#F05C4D']
     
-
     # print('% ============== Running times ==============')
     # print(format_latex_table('Running times ', list(running_times.keys()), Ns_labels, list(running_times.values())))
 
@@ -787,12 +805,13 @@ def plot_ellpased_time_comp_methods(which, linewidth=2, save=None, pallete=def_p
         ax.set_yscale('log', base=2)
 
         i = 0
-        for key, value in running_times.items():
-            ax.plot(Ns, value, linestyle='-', marker=markers[i], markersize=marker_size[i], color=pallete[i], label=key, linewidth=linewidth)
+        for key, value in filtered_times.items():
+            ax.plot(value[0], value[1], linestyle='-', marker=markers[i], markersize=marker_size[i], color=pallete[i], label=key, linewidth=linewidth)
             i += 1
 
         plt.xticks(Ns, Ns_labels, rotation=45)
-        plt.yticks(Ys)
+        if Ys != None:
+            plt.yticks(Ys)
         plt.xlabel('Number of cells') 
         plt.ylabel('Computation time [s]') 
         plt.subplots_adjust(bottom=0.2)
@@ -806,11 +825,19 @@ def plot_ellpased_time_comp_methods(which, linewidth=2, save=None, pallete=def_p
 
     if which == 'scaling':
         scalings = {}
-        for key, series in running_times.items():
+        for key, series in filtered_times.items():
             scaling = []
-            for i in range(1, len(series)):
-                scaling += [series[i]/series[i - 1]]
-            scalings[key] = scaling
+            scaling_Ns = []
+            for i in range(1, len(series[0])):
+                Nc = series[0][i]
+                Np = series[0][i-1]
+                Xc = series[1][i]
+                Xp = series[1][i-1]
+
+                scaling_Ns += [Np]
+                # scaling += [Xc*Np/(Xp*Nc)]
+                scaling += [Xc/Xp]
+            scalings[key] = (scaling_Ns, scaling)
 
         # print('% ============== Scaling times ==============')
         # print(format_latex_table('Running times ', list(scalings.keys()), Ns_labels[1:], list(scalings.values())))
@@ -822,7 +849,7 @@ def plot_ellpased_time_comp_methods(which, linewidth=2, save=None, pallete=def_p
 
         i = 0
         for key, value in scalings.items():
-            ax.plot(Ns[1:], value, linestyle='-', marker=markers[i], markersize=marker_size[i], color=pallete[i], label=key, linewidth=linewidth)
+            ax.plot(value[0], value[1], linestyle='-', marker=markers[i], markersize=marker_size[i], color=pallete[i], label=key, linewidth=linewidth)
             i += 1
 
         plt.xticks(Ns, Ns_labels, rotation=45)
@@ -840,16 +867,23 @@ def plot_ellpased_time_comp_methods(which, linewidth=2, save=None, pallete=def_p
 
     if which == 'speedup':
         speedup = []
-        for ours, theirs in zip(running_times["RKM"], running_times["CPU"]):
-            speedup += [theirs/ours]
+        speedup_Ns = []
+        for ours, theirs, N in zip(running_times["RKM"], running_times["CPU"], Ns):
+            if ours != None and theirs != None:
+                speedup += [theirs/ours]
+                speedup_Ns += [N]
 
-        fig = plt.figure(figsize=(11, 5))
+        mspeedup = max(speedup)
+        fig = plt.figure(figsize=(20, 5))
         ax = fig.add_subplot(111)
         ax.tick_params(axis='both', which='major', pad=15)
+        # ax.set_ylim(1,max(speedup)) #Doing this still doesnot get the expected output
+        # ax.set_xlim(0.0,1.2)
         ax.set_xscale('log', base=2)
         ax.set_xticks(Ns, Ns_labels, rotation=45)
-        ax.set_yticks(np.linspace(0, 20, 5))
-        ax.plot(Ns, speedup, linestyle='-', marker=markers[0], markersize=marker_size[0], color=pallete[0], linewidth=linewidth)
+        # ax.set_yticks([1, 10, 20, 30])
+        # ax.set_yticks(np.linspace(0, (mspeedup + 4)//5, 5))
+        ax.plot(speedup_Ns, speedup, linestyle='-', marker=markers[0], markersize=marker_size[0], color=pallete[0], linewidth=linewidth)
 
         ax.set_xlabel('Number of cells') 
         ax.set_ylabel('Speedup times') 
@@ -870,7 +904,7 @@ matplotlib.rc('font', **font)
 # def_pallete = wider_color
 
 import os
-if True:
+if False:
     def newest_file_in_dir(path):
         files = os.listdir(path)
         paths = [os.path.join(path, basename) for basename in files]
@@ -887,6 +921,45 @@ if True:
 
     dir = newest_file_in_dir("snapshots/")
     plot_temperature_interface_map("", dir, 10, background="U")
+
+if True:
+    benchmark_consumer = {
+        'Euler':[0.80, 1.50, 4.60, 13.41, 48.71],
+        'RK4'  :[3.35, 8.11, 23.22, 84.11, 313.90],
+        'RKM'  :[5.89, 15.79, 47.02, 178.69, 653.95],
+        'SI'   :[5.40, 13.71, 47.02, 143.51, 563.34],
+        'CPU'  :[40.59, 277.8, 1034.75, 3509.33, 14833.55],
+    }
+
+    # plot_ellpased_time_comp_methods("time", benchmark_consumer, pallete=wider_color)
+    # plot_ellpased_time_comp_methods("scaling", benchmark_consumer, pallete=wider_color)
+    # plot_ellpased_time_comp_methods("speedup", benchmark_consumer, pallete=wider_color)
+
+    plot_ellpased_time_comp_methods("time", benchmark_consumer, pallete=wider_color, save="showcase/exported/comp_time_consumer.pdf")
+    plot_ellpased_time_comp_methods("scaling", benchmark_consumer, pallete=wider_color, save="showcase/exported/comp_time_consumer_scaling.pdf")
+    plot_ellpased_time_comp_methods("speedup", benchmark_consumer, pallete=wider_color, save="showcase/exported/comp_time_consumer_speedup.pdf")
+
+if True:
+    benchmark_specialized = {
+        'Euler':[0.20, 0.35, 0.66, 1.64, 3.50],
+        'RK4'  :[0.76, 1.42, 2.88, 8.73, 18.73],
+        'RKM'  :[1.59, 2.85, 5.39, 16.92, 35.87],
+        'SI'   :[3.86, 4.45, 5.67, 12.43, 34.05],
+        'CPU'  :[8.16, 34.17, 135.46, 593.14, 2515.05],
+    }
+
+    plot_ellpased_time_comp_methods("time", benchmark_specialized, pallete=wider_color, save="showcase/exported/comp_time_specialized.pdf")
+    plot_ellpased_time_comp_methods("scaling", benchmark_specialized, pallete=wider_color, save="showcase/exported/comp_time_specialized_scaling.pdf")
+    plot_ellpased_time_comp_methods("speedup", benchmark_specialized, pallete=wider_color, save="showcase/exported/comp_time_specialized_speedup.pdf")
+
+
+if False:
+    plot_temperature_interface_map("snapshots", "2024-10-19__02-14-38__explicit1024", 10, background="U")
+    plot_temperature_interface_map("snapshots", "2024-10-19__02-14-52__explicit2048", 10, background="U")
+    plot_temperature_interface_map("snapshots", "2024-10-19__02-24-03__explicit-rk4-adaptive1024", 10, background="U")
+    plot_temperature_interface_map("snapshots", "2024-10-19__02-27-02__explicit-rk4-adaptive2048", 10, background="U")
+    plot_temperature_interface_map("snapshots", "2024-10-19__02-38-56__semi-implicit1024", 10, background="U")
+    plot_temperature_interface_map("snapshots", "2024-10-19__02-41-20__semi-implicit2048", 10, background="U")
 
 if False:
     plot_ellpased_time_comp_methods("time", pallete=wider_color, save="showcase/exported/comp_time_broad.pdf")

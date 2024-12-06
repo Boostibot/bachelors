@@ -200,9 +200,35 @@ n3		grid_nodes
 set comment="Testing run, isotropic"
 """
 
+queue_submit_template = """
+#!/bin/bash 
+### Job Name 
+#PBS -N {0} 
+### required runtime 
+#PBS -l walltime=00:30:00 
+### queue for submission 
+#PBS -q gpuA
+ 
+### Merge output and error files 
+#PBS -j oe 
+ 
+#PBS -l select=1:mem=10G:ncpus=1:ngpus=1 
+ 
+### start job in the directory it was submitted from 
+cd $PBS_O_WORKDIR 
+ 
+### load the necessary software modules 
+module load cuda/12.4.1 
+module load gcc/13.3
+ 
+### run the application 
+./build/main.out {1}
+"""
+
 solvers = ['explicit', 'explicit-rk4', 'explicit-rk4-adaptive', 'semi-implicit', 'cpu']
 scales = [0.25, 0.5, 1, 2, 4]
 base_size = 512
+base_path = "benchmark_configs"
 
 for solver in solvers:
     for scale in scales:
@@ -214,6 +240,29 @@ for solver in solvers:
             specialized = config_cpu_template.format(scale, base_size)
         else:
             specialized = config_template.format(solver, scale, base_size, size)
-        filename = f"config_{solver}_{size}{extension}"
+
+        filename = f"{base_path}/config_{solver}_{size}{extension}"
+        submit_filename = f"{base_path}/submit_{solver}_{size}.sh"
+        submit_command = queue_submit_template.format(f"dendrtic_cuda_{solver}_{size}", filename)
+
         with open(filename, "w") as text_file:
             text_file.write(specialized)
+
+        if solver != 'cpu':
+            with open(submit_filename, "w") as text_file:
+                text_file.write(submit_command)
+
+import os
+if False:
+    for solver in solvers:
+        for scale in scales:
+            size = int(base_size*scale)
+            submit_filename = f"{base_path}/submit_{solver}_{size}.sh"
+            os.system(f"qsub {submit_filename}")
+
+if True:
+    for solver in solvers:
+        for scale in scales:
+            size = int(base_size*scale)
+            config_filename = f"{base_path}/config_{solver}_{size}.ini"
+            os.system(f"build/main.out {config_filename}")
