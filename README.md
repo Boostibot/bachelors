@@ -1,4 +1,4 @@
-The source code to my bachelors thesis under the CTU in Prague university supervised by Ing. Pavel Strachota, Ph.D. For the details/documentation etc. refer to the full text in Bachlelors.pdf or the latex source.
+The source code to my bachelors thesis at CTU in Prague, Faculty of Nuclear Sciences and Physical Engineering supervised by Ing. Pavel Strachota, Ph.D. For the details/documentation etc. refer to the full text in Bachlelors.pdf or the latex source.
 
 # Abstract
 This work is concerned with GPU parallel implementation of numerical schemes of the
