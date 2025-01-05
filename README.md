@@ -19,7 +19,7 @@ and good agreement with previous results is shown.
 |--------------------------------|--------------------------------|
 | ![Crystal with 6-fold anisotropy](text/Bachelors/results/show_low_xi_U_20.png "6-fold anisotropy") | ![Crystal with 8-fold anisotropy](text/Bachelors/results/show_low_xi_anisofold_8_U_30.png "8-fold anisotropy") |
 
-The simulated crystal structures. Images show the crystal outline in white and temperature field gradient. The solid crystal is the hottest and the surrounding undercooled (under freezing temperature) liquid the coldest.  
+The simulated crystal structures. Images show the crystal outline in white and temperature field in red-blue gradient. The solid crystal is the hottest and the surrounding undercooled (under freezing temperature) liquid the coldest.  
 
 | Comparison of various different time integration schemes | Benchmark comparison vs reference CPU implementation showing up to 20x time speedup on laptop GPU |
 |--------------------------------|--------------------------------|
