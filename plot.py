@@ -1040,7 +1040,7 @@ if False:
     plot_phase_interface("showcase", "show_aniso_0", 13, save="showcase/exported/show_aniso_inteface_graph.pdf")
 
 #Model comparison
-if False:
+if True:
     plot_phase_comparison_maps("showcase", [
         ("method_comp_euler", "Euler"), 
         ("method_comp_rk4", "RK4"), 
@@ -1050,7 +1050,7 @@ if False:
     # ], 20, print_comp_table=True)
 
 #Correction comparison
-if False:
+if True:
     plot_phase_comparison_maps("showcase", [
         ("method_comp_semi",            "S-I", "black"),
         ("method_comp_semi_corr",       "S-I corr."), 
